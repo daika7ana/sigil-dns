@@ -50,6 +50,7 @@ func view(w *gogui.Window) gogui.View {
 		Content: []gogui.View{
 			header(t, app),
 			banner(t, v),
+			actionBar(t, app, v),
 			gogui.Column(gogui.ContainerCfg{
 				ID:         "gui:content",
 				Sizing:     gogui.FillFill,
@@ -136,6 +137,66 @@ func banner(t gogui.Theme, v statusVisual) gogui.View {
 					}),
 				},
 			}),
+		},
+	})
+}
+
+// actionBar is the state's action row: the primary next step (and an optional
+// secondary) on the right, an in-flight note or a blocking explanation on the
+// left.  It sits under the banner so the state and its action read together,
+// and outside the scroll area so a recovery action like "Restore now" is never
+// buried.
+func actionBar(t gogui.Theme, app *App, v statusVisual) gogui.View {
+	plan := planActions(v.kind)
+
+	var actions []gogui.View
+	if !plan.blocked {
+		if plan.secondary != "" {
+			actions = append(actions, actionButton(plan.secondary, app.busy))
+		}
+		if plan.primary != "" {
+			actions = append(actions, actionButton(plan.primary, app.busy))
+		}
+	}
+
+	lead := ""
+	switch {
+	case plan.blocked:
+		lead = plan.reason
+	case app.busy:
+		lead = app.busyNote
+	}
+
+	return gogui.Row(gogui.ContainerCfg{
+		Sizing:  gogui.FillFit,
+		Spacing: gogui.SpacingMedium,
+		VAlign:  gogui.VAlignMiddle,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				Text:      lead,
+				TextStyle: t.TextStyleSecondary,
+				Sizing:    gogui.FillFit,
+				Mode:      gogui.TextModeWrap,
+			}),
+			gogui.Row(gogui.ContainerCfg{
+				Sizing:  gogui.FixedFit,
+				Spacing: gogui.SpacingSmall,
+				VAlign:  gogui.VAlignMiddle,
+				Content: actions,
+			}),
+		},
+	})
+}
+
+// actionButton builds one action button, disabled while an action is in flight.
+func actionButton(action guiAction, busy bool) gogui.View {
+	return gogui.Button(gogui.ButtonCfg{
+		ID:       "gui:action:" + string(action),
+		Variant:  actionVariant(action),
+		Label:    actionLabel(action),
+		Disabled: busy,
+		OnClick: func(ctx gogui.EventCtx) {
+			runAction(ctx, action)
 		},
 	})
 }
@@ -341,7 +402,7 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 		return statusVisual{
 			kind:          kindDirty,
 			headline:      "Restore needed",
-			detail:        "Interception is still applied from a previous session. Restart the service to clean up.",
+			detail:        "Interception is still applied from a previous session. Use Restore now to clean up.",
 			headlineStyle: t.TextStyleWarning,
 			bg:            t.ColorWarningSubtle,
 			accent:        t.TextStyleWarning.Color,

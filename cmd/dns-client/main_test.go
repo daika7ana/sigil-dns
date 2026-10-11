@@ -64,6 +64,8 @@ func (f *fakeDaemon) Disable(context.Context) (err error) {
 	return f.disableErr
 }
 
+func (f *fakeDaemon) Restore(context.Context) (err error) { return nil }
+
 func TestReloadSwapWhenIdle(t *testing.T) {
 	old := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}

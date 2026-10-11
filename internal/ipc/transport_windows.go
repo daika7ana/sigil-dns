@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 // Named pipe endpoints.  Both are documented in README and SPEC §2/§4.7.
@@ -59,6 +60,22 @@ func listenPipe(endpoint, sddl string) (ln net.Listener, err error) {
 // Dial connects to the named pipe.
 func Dial(ctx context.Context, endpoint string) (conn net.Conn, err error) {
 	return winio.DialPipeContext(ctx, endpoint)
+}
+
+// ServerPID returns the process id of the named-pipe server behind conn.  ok is
+// false when the transport does not expose the server identity (for example a
+// test harness wrapping the connection).
+func ServerPID(conn net.Conn) (pid uint32, ok bool) {
+	f, hasFD := conn.(interface{ Fd() uintptr })
+	if !hasFD {
+		return 0, false
+	}
+
+	if err := windows.GetNamedPipeServerProcessId(windows.Handle(f.Fd()), &pid); err != nil {
+		return 0, false
+	}
+
+	return pid, true
 }
 
 // Note on peer identity: go-winio's pipe connection exposes Fd(), so

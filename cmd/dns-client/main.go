@@ -27,6 +27,7 @@ import (
 
 	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/drift"
+	"github.com/daika7ana/dns-client/internal/elevate"
 	"github.com/daika7ana/dns-client/internal/gui"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
@@ -78,6 +79,8 @@ func run(args []string) (err error) {
 		return cmdService(rest)
 	case "--service":
 		return cmdServiceHost(rest)
+	case "--apply":
+		return cmdApply(rest)
 	case "--gui":
 		return cmdGUI(rest)
 	case "--tray":
@@ -413,6 +416,7 @@ type svcDaemon interface {
 	Startup(ctx context.Context) (reenable bool, err error)
 	Enable(ctx context.Context) (err error)
 	Disable(ctx context.Context) (err error)
+	Restore(ctx context.Context) (err error)
 }
 
 // serviceLifecycle lets the Windows service boot even when the config is
@@ -444,6 +448,9 @@ func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 
 // Disable implements service.Lifecycle.
 func (s *serviceLifecycle) Disable(ctx context.Context) (err error) { return s.inner.Disable(ctx) }
+
+// Restore implements service.Lifecycle (config-independent crash/dirty recovery).
+func (s *serviceLifecycle) Restore(ctx context.Context) (err error) { return s.inner.Restore(ctx) }
 
 // Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
 func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, err error) {
@@ -553,6 +560,18 @@ func cmdServiceHost(args []string) (err error) {
 	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, logger()))
 
 	return service.Run(agent)
+}
+
+// cmdApply is the elevated one-shot helper entry point (SPEC §15.2).  It is
+// invoked with the staging request path by the unelevated elevate.Apply call.
+// It runs headless: it never initialises a UI, and the request (which may carry
+// settings) never appears on the command line.
+func cmdApply(args []string) (err error) {
+	if len(args) != 1 {
+		return errors.New("usage: dns-client --apply <staging-request-path>")
+	}
+
+	return elevate.HelperMain(args[0])
 }
 
 // cmdGUI starts the read-only go-gui status window (SPEC §15).  It is inert

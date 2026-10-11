@@ -26,8 +26,14 @@ const pollInterval = 2 * time.Second
 type App struct {
 	snap      snapshot
 	refresh   chan struct{}
+	apply     applyFunc
 	guiPath   string
 	themePref string
+
+	// busy is true while an elevated action is in flight; busyNote explains
+	// what it is waiting on.
+	busy     bool
+	busyNote string
 }
 
 // Run opens the read-only status window and blocks until it is closed.
@@ -52,6 +58,7 @@ func Run(cfg Config) (err error) {
 		guiPath:   path,
 		themePref: s.Theme,
 		refresh:   make(chan struct{}, 1),
+		apply:     elevateApply,
 	}
 	src := newSource(cfg.Endpoint)
 

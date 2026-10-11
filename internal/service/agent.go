@@ -56,6 +56,10 @@ type Lifecycle interface {
 
 	// Disable removes interception.
 	Disable(ctx context.Context) (err error)
+
+	// Restore restores interception from persisted state (crash/dirty
+	// recovery), independent of the configuration file.
+	Restore(ctx context.Context) (err error)
 }
 
 // Watcher is a background reconciler (drift detection) started with the service
@@ -175,6 +179,14 @@ func (l *lockedLifecycle) Disable(ctx context.Context) (err error) {
 	return l.lc.Disable(ctx)
 }
 
+// Restore implements ipc.Restorer, serialized with the other lifecycle calls.
+func (l *lockedLifecycle) Restore(ctx context.Context) (err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.lc.Restore(ctx)
+}
+
 // Start binds the IPC listeners, then runs crash recovery and (if mode=on)
 // re-enable.  It returns an error only when IPC cannot be served at all; a
 // recovery or enable failure leaves the service running in a degraded state
@@ -246,7 +258,7 @@ func (a *Agent) startIPC() (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc)
+	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
 			a.logger.Error("ipc control serve stopped", "err", sErr)

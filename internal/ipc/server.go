@@ -55,6 +55,13 @@ type Reloader interface {
 	Reload(ctx context.Context) (sum ConfigSummary, err error)
 }
 
+// Restorer optionally handles the admin restore method (config-independent
+// crash/dirty recovery).  It is set on the control pipe only.
+type Restorer interface {
+	// Restore restores interception from persisted state.
+	Restore(ctx context.Context) (err error)
+}
+
 // Authorizer derives the identity of a connected peer.  It is injected by the
 // transport (or by tests); it must never trust the request body.
 type Authorizer func(conn net.Conn) Caller
@@ -72,6 +79,7 @@ func ReadOnlyAuthorizer(net.Conn) Caller { return Caller{Admin: false} }
 type Server struct {
 	lc             Lifecycle
 	reloader       Reloader
+	restorer       Restorer
 	logger         *slog.Logger
 	configPath     string
 	requestTimeout time.Duration
@@ -112,6 +120,13 @@ func (s *Server) SetConfigPath(path string) *Server {
 // SetReloader sets the reload handler (control pipe only).
 func (s *Server) SetReloader(r Reloader) *Server {
 	s.reloader = r
+
+	return s
+}
+
+// SetRestorer sets the restore handler (control pipe only).
+func (s *Server) SetRestorer(r Restorer) *Server {
+	s.restorer = r
 
 	return s
 }
@@ -171,6 +186,17 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 		}
 
 		return marshalOK(sum)
+
+	case MethodRestore:
+		if s.restorer == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		if err := s.restorer.Restore(ctx); err != nil {
+			return errorResponse(err)
+		}
+
+		return okResponse(nil)
 
 	default:
 		return errorResponse(ErrMethod)

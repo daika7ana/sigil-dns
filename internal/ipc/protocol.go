@@ -26,10 +26,13 @@ const (
 
 	// CapReload marks the admin reload method.
 	CapReload
+
+	// CapRestore marks the admin restore method.
+	CapRestore
 )
 
 // Capabilities is the set of capability bits this build supports.
-const Capabilities = CapInfo | CapConfigSummary | CapReload
+const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore
 
 // Method is an IPC request method.
 type Method string
@@ -53,6 +56,10 @@ const (
 
 	// MethodReload is state-changing and requires administrator privileges.
 	MethodReload Method = "reload"
+
+	// MethodRestore is state-changing and requires administrator privileges.
+	// It is config-independent (crash/dirty recovery).
+	MethodRestore Method = "restore"
 )
 
 // Privilege classifies a method's required caller identity (SPEC §15.3.2).
@@ -77,6 +84,7 @@ var methodPrivileges = map[Method]Privilege{
 	MethodEnable:        Admin,
 	MethodDisable:       Admin,
 	MethodReload:        Admin,
+	MethodRestore:       Admin,
 }
 
 // valid reports whether m is a known method.

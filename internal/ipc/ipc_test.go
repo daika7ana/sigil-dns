@@ -58,6 +58,18 @@ func (f *fakeLifecycle) Disable(context.Context) (err error) {
 	return f.disableErr
 }
 
+// fakeRestorer is an in-memory ipc.Restorer.
+type fakeRestorer struct {
+	err   error
+	calls int
+}
+
+func (f *fakeRestorer) Restore(context.Context) (err error) {
+	f.calls++
+
+	return f.err
+}
+
 func TestEnvelopeRoundTrip(t *testing.T) {
 	req := Request{Version: ProtocolVersion, Method: MethodStatus, Params: json.RawMessage(`{"x":1}`)}
 	data, err := json.Marshal(req)
@@ -117,7 +129,7 @@ func TestHandleAuthorization(t *testing.T) {
 	}
 
 	// State-changing methods require admin.
-	for _, m := range []Method{MethodEnable, MethodDisable} {
+	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRestore} {
 		if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: m}); resp.OK ||
 			resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s non-admin: %+v", m, resp)
@@ -142,6 +154,24 @@ func TestHandleStatusNoState(t *testing.T) {
 	resp := srv.Handle(context.Background(), Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodStatus})
 	if !resp.OK {
 		t.Fatalf("status with no state: %+v", resp)
+	}
+}
+
+func TestHandleRestore(t *testing.T) {
+	r := &fakeRestorer{}
+	srv := NewServer(&fakeLifecycle{}, nil).SetRestorer(r)
+
+	if resp := srv.Handle(context.Background(), Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodRestore}); !resp.OK {
+		t.Fatalf("restore: %+v", resp)
+	}
+	if r.calls != 1 {
+		t.Fatalf("restore calls = %d, want 1", r.calls)
+	}
+
+	// Without a restorer the method is unsupported, not a panic.
+	if resp := NewServer(&fakeLifecycle{}, nil).Handle(context.Background(), Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodRestore}); resp.OK ||
+		resp.Error != ErrUnsupported.Error() {
+		t.Fatalf("restore without handler: %+v", resp)
 	}
 }
 
@@ -226,6 +256,11 @@ func TestClientForbidden(t *testing.T) {
 	err := c.Enable(context.Background())
 	if err == nil || !strings.Contains(err.Error(), ErrForbidden.Error()) {
 		t.Fatalf("Enable as non-admin: err = %v, want forbidden", err)
+	}
+
+	// restore is admin-only too: the read-only status pipe must reject it.
+	if err = c.Restore(context.Background()); err == nil || !strings.Contains(err.Error(), ErrForbidden.Error()) {
+		t.Fatalf("Restore as non-admin: err = %v, want forbidden", err)
 	}
 }
 

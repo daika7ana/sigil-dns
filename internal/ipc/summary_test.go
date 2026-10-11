@@ -168,6 +168,7 @@ func TestPrivilegeTable(t *testing.T) {
 		MethodEnable:        Admin,
 		MethodDisable:       Admin,
 		MethodReload:        Admin,
+		MethodRestore:       Admin,
 	}
 	if len(methodPrivileges) != len(want) {
 		t.Fatalf("privilege table has %d entries, want %d", len(methodPrivileges), len(want))

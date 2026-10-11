@@ -53,3 +53,7 @@ func Dial(ctx context.Context, endpoint string) (conn net.Conn, err error) {
 
 	return d.DialContext(ctx, "unix", endpoint)
 }
+
+// ServerPID has no non-Windows implementation; there is no named-pipe server
+// identity to read.  Callers must treat ok == false as "unverified".
+func ServerPID(net.Conn) (pid uint32, ok bool) { return 0, false }
