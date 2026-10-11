@@ -53,6 +53,13 @@ func main() {
 
 func run(args []string) (err error) {
 	if len(args) == 0 {
+		// A -tags gui build makes the status window the default UI for a
+		// no-argument launch; the console build's gui.Run is a stub, so this
+		// falls back to CLI usage.
+		if guiErr := gui.Run(gui.Config{}); !errors.Is(guiErr, gui.ErrNotBuilt) {
+			return guiErr
+		}
+
 		usage()
 
 		return errors.New("missing command")

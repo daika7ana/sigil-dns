@@ -5,17 +5,27 @@
 # behaviour matches the app.  Idempotent / upgrade-safe: an existing service is
 # stopped and removed before the binary is replaced.
 #
+# Installs both the console binary (CLI + service + --apply helper) and the GUI
+# binary, and drops a Start Menu shortcut to the GUI status window.
+#
 # Usage (from an elevated PowerShell):
 #   .\install.ps1
 #   .\install.ps1 -Source C:\path\to\dns-client.exe
-#
-# The tray UI is a v1.1 feature; this ships the service + CLI only.
+#   .\install.ps1 -DesktopShortcut
 
 [CmdletBinding()]
 param(
     # Path to the dns-client.exe to install.  Defaults to the copy next to the
     # installer's parent directory (as laid out in the release zip).
     [string] $Source,
+
+    # Path to the dns-client-gui.exe to install.  Defaults to the sibling copy
+    # in the release zip.  Optional: a missing GUI binary warns and installs the
+    # service + CLI only.
+    [string] $GuiSource,
+
+    # Also create a Desktop shortcut (a Start Menu shortcut is always created).
+    [switch] $DesktopShortcut,
 
     [string] $InstallDir = (Join-Path $env:ProgramFiles 'dns-client'),
     [string] $DataDir = (Join-Path $env:ProgramData 'dns-client')
@@ -46,6 +56,21 @@ function Invoke-Cli {
     }
 }
 
+function New-GuiShortcut {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Target
+    )
+
+    $shell = New-Object -ComObject WScript.Shell
+    $lnk = $shell.CreateShortcut($Path)
+    $lnk.TargetPath = $Target
+    $lnk.WorkingDirectory = $InstallDir
+    $lnk.IconLocation = "$Target,0"
+    $lnk.Description = 'dns-client status window'
+    $lnk.Save()
+}
+
 Assert-Elevated
 
 if (-not $Source) {
@@ -55,7 +80,12 @@ if (-not (Test-Path -LiteralPath $Source)) {
     throw "dns-client.exe not found at '$Source'. Pass -Source <path-to-exe>."
 }
 
+if (-not $GuiSource) {
+    $GuiSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'dns-client-gui.exe'
+}
+
 $targetExe = Join-Path $InstallDir 'dns-client.exe'
+$guiExe = Join-Path $InstallDir 'dns-client-gui.exe'
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
 # Upgrade path: stop and remove any existing service (stop restores NRPT via the
@@ -84,6 +114,15 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 Write-Host "Installing $Source -> $targetExe"
 Copy-Item -LiteralPath $Source -Destination $targetExe -Force
 
+$guiInstalled = Test-Path -LiteralPath $GuiSource
+if ($guiInstalled) {
+    Write-Host "Installing $GuiSource -> $guiExe"
+    Copy-Item -LiteralPath $GuiSource -Destination $guiExe -Force
+}
+else {
+    Write-Warning "dns-client-gui.exe not found at '$GuiSource'; installing the service + CLI only."
+}
+
 # Seed a default config if none exists (config init ACLs the file + dir).  An
 # existing config is left untouched.
 $configPath = Join-Path $DataDir 'config.yaml'
@@ -101,9 +140,24 @@ if ($LASTEXITCODE -ne 0) {
 Invoke-Cli -Exe $targetExe -CliArgs @('service', 'install')
 Invoke-Cli -Exe $targetExe -CliArgs @('service', 'start')
 
+if ($guiInstalled) {
+    $shortcut = Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'dns-client.lnk'
+    New-GuiShortcut -Path $shortcut -Target $guiExe
+    Write-Host "Created Start Menu shortcut: $shortcut"
+
+    if ($DesktopShortcut) {
+        $desktop = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'dns-client.lnk'
+        New-GuiShortcut -Path $desktop -Target $guiExe
+        Write-Host "Created Desktop shortcut: $desktop"
+    }
+}
+
 Write-Host ''
 Write-Host "dns-client installed."
 Write-Host "  Binary: $targetExe"
+if ($guiInstalled) {
+    Write-Host "  GUI:    $guiExe (Start Menu > dns-client)"
+}
 Write-Host "  Data:   $DataDir"
 Write-Host ''
 Write-Host 'Next steps:'

@@ -27,6 +27,8 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 - **Crash recovery** — a dirty marker forces a restore on the next start, so a
   killed service can never leave the machine pointing at a dead resolver.
 - **Service + CLI** — a single binary runs as the CLI or the Windows service.
+- **GUI status window** — shows the live state and one-click Enable / Disable /
+  Restore, with a single UAC prompt per action and no standing elevated process.
 
 ## Requirements
 
@@ -42,6 +44,9 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 # From an elevated PowerShell
 .\installer\install.ps1
 ```
+
+The installer also places a **Start Menu shortcut** named `dns-client` that
+launches the GUI status window; run it from there any time after install.
 
 **Manual** (from an elevated PowerShell, after building or downloading the
 binary):
@@ -94,6 +99,15 @@ To try the resolver without touching the system:
 dns-client run --upstream https://dns.quad9.net/dns-query
 ```
 
+## GUI
+
+`dns-client-gui.exe` is a small read-only status window. It shows the service
+state (Protected / Not running / Restore needed / Needs attention / Unverified)
+and offers Enable / Disable / Restore, each of which raises exactly one UAC
+prompt — there is no persistent elevated process. Launch it from the Start Menu
+shortcut, or run `dns-client-gui.exe` with no arguments (the GUI binary opens the
+window; `--gui` opens it explicitly). See [docs/GUI.md](docs/GUI.md).
+
 ## CLI reference
 
 ```
@@ -116,6 +130,7 @@ dns-client <command> [flags]
 | `service start` | Start the Windows service. |
 | `service stop` | Stop the Windows service. |
 | `--service` | Run the service host (invoked by the SCM, not by hand). |
+| `--gui` | Run the status window. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
 | `--tray` | Run the tray UI. Requires a `-tags tray` build. Deferred to v1.1. |
 | `help`, `-h`, `--help` | Print usage. |
 
@@ -203,13 +218,23 @@ The repo ships a Docker wrapper so no host Go toolchain is needed:
 dev/go build ./...          # compile check (Linux)
 dev/go test ./...           # unit tests
 GOOS=windows GOARCH=amd64 dev/go build -o dns-client.exe ./cmd/dns-client
+
+# GUI binary (same module, GUI subsystem)
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H windowsgui" -o dns-client-gui.exe ./cmd/dns-client
 ```
 
-Cross-compiling to Windows is pure Go. CI runs on `windows-latest`
-(`.github/workflows/ci.yml`); tagged releases build + optionally sign on
-`windows-latest` (`.github/workflows/release.yml`). The tray UI is **deferred to v1.1**; the
-`--tray` hook and the read-only status pipe exist, but no tray UI is built yet.
-CI additionally runs a `-tags tray` build to keep the tag compiling.
+Cross-compiling to Windows is pure Go. Release builds produce **two binaries**
+from the one module: `dns-client.exe` (console subsystem — CLI, service host,
+and the `--apply` helper) and `dns-client-gui.exe` (GUI subsystem, `-tags gui
+-ldflags "-H windowsgui"` — the status window, still `--apply`-capable). A single
+exe cannot cleanly be both: a console-subsystem GUI leaves a stray console
+window, and a `windowsgui` CLI loses stdout (breaking `dns-client status`). The
+plain console build stays `dns-client.exe` with no gui tag.
+
+CI runs on `windows-latest` (`.github/workflows/ci.yml`); tagged releases build
++ optionally sign on `windows-latest` (`.github/workflows/release.yml`). The tray
+UI remains **deferred to v1.1** — the `--tray` hook exists but no tray UI is
+built. CI additionally runs a `-tags tray` build to keep the tag compiling.
 
 ```sh
 dev/go build -tags tray ./...

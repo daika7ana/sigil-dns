@@ -1,9 +1,9 @@
 # installer/uninstall.ps1 - elevated Windows uninstaller for dns-client.
 #
 # Stops the service, restores interception (best-effort) so no NRPT rule points
-# at a dead resolver, removes the service, and deletes the program files.  By
-# default the data directory (config + state) is kept; pass -RemoveData to delete
-# it too.
+# at a dead resolver, removes the service, deletes the GUI shortcuts, and deletes
+# the program directory (both the console and GUI binaries).  By default the data
+# directory (config + state) is kept; pass -RemoveData to delete it too.
 #
 # Usage (from an elevated PowerShell):
 #   .\uninstall.ps1
@@ -56,6 +56,17 @@ elseif ($null -ne $existingService) {
 }
 else {
     Write-Host 'No installed dns-client service or binary found.'
+}
+
+# Remove the GUI shortcuts (Start Menu + Desktop) created by the installer.
+foreach ($shortcut in @(
+    (Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'dns-client.lnk'),
+    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'dns-client.lnk')
+)) {
+    if (Test-Path -LiteralPath $shortcut) {
+        Remove-Item -Force -LiteralPath $shortcut
+        Write-Host "Removed $shortcut"
+    }
 }
 
 if (Test-Path -LiteralPath $InstallDir) {

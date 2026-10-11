@@ -26,7 +26,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build (windows/amd64, no tray tag)
+      - name: Build (windows/amd64)
         shell: pwsh
         env:
           GOOS: windows
@@ -35,7 +35,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # Console subsystem: CLI + service host + headless --apply helper.
           go build -trimpath -ldflags '-s -w' -o dist/dns-client.exe ./cmd/dns-client
+          # GUI subsystem: same program; no console window; opens the status
+          # window with no arguments. Still --apply-capable for elevation.
+          go build -trimpath -tags gui -ldflags '-s -w -H windowsgui' -o dist/dns-client-gui.exe ./cmd/dns-client
 
       - name: Sign (optional)
         id: sign
@@ -48,7 +52,10 @@ jobs:
 
           $pfxBase64 = $env:WINDOWS_CERT_PFX_BASE64
           $pfxPassword = $env:WINDOWS_CERT_PASSWORD
-          $exe = Join-Path $PWD 'dist/dns-client.exe'
+          $exes = @(
+            (Join-Path $PWD 'dist/dns-client.exe')
+            (Join-Path $PWD 'dist/dns-client-gui.exe')
+          )
 
           if ([string]::IsNullOrWhiteSpace($pfxBase64) -or [string]::IsNullOrWhiteSpace($pfxPassword)) {
             Write-Host '::warning::Signing skipped: set WINDOWS_CERT_PFX_BASE64 and WINDOWS_CERT_PASSWORD repository secrets to sign releases.'
@@ -65,13 +72,15 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($pfxBase64))
           try {
-            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr 'http://timestamp.digicert.com' /f $pfxPath /p $pfxPassword $exe
-            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE)" }
+            foreach ($exe in $exes) {
+              & $signtool.FullName sign /fd SHA256 /td SHA256 /tr 'http://timestamp.digicert.com' /f $pfxPath /p $pfxPassword $exe
+              if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE) for $exe" }
 
-            & $signtool.FullName verify /pa $exe
-            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
+              & $signtool.FullName verify /pa $exe
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE) for $exe" }
 
-            Write-Host "Signed $exe"
+              Write-Host "Signed $exe"
+            }
           }
           finally {
             Remove-Item -Force $pfxPath -ErrorAction SilentlyContinue
@@ -93,6 +102,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $stage 'installer') | Out-Null
 
           Copy-Item 'dist/dns-client.exe'        $stage -Force
+          Copy-Item 'dist/dns-client-gui.exe'    $stage -Force
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force

@@ -50,30 +50,51 @@ try {
         '--bootstrap', '9.9.9.9:53',
         '--state', $state
     )
-    Write-Host "starting: $exe $($enableArgs -join ' ')"
-    $proc = Start-Process -FilePath $exe -ArgumentList $enableArgs -PassThru -NoNewWindow
-    Write-Host "dns-client.exe pid $($proc.Id)"
 
-    # 2. Wait for the NRPT rule; fail fast if the process died.
-    $deadline = (Get-Date).AddSeconds(30)
+    # 2. Start it and wait for the NRPT rule; retry a bounded number of times
+    # because the initial DoH health check can transiently fail on CI runners.
+    $maxAttempts = 3
     $rule = $null
-    while ((Get-Date) -lt $deadline) {
-        if ($proc.HasExited) {
-            throw "dns-client.exe exited early with code $($proc.ExitCode)"
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        Write-Host "starting (attempt $attempt/$maxAttempts): $exe $($enableArgs -join ' ')"
+        $proc = Start-Process -FilePath $exe -ArgumentList $enableArgs -PassThru -NoNewWindow
+        Write-Host "dns-client.exe pid $($proc.Id)"
+
+        # Wait for the NRPT rule; fail fast if the process died.
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) {
+                break
+            }
+
+            $rule = Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -eq $displayName }
+            if ($rule) {
+                break
+            }
+
+            Start-Sleep -Seconds 1
         }
 
-        $rule = Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName -eq $displayName }
         if ($rule) {
             break
         }
 
-        Start-Sleep -Seconds 1
+        if ($attempt -eq $maxAttempts) {
+            if ($proc.HasExited) {
+                throw "dns-client.exe exited early with code $($proc.ExitCode)"
+            }
+            throw "NRPT rule '$displayName' did not appear within 30s"
+        }
+
+        Write-Host "attempt $attempt did not come up (upstream may be transiently unreachable); retrying..."
+        if (-not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+        Remove-OurNrptRule
+        Start-Sleep -Seconds 3
     }
 
-    if (-not $rule) {
-        throw "NRPT rule '$displayName' did not appear within 30s"
-    }
     Write-Host "NRPT rule '$displayName' is active"
 
     # 3. Prove resolution through the system resolver now goes via loopback.
