@@ -18,6 +18,7 @@ import (
 
 	"github.com/daika7ana/dns-client/internal/health"
 	"github.com/daika7ana/dns-client/internal/intercept"
+	"github.com/daika7ana/dns-client/internal/redact"
 	"github.com/daika7ana/dns-client/internal/resolver"
 	"github.com/daika7ana/dns-client/internal/state"
 )
@@ -126,7 +127,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// 5. Flush DNS.
 	l.flush(ctx)
-	l.logger.InfoContext(ctx, "enabled", "upstream", st.Upstream, "health", hr.Detail)
+	l.logger.InfoContext(ctx, "enabled", "upstream", redact.List(l.upstreamsOrDefault()), "health", hr.Detail)
 
 	return nil
 }

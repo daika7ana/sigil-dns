@@ -84,6 +84,20 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 Write-Host "Installing $Source -> $targetExe"
 Copy-Item -LiteralPath $Source -Destination $targetExe -Force
 
+# Seed a default config if none exists (config init ACLs the file + dir).  An
+# existing config is left untouched.
+$configPath = Join-Path $DataDir 'config.yaml'
+if (-not (Test-Path -LiteralPath $configPath)) {
+    Invoke-Cli -Exe $targetExe -CliArgs @('config', 'init')
+}
+
+# Belt-and-suspenders: the data dir holds config + state, which may contain
+# resolver ids.  Restrict it to SYSTEM + Administrators (inheritable).
+icacls $DataDir /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' /grant:r 'Administrators:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to set ACLs on $DataDir (exit $LASTEXITCODE)."
+}
+
 Invoke-Cli -Exe $targetExe -CliArgs @('service', 'install')
 Invoke-Cli -Exe $targetExe -CliArgs @('service', 'start')
 
@@ -93,8 +107,7 @@ Write-Host "  Binary: $targetExe"
 Write-Host "  Data:   $DataDir"
 Write-Host ''
 Write-Host 'Next steps:'
-Write-Host "  1. $targetExe config init          # writes $DataDir\config.yaml"
-Write-Host '  2. Edit config.yaml (set mode: on, pick a provider)'
-Write-Host "  3. $targetExe service stop; $targetExe service start   # apply"
+Write-Host "  1. Edit $configPath (set mode: on, pick a provider)"
+Write-Host "  2. $targetExe service stop; $targetExe service start   # apply"
 Write-Host ''
 Write-Host 'See config.example.yaml in the release zip for sample profiles.'

@@ -286,3 +286,43 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("config.example.yaml does not load: %v", err)
 	}
 }
+
+// TestProfileMetadataRoundTrip checks the display-only provider/variant/protocol
+// fields survive Save/Load/Resolve, are trimmed, and default to empty.
+func TestProfileMetadataRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+
+	c := Default()
+	p := c.Profiles[DefaultProfileName]
+	p.Provider = "  NextDNS  "
+	p.Variant = "ultralow"
+	p.Protocol = "doh"
+	c.Profiles[DefaultProfileName] = p
+
+	if err := c.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	gp := got.Profiles[DefaultProfileName]
+	if gp.Provider != "NextDNS" || gp.Variant != "ultralow" || gp.Protocol != "doh" {
+		t.Fatalf("metadata not preserved: %+v", gp)
+	}
+
+	r, err := Resolve(got, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.Provider != "NextDNS" || r.Variant != "ultralow" || r.Protocol != "doh" {
+		t.Fatalf("metadata not resolved: provider=%q variant=%q protocol=%q", r.Provider, r.Variant, r.Protocol)
+	}
+
+	// A config without metadata still loads (older files).
+	bare := Default()
+	if bare.Profiles[DefaultProfileName].Provider != "" {
+		t.Fatal("default profile should have empty metadata")
+	}
+}

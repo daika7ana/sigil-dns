@@ -63,10 +63,10 @@ feature set of YogaDNS, without a kernel driver.
   and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) and
   adapter DNS writes require. Least privilege remains a future hardening goal
   (service SID + explicit grants) once those operations can be delegated.
-- **Tray**: unelevated user process; reads status over the read-only status pipe; state-changing ops prompt UAC.
-  **Deferred to v1.1** — v1 ships the service + CLI; the `--tray` hook and the read-only status pipe
-  exist, but no tray UI is built yet (see §11).
-- One Go module; one binary with `--service` / `--cli` modes (and a `--tray` hook).
+- **GUI**: unelevated user process; reads sanitized status over the read-only status pipe;
+  state-changing ops go through a one-shot elevated `--apply` helper. Built with **go-gui** — see
+  §15. (Supersedes the earlier "tray" idea; the `--tray` hook is retired.)
+- One Go module; one binary with `--service` / `--cli` / `--gui` (build-tagged) / `--apply` modes.
 
 ---
 
@@ -320,9 +320,8 @@ snapshot, dirty marker, active profile, last health result.
 
 - Dev (Linux): `GOOS=windows GOARCH=amd64 go build ./...` for compile checks + pure-Go unit tests.
   Cannot test adapter/NRPT/service/tray locally → **Windows 11 VM/CI is a phase-1 prerequisite**.
-- Tray (**v1.1**) is gated behind a **build tag** (`tray`) so Linux `go build ./...` never needs a C
-  toolchain. Implementation choice is still open: `fyne.io/systray` (CGO/MinGW) vs a pure-Go Win32
-  tray via `golang.org/x/sys/windows` (`Shell_NotifyIcon`) — v1 defers the decision.
+- GUI is **go-gui** (pure Go, no cgo/WebView2/Node — see §15), gated behind a `gui` **build tag** so
+  the Linux `go build ./...` stays lean; it cross-compiles with the existing Docker wrapper.
   **Release builds run on `windows-latest`** (native Go).
 - Signing: OV code-signing cert (EV only needed for a kernel driver, which we don't ship). GH
   Actions + `signtool`, gated on repository secrets (unsigned artifacts otherwise).
@@ -340,10 +339,12 @@ snapshot, dirty marker, active profile, last health result.
 4. **Service + IPC + drift** — service wrapper, SDDL-locked dual pipes, drift watcher + reconcile
    loop. *(Tray UI deferred to v1.1 — the `--tray` hook and read-only status pipe are in place.)*
 5. **Packaging + signing** — installer, GH Actions release, docs.
+6. **GUI (Phase 6)** — go-gui client (§15): sanitized reads + one-shot elevated apply, profile /
+   rules / lists editing, enable/disable UX, packaging. *Supersedes the earlier "tray" idea.*
 
 ### Cut from v1 (YAGNI — add on demand)
-tray UI (v1.1) · optimistic cache · multi-profile system · scheduled list updates · ARM64 ·
-log-viewer UI · rule-editor UI (YAML only) · `$dnsrewrite` UX.
+optimistic cache · multi-profile system · scheduled list updates · ARM64 · log-viewer UI ·
+rule-editor UI beyond the GUI forms · `$dnsrewrite` UX.
 
 ---
 
@@ -384,6 +385,95 @@ tests only. Set this up first.
 
 ## 14. Why not just wrap dnscrypt-proxy?
 dnscrypt-proxy / AdGuard Home / NextDNS CLI share the same *architecture* (loopback resolver). We
-build because the ask is **service + tray + per-domain rules + blocklists with one-click provider
+build because the ask is **service + GUI + per-domain rules + blocklists with one-click provider
 switching and clean restore** — integration they don't ship. We reuse the hardened engine
 (`dnsproxy`) rather than reimplement it.
+
+---
+
+## 15. GUI (Phase 6) — go-gui
+
+**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.86.0`.** Chosen over Wails and verified
+by a hello-world spike cross-built on Linux and run on Win11 24H2.
+- Rationale: pure Go — **no cgo, no WebView2, no Node/npm**; builds with the existing Docker wrapper
+  (`CGO_ENABLED=0 GOOS=windows GOARCH=amd64`); cgo is needed only for the macOS Metal backend,
+  which is irrelevant here.
+- Rejected: Wails v2 (needs Node + `wails build` on Windows + the WebView2 runtime), Fyne/systray
+  (cgo/MinGW), and the native `Shell_NotifyIcon` tray (superseded by a real window).
+- Risk: go-gui is **pre-1.0** (created 2026-03, ~129★, frequent releases). Pin the version and
+  update deliberately; the GUI is a client, so swapping the shell does not touch the service core.
+
+### 15.1 Client model
+The GUI is a **client of the service** and contains no DNS logic; it links the existing `internal/*`
+packages.
+- **Reads** — the status pipe (`AU`, read-only) grows *sanitized* methods: `info` (protocol/app
+  version, capability bits) and `config_summary` (provider/variant/protocol **labels**, `id_set`
+  bool, profile name, bootstrap IP literals, rule/list **counts** and list **hosts**, filtering +
+  cache settings, `config_valid` with a secret-free error, and a revision token). The provider
+  catalog is rendered **locally** from `internal/providers` (no IPC, no secrets).
+- **Writes** — a **one-shot elevated helper**: the GUI re-launches the *same signed binary*
+  `--apply <staging>` via `ShellExecuteW "runas"`. The helper re-loads and validates the staged patch
+  with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
+  existing admin control pipe (`reload` / `enable` / `disable`). **One UAC prompt per explicit user
+  action**; no persistent broker, no second privileged surface.
+- **Identity** — before trusting reads or sending writes, verify the pipe server *is* the service:
+  `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
+  untrusted and refuse writes (kills pipe-squatting without a nonce).
+- **Config is single-writer**: only the elevated helper writes `config.yaml`; the service never does.
+  `reload` = disable (restore) → enable with last-known-good rollback; no manual restart required.
+
+### 15.2 Sensitive data
+- Resolver ids live **only** in `%ProgramData%\dns-client\config.yaml` (SYSTEM+Administrators).
+- Never on the status pipe, **never logged**, never on argv/environment (argv is cross-process
+  readable). Full-fidelity reads happen only inside the elevated helper.
+- Editing is **replace-only** (empty id field = keep); display is masked (`••••`); no reveal on the AU
+  pipe.
+- `--apply` staging: `%LOCALAPPDATA%\dns-client\staging\<uuid>.bin`, **DPAPI** user-scope, deleted
+  after read.
+- `%LOCALAPPDATA%\dns-client\gui.json` (user scope) holds window geometry, theme, last selection
+  (no id) and a cached last status — never secrets, never an authorization input.
+- Concurrency: `config_summary` carries a revision token (**mtime + size**, *not* a file hash — ids
+  are low-entropy and a hash is brute-forceable); the helper aborts on a revision mismatch.
+
+### 15.3 Security red lines
+1. Control pipe stays `D:P(A;;GA;;;SY)(A;;GA;;;BA)` — **never** `AU`.
+2. Status pipe stays read-only forever (`ReadOnlyAuthorizer` + `SanitizeStatus`); every new method is
+   classified read-only/admin in one table with a test asserting non-admin rejection.
+3. **No AU-reachable config or DNS mutation** (no "validate for me" write surface).
+4. Named pipes only — **no local HTTP/TCP control channel**.
+5. Never send across any pipe: ids, credential-bearing URLs (upstream/user/list), or hashes of
+   secret-bearing files. Only labels, flags, counts, hosts, and non-secret IP literals.
+6. Never secrets on argv/env; staging is DPAPI + user ACL + delete.
+7. The elevated helper never trusts staged input: re-load, re-validate, allowlist fields, fixed
+   config path, atomic + ACL write; ACL failure is a hard error.
+8. **No silent elevation** (no scheduled task / COM broker / "highest privileges" shortcut, no
+   persistent elevated process, no auto-apply).
+9. `config.yaml` and `state.json` remain SYSTEM+Administrators; user-scope files never hold secrets.
+10. Never log secrets (see the Phase-0 redaction fix); audit new log sites.
+11. All config writes go through `internal/config`; `restore` stays config-independent so a corrupt
+    config can never brick recovery.
+12. Verify service identity before trusting reads or sending actions.
+
+### 15.4 Phases
+0. **Preconditions** (no GUI) — ACL `config.yaml` (+ dir); redact upstreams from logs; optional
+   non-secret profile metadata (`provider`/`variant`/`protocol`).
+1. **IPC extension** — `info` + `config_summary` (status pipe), `reload` (control pipe), privilege
+   table + tests.
+2. **go-gui shell** — window, ~2 s status polling, identity check, degraded/stopped/unverified
+   states, `gui.json`.
+3. **Profile view + draft editing** (no elevation) — local catalog, masked id, local validation.
+4. **Elevation + Apply** — DPAPI staging, `--apply` helper, single-UAC UX, revision conflict abort.
+5. **Rules/lists editing + `refresh_lists`**.
+6. **Enable/disable/degrade UX** — toggle, service start via helper, dirty/"Restore now" banner.
+7. **Packaging** — build the go-gui binary (no cgo), installer ships the GUI + shortcut, signing,
+   version-mismatch warning via `info`.
+
+Build: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build` (no cgo anywhere). The GUI lives behind a
+`gui` build tag (like `tray`) so the Linux `go build ./...` stays lean; the `--apply` helper mode is
+always present and headless.
+
+### 15.5 Verification (per phase, Windows VM/CI gated)
+Planted id never appears in `config_summary` JSON or any log; a non-admin cannot connect to the
+control pipe; `reload` swaps live resolution (dig via loopback); UAC-cancel changes nothing; a
+tampered staging file is rejected with no write; a user process cannot read `config.yaml`; a squatted
+`status` pipe is detected as unverified; `disable` works with a corrupt config.

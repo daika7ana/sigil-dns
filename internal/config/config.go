@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/daika7ana/dns-client/internal/resolver"
+	"github.com/daika7ana/dns-client/internal/winacl"
 
 	"gopkg.in/yaml.v3"
 )
@@ -66,12 +67,20 @@ type Filtering struct {
 }
 
 // Profile is one named upstream configuration.
+//
+// Provider, Variant, and Protocol are optional, display-only metadata (for
+// example "NextDNS", "ultralow", "doh").  They are never used for resolution and
+// are never derived from the upstream URL; they exist so a GUI can label a
+// profile without parsing secrets out of it.  Older configs simply omit them.
 type Profile struct {
 	Cache     *Cache      `yaml:"cache"`
 	Upstreams []string    `yaml:"upstreams"`
 	Bootstrap []string    `yaml:"bootstrap"`
 	PerDomain []PerDomain `yaml:"per_domain"`
 	Filtering Filtering   `yaml:"filtering"`
+	Provider  string      `yaml:"provider,omitempty"`
+	Variant   string      `yaml:"variant,omitempty"`
+	Protocol  string      `yaml:"protocol,omitempty"`
 }
 
 // Config is the top-level configuration.
@@ -141,7 +150,9 @@ func Load(path string) (c *Config, err error) {
 	return c, nil
 }
 
-// Save writes the config at path atomically.
+// Save writes the config at path atomically, then ACLs the file and its
+// directory (SYSTEM + Administrators on Windows).  An ACL failure is a hard
+// error: the config may contain resolver ids.
 func (c *Config) Save(path string) (err error) {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = SchemaVersion
@@ -159,6 +170,12 @@ func (c *Config) Save(path string) (err error) {
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
+	}
+
+	// Restrict the directory before the temp file is created in it, so the temp
+	// does not inherit a permissive ACL.
+	if err = winacl.SecureDir(dir); err != nil {
+		return fmt.Errorf("securing config dir: %w", err)
 	}
 
 	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
@@ -182,6 +199,11 @@ func (c *Config) Save(path string) (err error) {
 	}
 	if err = os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("renaming config: %w", err)
+	}
+
+	// Protect the final path.
+	if err = winacl.SecureFile(path); err != nil {
+		return fmt.Errorf("securing config file: %w", err)
 	}
 
 	return nil
@@ -221,6 +243,12 @@ func (c *Config) normalize() {
 			p.Cache.SizeBytes = DefaultCacheSizeBytes
 		}
 		p.filteringDefaults()
+
+		// Display-only metadata: trim only, never validate.
+		p.Provider = strings.TrimSpace(p.Provider)
+		p.Variant = strings.TrimSpace(p.Variant)
+		p.Protocol = strings.TrimSpace(p.Protocol)
+
 		c.Profiles[name] = p
 	}
 }
@@ -324,6 +352,9 @@ type Resolved struct {
 	PerDomain   []PerDomain
 	Cache       Cache
 	Filtering   Filtering
+	Provider    string
+	Variant     string
+	Protocol    string
 }
 
 // Resolve applies the precedence flags > config > defaults.  A nil cfg means no
@@ -352,6 +383,9 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	r.PerDomain = p.PerDomain
 	p.filteringDefaults()
 	r.Filtering = p.Filtering
+	r.Provider = strings.TrimSpace(p.Provider)
+	r.Variant = strings.TrimSpace(p.Variant)
+	r.Protocol = strings.TrimSpace(p.Protocol)
 
 	if ov.Upstream != "" {
 		r.Upstreams = splitList(ov.Upstream)

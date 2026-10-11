@@ -20,6 +20,13 @@ profiles:
       - 149.112.112.112
       - "2620:fe::fe"
       - "2620:fe::9"
+
+    # Optional display-only metadata (never used for resolution; older configs
+    # omit it).  Lets a GUI label the profile without parsing the upstream URL.
+    provider: Quad9
+    variant: secure
+    protocol: doh
+
     cache:
       enabled: true
       size_bytes: 67108864   # 64 MiB

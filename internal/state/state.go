@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/daika7ana/dns-client/internal/winacl"
 )
 
 // SchemaVersion is the current state file schema version.  Bump it on any
@@ -192,9 +194,17 @@ func syncDir(dir string) {
 }
 
 // secure restricts the state file (and its directory) to SYSTEM and
-// Administrators.  It is implemented per-platform: a real ACL via
-// SetSecurityInfo on Windows, a no-op elsewhere.  Both are provided in
-// state_secure_*.go.
+// Administrators via the shared winacl helper (a no-op off Windows).
+func secure(path string) (err error) {
+	if err = winacl.SecureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("securing state dir: %w", err)
+	}
+	if err = winacl.SecureFile(path); err != nil {
+		return fmt.Errorf("securing state file: %w", err)
+	}
+
+	return nil
+}
 
 // Lock is a cross-platform single-instance guard backed by an exclusive lock
 // file containing the owning pid.

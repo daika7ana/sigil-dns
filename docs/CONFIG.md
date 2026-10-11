@@ -36,6 +36,15 @@ resolved profile's values at runtime.
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
 | `filtering` | block | disabled | See below. |
+| `provider` | string | empty | Optional, display-only. Never used for resolution. |
+| `variant` | string | empty | Optional, display-only. Never used for resolution. |
+| `protocol` | string | empty | Optional, display-only. Never used for resolution. |
+
+`provider`, `variant`, and `protocol` are free-form labels (for example
+`NextDNS`, `ultralow`, `doh`). They are trimmed but otherwise unvalidated, are
+never derived from the upstream URL, and do not affect resolution. They exist so
+a GUI can show a friendly profile name without parsing secrets out of the
+upstream.
 
 ### `cache`
 
