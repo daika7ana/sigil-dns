@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Run Go inside the pinned container (no host toolchain required).
+#
+#   dev/go build ./...
+#   dev/go test ./...
+#   GOOS=windows GOARCH=amd64 dev/go build ./...
+#
+# The module cache is kept in the named volume "go-mod-cache" across runs.
+set -eu
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+args=(--rm -v "$root":/w -w /w -v go-mod-cache:/go)
+[[ -n "${GOOS:-}"      ]] && args+=(-e GOOS)
+[[ -n "${GOARCH:-}"    ]] && args+=(-e GOARCH)
+[[ -n "${CGO_ENABLED:-}" ]] && args+=(-e CGO_ENABLED)
+
+# The repo is owned by the host user while the container runs as root, so git
+# refuses to read it ("dubious ownership") and `go build` cannot stamp VCS info.
+# Mark the mount safe before running go.
+exec docker run "${args[@]}" golang:1.26 sh -c '
+  git config --global --add safe.directory /w 2>/dev/null || true
+  exec go "$@"
+' _ "$@"
