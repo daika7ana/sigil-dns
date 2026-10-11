@@ -112,6 +112,13 @@ func TestValidationErrors(t *testing.T) {
 				PerDomain: []PerDomain{{Domains: nil, Upstream: ""}},
 			}
 		}},
+		{"bad block_response", func(c *Config) {
+			c.Profiles["default"] = Profile{
+				Upstreams: []string{"x"},
+				Cache:     &Cache{Enabled: true, SizeBytes: 1024},
+				Filtering: Filtering{BlockResponse: "1.2.3.4"},
+			}
+		}},
 		{"bad filtering list", func(c *Config) {
 			c.Profiles["default"] = Profile{
 				Upstreams: []string{"x"},
@@ -165,6 +172,7 @@ func TestResolvePrecedence(t *testing.T) {
 				Upstreams: []string{"https://cfg-other"},
 				Bootstrap: []string{"2.2.2.2"},
 				Cache:     &Cache{Enabled: false, SizeBytes: 2 << 20},
+				PerDomain: []PerDomain{{Domains: []string{"corp.example"}, Upstream: "tls://10.0.0.1"}},
 			},
 		},
 	}
@@ -219,6 +227,9 @@ func TestResolvePrecedence(t *testing.T) {
 		if r.Cache.Enabled {
 			t.Errorf("cache should follow the selected profile: %+v", r.Cache)
 		}
+		if len(r.PerDomain) != 1 || r.PerDomain[0].Upstream != "tls://10.0.0.1" {
+			t.Errorf("per_domain should follow the selected profile: %+v", r.PerDomain)
+		}
 	})
 
 	t.Run("nil config uses defaults", func(t *testing.T) {
@@ -228,6 +239,12 @@ func TestResolvePrecedence(t *testing.T) {
 		}
 		if len(r.Upstreams) == 0 || len(r.Bootstrap) == 0 {
 			t.Errorf("defaults not applied: %+v", r)
+		}
+		if r.Filtering.BlockResponse != "0.0.0.0" || r.Filtering.BlockTTL == 0 {
+			t.Errorf("filtering defaults not applied: %+v", r.Filtering)
+		}
+		if r.Filtering.Enabled {
+			t.Errorf("filtering should default off: %+v", r.Filtering)
 		}
 	})
 

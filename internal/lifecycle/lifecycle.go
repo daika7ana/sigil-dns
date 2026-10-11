@@ -28,6 +28,8 @@ type Config struct {
 	StatePath      string
 	Upstreams      []string
 	Bootstrap      []string
+	Rules          []resolver.Rule
+	Filter         resolver.FilterConfig
 	Listen         []string
 	CacheSizeBytes int
 	CacheDisabled  bool
@@ -266,6 +268,8 @@ func (l *Lifecycle) newResolver() (res *resolver.Resolver, err error) {
 		Logger:         l.logger,
 		Upstreams:      l.upstreamsOrDefault(),
 		Bootstrap:      l.bootstrapOrDefault(),
+		Rules:          l.cfg.Rules,
+		Filter:         l.cfg.Filter,
 		Listen:         l.cfg.Listen,
 		CacheSizeBytes: l.cfg.CacheSizeBytes,
 		CacheDisabled:  l.cfg.CacheDisabled,

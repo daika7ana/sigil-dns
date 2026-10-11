@@ -4,6 +4,7 @@ go 1.26.9
 
 require (
 	github.com/AdguardTeam/dnsproxy v0.86.0
+	github.com/AdguardTeam/urlfilter v0.23.4
 	github.com/miekg/dns v1.1.72
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -13,6 +14,7 @@ require (
 	github.com/AdguardTeam/golibs v0.35.13 // indirect
 	github.com/ameshkov/dnsstamps v1.0.3 // indirect
 	github.com/bluele/gcache v0.0.2 // indirect
+	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect

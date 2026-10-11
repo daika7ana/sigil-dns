@@ -12,10 +12,12 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/proxy"
 	"github.com/AdguardTeam/dnsproxy/upstream"
+	"github.com/daika7ana/dns-client/internal/filter"
 	"github.com/miekg/dns"
 )
 
@@ -41,14 +43,60 @@ const (
 // DefaultListen is the dual-stack loopback listener set.
 var DefaultListen = []string{"127.0.0.1:53", "[::1]:53"}
 
+// Block-response modes for filtering.
+const (
+	// BlockResponseZero answers blocked A/AAAA queries with 0.0.0.0 and ::.
+	BlockResponseZero = "0.0.0.0"
+
+	// BlockResponseNXDOMAIN answers blocked queries with NXDOMAIN.
+	BlockResponseNXDOMAIN = "nxdomain"
+
+	// DefaultBlockTTL is the default TTL for hand-built filtered responses.
+	DefaultBlockTTL uint32 = 3600
+)
+
+// FilterList is one filter-list source (URL or file path).
+type FilterList struct {
+	ID     string
+	Source string
+}
+
+// FilterConfig configures DNS filtering.
+type FilterConfig struct {
+	BlockResponse string
+	Lists         []FilterList
+	TTL           uint32
+	Enabled       bool
+}
+
+// Rule is a per-domain routing rule (dnsmasq style).  Domains use the dnsmasq
+// conventions: an empty string means unqualified (single-label) names only, a
+// "*.sub.domain" entry matches subdomains but not the base domain, and an
+// Upstream of "#" excludes the domains from any reserved upstream so they fall
+// back to the default pool.
+type Rule struct {
+	Domains  []string
+	Upstream string
+}
+
 // Config configures a Resolver.
 type Config struct {
 	Logger         *slog.Logger
 	Upstreams      []string
 	Bootstrap      []string
+	Rules          []Rule
+	Filter         FilterConfig
 	Listen         []string
 	CacheSizeBytes int
 	CacheDisabled  bool
+}
+
+// filterState is the atomically-swappable filtering state.
+type filterState struct {
+	engine        *filter.Engine
+	blockResponse string
+	sum           [32]byte
+	ttl           uint32
 }
 
 // Resolver is a running (or startable) loopback DNS resolver.
@@ -58,6 +106,7 @@ type Resolver struct {
 	handler       *probeHandler
 	proxy         *proxy.Proxy
 	bootstrap     []*upstream.UpstreamResolver
+	filterState   atomic.Pointer[filterState]
 	listen        []string
 	cacheSize     int
 	cacheDisabled bool
@@ -119,9 +168,102 @@ func New(cfg Config) (r *Resolver, err error) {
 	}
 
 	r.upstreamConf = &proxy.UpstreamConfig{Upstreams: ups}
-	r.handler = &probeHandler{synthetic: SyntheticName()}
+
+	if len(cfg.Rules) > 0 {
+		var rulesConf *proxy.UpstreamConfig
+		rulesConf, err = parseRules(cfg.Rules, opts)
+		if err != nil {
+			closeUpstreams(ups)
+			_ = r.closeBootstrap()
+
+			return nil, err
+		}
+
+		// Rules are fixed for the resolver's lifetime; a rule change means a
+		// restart, so there is no live cache to flush here (ClearCache covers
+		// runtime changes).
+		r.upstreamConf.DomainReservedUpstreams = rulesConf.DomainReservedUpstreams
+		r.upstreamConf.SpecifiedDomainUpstreams = rulesConf.SpecifiedDomainUpstreams
+		r.upstreamConf.SubdomainExclusions = rulesConf.SubdomainExclusions
+	}
+
+	r.handler = &probeHandler{synthetic: SyntheticName(), state: &r.filterState}
+	if cfg.Filter.Enabled && len(cfg.Filter.Lists) > 0 {
+		if err = r.reloadFilter(context.Background(), cfg.Filter); err != nil {
+			closeUpstreams(ups)
+			_ = r.closeBootstrap()
+
+			return nil, err
+		}
+	}
 
 	return r, nil
+}
+
+// ReloadFilter rebuilds the filter engine from fc and flushes the DNS cache.
+// It is a no-op (with no re-parse) when the list contents are unchanged.
+func (r *Resolver) ReloadFilter(ctx context.Context, fc FilterConfig) (err error) {
+	return r.reloadFilter(ctx, fc)
+}
+
+// reloadFilter loads the lists and swaps in a new filter state.
+func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error) {
+	if !fc.Enabled || len(fc.Lists) == 0 {
+		r.setFilterState(nil)
+		r.ClearCache()
+
+		return nil
+	}
+
+	lists := make([]filter.List, 0, len(fc.Lists))
+	for _, l := range fc.Lists {
+		lists = append(lists, filter.List{ID: l.ID, Source: l.Source})
+	}
+
+	raw, sum, err := filter.LoadAll(ctx, lists)
+	if err != nil {
+		return fmt.Errorf("loading filter lists: %w", err)
+	}
+	if len(raw) == 0 {
+		r.setFilterState(nil)
+
+		return nil
+	}
+
+	ttl := fc.TTL
+	if ttl == 0 {
+		ttl = DefaultBlockTTL
+	}
+
+	// Skip re-parsing unchanged content.
+	if cur := r.filterState.Load(); cur != nil && cur.sum == sum &&
+		cur.blockResponse == fc.BlockResponse && cur.ttl == ttl {
+		return nil
+	}
+
+	eng, err := filter.New(raw)
+	if err != nil {
+		return fmt.Errorf("building filter engine: %w", err)
+	}
+
+	r.setFilterState(&filterState{
+		engine:        eng,
+		blockResponse: fc.BlockResponse,
+		sum:           sum,
+		ttl:           ttl,
+	})
+	r.ClearCache()
+
+	return nil
+}
+
+// setFilterState swaps in st, closing the previous engine.  Reload is expected
+// to be called while idle; a request in flight may briefly use the old engine.
+func (r *Resolver) setFilterState(st *filterState) {
+	old := r.filterState.Swap(st)
+	if old != nil && old.engine != nil {
+		_ = old.engine.Close()
+	}
 }
 
 // closeUpstreams closes a partially built upstream list.
@@ -129,6 +271,64 @@ func closeUpstreams(ups []upstream.Upstream) {
 	for _, u := range ups {
 		_ = u.Close()
 	}
+}
+
+// parseRules converts structured rules into a proxy.UpstreamConfig holding only
+// the per-domain upstreams.  The maps are built by dnsproxy's own dnsmasq
+// parser (proxy.ParseUpstreamsConfig, exported in v0.86.0), so the matching
+// semantics — more-specific-wins, //, *.sub.domain, and # exclusions — are
+// exactly dnsproxy's.
+func parseRules(rules []Rule, opts *upstream.Options) (conf *proxy.UpstreamConfig, err error) {
+	lines, err := rulesToLines(rules)
+	if err != nil {
+		return nil, err
+	}
+
+	conf, err = proxy.ParseUpstreamsConfig(lines, opts)
+	if err != nil {
+		if conf != nil {
+			_ = conf.Close()
+		}
+
+		return nil, fmt.Errorf("parsing per-domain rules: %w", err)
+	}
+
+	if len(conf.Upstreams) > 0 {
+		// Every generated line carries a domain list, so this cannot happen;
+		// fail loudly rather than silently add a default upstream.
+		_ = conf.Close()
+
+		return nil, errors.New("internal error: per-domain rule without domains")
+	}
+
+	return conf, nil
+}
+
+// rulesToLines renders structured rules in dnsmasq syntax:
+// "[/domain1/domain2/]upstream".  An empty domain entry becomes the unqualified
+// (//) form; a "#" upstream is an exclusion.
+func rulesToLines(rules []Rule) (lines []string, err error) {
+	for i, rule := range rules {
+		if strings.TrimSpace(rule.Upstream) == "" {
+			return nil, fmt.Errorf("rule %d: empty upstream", i)
+		}
+		if len(rule.Domains) == 0 {
+			return nil, fmt.Errorf("rule %d: no domains", i)
+		}
+
+		domains := make([]string, len(rule.Domains))
+		for j, d := range rule.Domains {
+			if strings.Contains(d, "/") {
+				return nil, fmt.Errorf("rule %d: domain %q contains %q", i, d, "/")
+			}
+			// Accept both "example.com" and "example.com.".
+			domains[j] = strings.TrimSuffix(strings.TrimSpace(d), ".")
+		}
+
+		lines = append(lines, "[/"+strings.Join(domains, "/")+"/]"+rule.Upstream)
+	}
+
+	return lines, nil
 }
 
 // SyntheticName returns a per-process random name that only this resolver's
@@ -266,6 +466,7 @@ func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 		r.upstreamConf = nil
 	}
 	errs = append(errs, r.closeBootstrap())
+	r.setFilterState(nil)
 
 	return errors.Join(errs...)
 }
@@ -281,12 +482,14 @@ func (r *Resolver) closeBootstrap() (err error) {
 	return errors.Join(errs...)
 }
 
-// probeHandler answers the synthetic probe name itself and forwards everything
-// else to the default resolver via Proxy.Resolve.  Resolve must be called
-// exactly once per request to avoid the double-forwarding trap; synthetic
-// names short-circuit before it.
+// probeHandler answers the synthetic probe name itself, applies DNS filtering,
+// and forwards everything else to the default resolver via Proxy.Resolve.
+// Order is fixed: synthetic short-circuit, then filter, then Resolve exactly
+// once (filtering must run before Resolve, whose internal cache ignores a
+// pre-set dctx.Res).
 type probeHandler struct {
 	synthetic string
+	state     *atomic.Pointer[filterState]
 }
 
 // ServeDNS implements proxy.Handler.
@@ -296,6 +499,17 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 		dctx.Res = probeResponse(req)
 
 		return nil
+	}
+
+	if len(req.Question) == 1 {
+		if st := h.state.Load(); st != nil && st.engine != nil {
+			q := req.Question[0]
+			if resp := buildFilterResponse(req, st.engine.Match(q.Name, q.Qtype), st); resp != nil {
+				dctx.Res = resp
+
+				return nil
+			}
+		}
 	}
 
 	return p.Resolve(ctx, dctx)

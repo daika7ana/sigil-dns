@@ -142,11 +142,31 @@ func (o options) listenAddrs() (listen []string) {
 
 // lifecycleFor builds a Lifecycle using resolved settings.
 func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
+	rules := make([]resolver.Rule, 0, len(r.PerDomain))
+	for _, pd := range r.PerDomain {
+		rules = append(rules, resolver.Rule{Domains: pd.Domains, Upstream: pd.Upstream})
+	}
+
+	lists := make([]resolver.FilterList, 0, len(r.Filtering.Lists))
+	for _, l := range r.Filtering.Lists {
+		if !l.Enabled {
+			continue
+		}
+		lists = append(lists, resolver.FilterList{ID: l.URL, Source: l.URL})
+	}
+
 	return lifecycle.New(lifecycle.Config{
-		Logger:         logger(),
-		StatePath:      o.statePath,
-		Upstreams:      r.Upstreams,
-		Bootstrap:      r.Bootstrap,
+		Logger:    logger(),
+		StatePath: o.statePath,
+		Upstreams: r.Upstreams,
+		Bootstrap: r.Bootstrap,
+		Rules:     rules,
+		Filter: resolver.FilterConfig{
+			Enabled:       r.Filtering.Enabled,
+			Lists:         lists,
+			BlockResponse: r.Filtering.BlockResponse,
+			TTL:           r.Filtering.BlockTTL,
+		},
 		Listen:         o.listenAddrs(),
 		CacheSizeBytes: r.Cache.SizeBytes,
 		CacheDisabled:  !r.Cache.Enabled,

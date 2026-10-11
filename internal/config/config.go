@@ -57,10 +57,11 @@ type FilterList struct {
 	Enabled bool   `yaml:"enabled"`
 }
 
-// Filtering is the phase-3 filtering configuration.  TODO(phase 3): implement.
+// Filtering is the phase-3 filtering configuration.
 type Filtering struct {
 	Lists         []FilterList `yaml:"lists"`
 	BlockResponse string       `yaml:"block_response"`
+	BlockTTL      uint32       `yaml:"block_ttl"`
 	Enabled       bool         `yaml:"enabled"`
 }
 
@@ -219,7 +220,18 @@ func (c *Config) normalize() {
 		} else if p.Cache.SizeBytes == 0 {
 			p.Cache.SizeBytes = DefaultCacheSizeBytes
 		}
+		p.filteringDefaults()
 		c.Profiles[name] = p
+	}
+}
+
+// filteringDefaults fills in the filtering defaults.
+func (p *Profile) filteringDefaults() {
+	if p.Filtering.BlockResponse == "" {
+		p.Filtering.BlockResponse = resolver.BlockResponseZero
+	}
+	if p.Filtering.BlockTTL == 0 {
+		p.Filtering.BlockTTL = resolver.DefaultBlockTTL
 	}
 }
 
@@ -285,6 +297,14 @@ func (p Profile) validate(name string) (err error) {
 			return fmt.Errorf("profile %q: filtering list %d has no url", name, i)
 		}
 	}
+	switch p.Filtering.BlockResponse {
+	case "", resolver.BlockResponseZero, resolver.BlockResponseNXDOMAIN:
+	default:
+		return fmt.Errorf(
+			"profile %q: invalid block_response %q (want %q or %q)",
+			name, p.Filtering.BlockResponse, resolver.BlockResponseZero, resolver.BlockResponseNXDOMAIN,
+		)
+	}
 
 	return nil
 }
@@ -301,7 +321,9 @@ type Resolved struct {
 	ProfileName string
 	Upstreams   []string
 	Bootstrap   []string
+	PerDomain   []PerDomain
 	Cache       Cache
+	Filtering   Filtering
 }
 
 // Resolve applies the precedence flags > config > defaults.  A nil cfg means no
@@ -327,6 +349,9 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	r.ProfileName = name
 	r.Upstreams = p.Upstreams
 	r.Bootstrap = p.Bootstrap
+	r.PerDomain = p.PerDomain
+	p.filteringDefaults()
+	r.Filtering = p.Filtering
 
 	if ov.Upstream != "" {
 		r.Upstreams = splitList(ov.Upstream)

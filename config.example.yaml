@@ -25,11 +25,37 @@ profiles:
       size_bytes: 67108864   # 64 MiB
 
     # Phase 3 (parsed and validated, not implemented yet).
-    per_domain: []
+    # Per-domain routing (dnsmasq-style).  Notes:
+    #   - a domain matches itself and its subdomains; the most specific rule wins
+    #   - "*.sub.example" matches subdomains only (not sub.example itself)
+    #   - "" (empty) matches unqualified/single-label names only
+    #   - upstream "#" excludes the domains, falling back to the default pool
+    #   - DS queries for "secure.corp.example" are resolved via the parent zone
+    #     ("corp.example"), i.e. the upstream of the delegation's parent
+    per_domain:
+      - domains: ["corp.example"]
+        upstream: "tls://10.0.0.1"
+      # - domains: ["*.internal.example"]
+      #   upstream: "tls://10.0.0.2"
+      # - domains: [""]
+      #   upstream: "tls://10.0.0.3"
+      # - domains: ["public.example"]
+      #   upstream: "#"
     filtering:
       enabled: false
       lists: []
-      block_response: 0.0.0.0
+      block_response: 0.0.0.0    # 0.0.0.0 | nxdomain
+      block_ttl: 3600
+    # Filtering example (opt in; lists default disabled):
+    # filtering:
+    #   enabled: true
+    #   block_response: 0.0.0.0
+    #   block_ttl: 3600
+    #   lists:
+    #     - url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    #       enabled: true
+    #     - url: /path/to/local/hosts.txt
+    #       enabled: true
 
   # ---------------------------------------------------------------------------
   # Example: NextDNS (requires your profile id).
