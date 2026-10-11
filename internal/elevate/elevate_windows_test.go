@@ -31,6 +31,19 @@ func TestDPAPIRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStagingSDDL pins the exact SDDL string (the real security invariant),
+// which is immune to Windows DACL canonicalisation on a file object.
+func TestStagingSDDL(t *testing.T) {
+	got := stagingSDDL("S-1-5-21-1-2-3-1001")
+	want := "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)(A;;GA;;;BA)"
+	if got != want {
+		t.Fatalf("stagingSDDL = %q, want %q", got, want)
+	}
+}
+
+// TestSecureUserOnlyACL asserts the DACL *effect* rather than its exact text:
+// Windows rewrites GENERIC_ALL to FILE_ALL_ACCESS (GA -> FA) on a file object
+// and abbreviates well-known SIDs, so a literal SID/GSDD comparison is brittle.
 func TestSecureUserOnlyACL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "req")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -46,14 +59,37 @@ func TestSecureUserOnlyACL(t *testing.T) {
 	}
 
 	sddl := sd.String()
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if !strings.HasPrefix(sddl, "D:P") {
+		t.Fatalf("DACL is not protected: %q", sddl)
+	}
+	// No broad principals.
+	for _, bad := range []string{";;;WD)", ";;;AU)", ";;;BU)", ";;;AN)"} {
+		if strings.Contains(sddl, bad) {
+			t.Fatalf("DACL %q grants a broad principal (%s)", sddl, bad)
+		}
+	}
+
+	dacl, _, err := sd.DACL()
 	if err != nil {
-		t.Fatalf("GetTokenUser: %v", err)
+		t.Fatalf("DACL: %v", err)
 	}
-	if !strings.Contains(sddl, user.User.Sid.String()) {
-		t.Fatalf("DACL %q does not grant the current user", sddl)
+	if dacl.AceCount != 3 {
+		t.Fatalf("DACL has %d ACEs, want 3 (user, SYSTEM, Administrators): %q", dacl.AceCount, sddl)
 	}
-	if strings.Contains(sddl, ";;;WD)") || strings.Contains(sddl, ";;;AU)") {
-		t.Fatalf("DACL %q grants other users", sddl)
+
+	// Effect: the current user (the same identity the elevated helper runs as)
+	// must still be able to read and write the staging file.
+	h, err := windows.CreateFile(
+		windows.StringToUTF16Ptr(path),
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		uint32(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE),
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("current user cannot open %s for read/write: %v", path, err)
 	}
+	_ = windows.CloseHandle(h)
 }

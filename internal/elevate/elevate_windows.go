@@ -458,18 +458,24 @@ func stagingDir() (dir string, err error) {
 	return filepath.Join(base, "dns-client", "staging"), nil
 }
 
+// stagingSDDL is the protected DACL for staging files: full control to the
+// given user SID plus SYSTEM and Administrators.  The user must be present so
+// the unelevated UI can read the result; SYSTEM/Administrators let the elevated
+// helper (which runs as the same user) serve it.  It is factored out so the
+// exact SDDL is unit-tested without Windows DACL canonicalisation.
+func stagingSDDL(userSID string) (sddl string) {
+	return fmt.Sprintf("D:P(A;;GA;;;%s)(A;;GA;;;SY)(A;;GA;;;BA)", userSID)
+}
+
 // secureUserOnly sets a protected DACL granting the current user, SYSTEM, and
-// Administrators full control.  The user SID is required so the unelevated UI
-// can read the result; SYSTEM/Administrators let the elevated helper serve it.
+// Administrators full control.
 func secureUserOnly(path string) (err error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return fmt.Errorf("reading user sid: %w", err)
 	}
 
-	sddl := fmt.Sprintf("D:P(A;;GA;;;%s)(A;;GA;;;SY)(A;;GA;;;BA)", user.User.Sid.String())
-
-	sd, err := windows.SecurityDescriptorFromString(sddl)
+	sd, err := windows.SecurityDescriptorFromString(stagingSDDL(user.User.Sid.String()))
 	if err != nil {
 		return fmt.Errorf("parsing staging sddl: %w", err)
 	}
