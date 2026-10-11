@@ -5,7 +5,9 @@ go 1.26.9
 require (
 	github.com/AdguardTeam/dnsproxy v0.86.0
 	github.com/AdguardTeam/urlfilter v0.23.4
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/miekg/dns v1.1.72
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -24,7 +26,6 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect

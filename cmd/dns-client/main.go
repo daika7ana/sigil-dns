@@ -26,10 +26,13 @@ import (
 	"time"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/providers"
 	"github.com/daika7ana/dns-client/internal/resolver"
+	"github.com/daika7ana/dns-client/internal/service"
 	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/dns-client/internal/tray"
 )
 
 // Default upstream settings shown in help text.
@@ -67,6 +70,12 @@ func run(args []string) (err error) {
 		return cmdProviders(rest)
 	case "config":
 		return cmdConfig(rest)
+	case "service":
+		return cmdService(rest)
+	case "--service":
+		return cmdServiceHost(rest)
+	case "--tray":
+		return cmdTray(rest)
 	case "-h", "--help", "help":
 		usage()
 
@@ -310,6 +319,56 @@ func cmdConfig(args []string) (err error) {
 	}
 }
 
+// cmdService manages the Windows service via the SCM.
+func cmdService(args []string) (err error) {
+	if len(args) == 0 {
+		return errors.New("usage: service <install|uninstall|start|stop>")
+	}
+
+	switch sub := args[0]; sub {
+	case "install":
+		return service.Install()
+	case "uninstall":
+		return service.Uninstall()
+	case "start":
+		return service.Start()
+	case "stop":
+		return service.Stop()
+	default:
+		return fmt.Errorf("unknown service subcommand %q", sub)
+	}
+}
+
+// cmdServiceHost runs the service host.  It is invoked by the SCM (via the
+// registered "--service" argument), not directly.
+func cmdServiceHost(args []string) (err error) {
+	o, err := parseFlags("service", args)
+	if err != nil {
+		return err
+	}
+
+	resolved, err := o.resolveSettings()
+	if err != nil {
+		return err
+	}
+
+	agent := service.NewAgent(o.lifecycleFor(resolved), logger(), "")
+
+	return service.Run(agent)
+}
+
+// cmdTray starts the tray UI, which talks to the service over IPC.
+func cmdTray(args []string) (err error) {
+	if _, err = parseFlags("tray", args); err != nil {
+		return err
+	}
+
+	ctx, stop := signalContext()
+	defer stop()
+
+	return tray.Run(ctx, ipc.NewClient(""))
+}
+
 func cmdProviders(args []string) (err error) {
 	if len(args) == 0 {
 		return errors.New("usage: providers <list|show>")
@@ -496,6 +555,12 @@ Commands:
   providers show     show generated endpoints for provider[/variant[/protocol]]
   config path        print the resolved config path
   config init        write a default config (never clobbers)
+  service install    register the Windows service (runs as NT SERVICE\dns-client)
+  service uninstall  remove the Windows service
+  service start      start the Windows service
+  service stop       stop the Windows service
+  --service          run the service host (invoked by the SCM)
+  --tray             run the tray UI (requires a -tags tray build)
 
 Flags:
   --upstream <url>      upstream DNS URL (highest precedence)
