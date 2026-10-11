@@ -19,3 +19,17 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+
+  integration-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Build CLI
+        run: go build -o dns-client.exe ./cmd/dns-client
+      - name: NRPT integration test
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/ci-windows-integration.ps1
