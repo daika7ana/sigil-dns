@@ -71,11 +71,12 @@ type Watcher interface {
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
 // and restore on stop.
 type Agent struct {
-	lc             Lifecycle
+	lc             *lockedLifecycle
 	watcher        Watcher
 	logger         *slog.Logger
 	endpoint       string
 	statusEndpoint string
+	configPath     string
 	ln             net.Listener
 	sln            net.Listener
 	cancel         context.CancelFunc
@@ -107,10 +108,39 @@ func (a *Agent) SetWatcher(w Watcher) { a.watcher = w }
 // isolate listeners; production uses the platform default.
 func (a *Agent) SetStatusEndpoint(endpoint string) { a.statusEndpoint = endpoint }
 
+// SetConfigPath sets the config file path served by config_summary.
+func (a *Agent) SetConfigPath(path string) { a.configPath = path }
+
+// SetReloader sets the handler for the admin reload method.
+func (a *Agent) SetReloader(fn func(ctx context.Context) (ipc.ConfigSummary, error)) {
+	a.lc.setReload(fn)
+}
+
 // lockedLifecycle serializes lifecycle calls from the SCM and IPC clients.
 type lockedLifecycle struct {
-	lc Lifecycle
-	mu sync.Mutex
+	reload func(ctx context.Context) (ipc.ConfigSummary, error)
+	lc     Lifecycle
+	mu     sync.Mutex
+}
+
+// setReload installs the reload handler.
+func (l *lockedLifecycle) setReload(fn func(ctx context.Context) (ipc.ConfigSummary, error)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.reload = fn
+}
+
+// Reload implements ipc.Reloader, serialized with the other lifecycle calls.
+func (l *lockedLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.reload == nil {
+		return ipc.ConfigSummary{}, ipc.ErrUnsupported
+	}
+
+	return l.reload(ctx)
 }
 
 // Status implements Lifecycle.
@@ -216,7 +246,7 @@ func (a *Agent) startIPC() (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	control := ipc.NewServer(a.lc, a.logger)
+	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
 			a.logger.Error("ipc control serve stopped", "err", sErr)
@@ -241,7 +271,7 @@ func (a *Agent) startStatusPipe(ctx context.Context) {
 	}
 	a.sln = sln
 
-	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus()
+	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus().SetConfigPath(a.configPath)
 	go func() {
 		if sErr := ipc.Serve(ctx, sln, status, ipc.ReadOnlyAuthorizer); sErr != nil {
 			a.logger.Error("ipc status serve stopped", "err", sErr)

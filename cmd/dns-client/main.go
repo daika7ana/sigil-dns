@@ -65,6 +65,8 @@ func run(args []string) (err error) {
 		return cmdRestore(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "reload":
+		return cmdReload(rest)
 	case "run":
 		return cmdRun(rest)
 	case "providers":
@@ -96,6 +98,7 @@ type options struct {
 	statePath  string
 	configPath string
 	profile    string
+	summary    bool
 }
 
 // parseFlags parses rest for cmd and returns the options.
@@ -107,6 +110,7 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 	fs.StringVar(&o.statePath, "state", "", "state file path")
 	fs.StringVar(&o.configPath, "config", "", "config file path (default "+config.DefaultPath()+")")
 	fs.StringVar(&o.profile, "profile", "", "config profile name (default the config's active profile)")
+	fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
 
 	if err = fs.Parse(rest); err != nil {
 		return o, err
@@ -166,11 +170,12 @@ func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
 	}
 
 	return lifecycle.New(lifecycle.Config{
-		Logger:    logger(),
-		StatePath: o.statePath,
-		Upstreams: r.Upstreams,
-		Bootstrap: r.Bootstrap,
-		Rules:     rules,
+		Logger:      logger(),
+		StatePath:   o.statePath,
+		ProfileName: r.ProfileName,
+		Upstreams:   r.Upstreams,
+		Bootstrap:   r.Bootstrap,
+		Rules:       rules,
 		Filter: resolver.FilterConfig{
 			Enabled:       r.Filtering.Enabled,
 			Lists:         lists,
@@ -253,6 +258,10 @@ func cmdStatus(args []string) (err error) {
 		return err
 	}
 
+	if o.summary {
+		return printConfigSummary(o.configPath)
+	}
+
 	st, err := o.lifecycleForState().Status()
 	if err != nil {
 		if errors.Is(err, state.ErrNoState) {
@@ -268,6 +277,60 @@ func cmdStatus(args []string) (err error) {
 	enc.SetIndent("", "  ")
 
 	return enc.Encode(st)
+}
+
+// printConfigSummary prints the sanitized config summary, preferring the running
+// service's status pipe and falling back to a local, read-only summary.
+func printConfigSummary(configPath string) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if sum, cErr := ipc.NewClient(ipc.StatusEndpoint()).ConfigSummary(ctx); cErr == nil {
+		return printSummary(sum)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil && !errors.Is(err, config.ErrNoConfig) {
+		return printSummary(&ipc.ConfigSummary{
+			ConfigValid: false,
+			ConfigError: ipc.SanitizedConfigError(err),
+			Revision:    ipc.Revision(configPath),
+		})
+	}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+
+	sum := ipc.Summarize(cfg)
+	sum.ConfigValid = true
+	sum.Revision = ipc.Revision(configPath)
+
+	return printSummary(&sum)
+}
+
+// printSummary JSON-encodes a config summary to stdout.
+func printSummary(sum *ipc.ConfigSummary) (err error) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+
+	return enc.Encode(sum)
+}
+
+// cmdReload asks the running service (control pipe) to reload its config.
+func cmdReload(args []string) (err error) {
+	if _, err = parseFlags("reload", args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	sum, err := ipc.NewClient(ipc.DefaultEndpoint()).Reload(ctx)
+	if err != nil {
+		return fmt.Errorf("reload failed (is the dns-client service running?): %w", err)
+	}
+
+	return printSummary(sum)
 }
 
 func cmdRun(args []string) (err error) {
@@ -340,11 +403,22 @@ func cmdService(args []string) (err error) {
 	}
 }
 
+// svcDaemon is the lifecycle surface the service wrapper drives.
+// *lifecycle.Lifecycle satisfies it; tests inject fakes.
+type svcDaemon interface {
+	Status() (st *state.State, err error)
+	Startup(ctx context.Context) (reenable bool, err error)
+	Enable(ctx context.Context) (err error)
+	Disable(ctx context.Context) (err error)
+}
+
 // serviceLifecycle lets the Windows service boot even when the config is
 // corrupt: Startup/Status/Disable work from persisted state alone, while Enable
-// reports a clear error until the config loads.
+// reports a clear error until the config loads.  It also implements reload
+// (SPEC §15.1): swap when idle, or restore + re-enable with rollback when active.
 type serviceLifecycle struct {
-	inner     *lifecycle.Lifecycle
+	inner     svcDaemon
+	build     func() (lc svcDaemon, sum ipc.ConfigSummary, err error)
 	enableErr error
 }
 
@@ -368,6 +442,50 @@ func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 // Disable implements service.Lifecycle.
 func (s *serviceLifecycle) Disable(ctx context.Context) (err error) { return s.inner.Disable(ctx) }
 
+// Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
+func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, err error) {
+	if s.build == nil {
+		return ipc.ConfigSummary{}, errors.New("reload is not configured")
+	}
+
+	newInner, sum, err := s.build()
+	if err != nil {
+		// Keep the current lifecycle; the summary carries the secret-free error.
+		return sum, err
+	}
+
+	st, sErr := s.inner.Status()
+	enabled := sErr == nil && st != nil && st.Mode == state.ModeOn
+
+	if !enabled {
+		// Idle: just replace the in-memory config.
+		s.inner = newInner
+		s.enableErr = nil
+
+		return sum, nil
+	}
+
+	// Active: restore, then enable with the new config; roll back to the
+	// last-known-good config on failure.
+	old := s.inner
+	if err = old.Disable(ctx); err != nil {
+		return sum, fmt.Errorf("reload: disable: %w", err)
+	}
+	if err = newInner.Enable(ctx); err != nil {
+		if rErr := old.Enable(ctx); rErr != nil {
+			// Leave the dirty marker set for crash recovery.
+			return sum, fmt.Errorf("reload: enable failed (%v); rollback also failed: %w", err, rErr)
+		}
+
+		return sum, fmt.Errorf("reload: enable failed, rolled back: %w", err)
+	}
+
+	s.inner = newInner
+	s.enableErr = nil
+
+	return sum, nil
+}
+
 // cmdServiceHost runs the service host.  It is invoked by the SCM (via the
 // registered "--service" argument), not directly.
 func cmdServiceHost(args []string) (err error) {
@@ -376,24 +494,59 @@ func cmdServiceHost(args []string) (err error) {
 		return err
 	}
 
+	// build loads the config and constructs a lifecycle + sanitized summary.
+	build := func() (lc svcDaemon, sum ipc.ConfigSummary, err error) {
+		cfg, lErr := config.Load(o.configPath)
+		if lErr != nil && !errors.Is(lErr, config.ErrNoConfig) {
+			return nil, ipc.ConfigSummary{
+				ConfigValid: false,
+				ConfigError: ipc.SanitizedConfigError(lErr),
+				Revision:    ipc.Revision(o.configPath),
+			}, lErr
+		}
+
+		resolved, rErr := config.Resolve(cfg, config.Overrides{
+			Profile:   o.profile,
+			Upstream:  o.upstream,
+			Bootstrap: o.bootstrap,
+		})
+		if rErr != nil {
+			return nil, ipc.ConfigSummary{
+				ConfigValid: false,
+				ConfigError: "config could not be resolved",
+				Revision:    ipc.Revision(o.configPath),
+			}, rErr
+		}
+
+		effCfg := cfg
+		if effCfg == nil {
+			effCfg = config.Default()
+		}
+		sum = ipc.Summarize(effCfg)
+		sum.ConfigValid = true
+		sum.Revision = ipc.Revision(o.configPath)
+
+		return o.lifecycleFor(resolved), sum, nil
+	}
+
 	// Never refuse to boot on a bad config: always start the host so crash
 	// recovery (restore) and IPC status work, and degrade enable until the
 	// config loads.
-	var lc service.Lifecycle
+	slc := &serviceLifecycle{build: build}
 
-	resolved, rErr := o.resolveSettings()
-	if rErr != nil {
-		logger().Error("config unavailable; service starts degraded", "err", rErr)
+	inner, _, bErr := build()
+	if bErr != nil {
+		logger().Error("config unavailable; service starts degraded", "err", bErr)
 
-		lc = &serviceLifecycle{
-			inner:     o.lifecycleForState(),
-			enableErr: fmt.Errorf("configuration unavailable: %w", rErr),
-		}
+		slc.inner = o.lifecycleForState()
+		slc.enableErr = fmt.Errorf("configuration unavailable: %w", bErr)
 	} else {
-		lc = &serviceLifecycle{inner: o.lifecycleFor(resolved)}
+		slc.inner = inner
 	}
 
-	agent := service.NewAgent(lc, logger(), "")
+	agent := service.NewAgent(slc, logger(), "")
+	agent.SetConfigPath(o.configPath)
+	agent.SetReloader(slc.Reload)
 	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, logger()))
 
 	return service.Run(agent)
@@ -591,7 +744,8 @@ Commands:
   enable             bind, health-check, snapshot, apply interception, run until Ctrl-C
   disable            stop resolver, restore interception, clear dirty marker
   restore            restore interception from persisted state
-  status             print persisted state
+  status             print persisted state (--summary: sanitized config summary)
+  reload             reload config.yaml via the service (admin)
   run                foreground resolver only (dev/CI)
   providers list     list provider presets
   providers show     show generated endpoints for provider[/variant[/protocol]]

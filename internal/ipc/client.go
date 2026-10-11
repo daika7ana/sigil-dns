@@ -13,6 +13,10 @@ import (
 // caller.
 const clientTimeout = 10 * time.Second
 
+// reloadTimeout bounds a reload call, which restores and re-enables interception
+// (health check included).
+const reloadTimeout = 2 * time.Minute
+
 // Client talks to a running dns-client service over the IPC transport.
 type Client struct {
 	endpoint string
@@ -46,6 +50,29 @@ func (c *Client) StatusSummary(ctx context.Context) (dto *StatusDTO, err error) 
 	return dto, err
 }
 
+// Info asks for the service's protocol/app version and capabilities.
+func (c *Client) Info(ctx context.Context) (info *Info, err error) {
+	err = c.call(ctx, MethodInfo, &info)
+
+	return info, err
+}
+
+// ConfigSummary asks for the sanitized config summary.  It is available on both
+// pipes but only ever returns redacted data.
+func (c *Client) ConfigSummary(ctx context.Context) (sum *ConfigSummary, err error) {
+	err = c.call(ctx, MethodConfigSummary, &sum)
+
+	return sum, err
+}
+
+// Reload asks the service (control pipe) to reload its configuration and returns
+// the new summary.
+func (c *Client) Reload(ctx context.Context) (sum *ConfigSummary, err error) {
+	err = c.callTimeout(ctx, MethodReload, &sum, reloadTimeout)
+
+	return sum, err
+}
+
 // Enable asks the service to enable interception.
 func (c *Client) Enable(ctx context.Context) (err error) {
 	return c.call(ctx, MethodEnable, nil)
@@ -56,9 +83,16 @@ func (c *Client) Disable(ctx context.Context) (err error) {
 	return c.call(ctx, MethodDisable, nil)
 }
 
-// call performs one request/response exchange with a bounded timeout.
+// call performs one request/response exchange with the default timeout.
 func (c *Client) call(ctx context.Context, method Method, out any) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, clientTimeout)
+	return c.callTimeout(ctx, method, out, clientTimeout)
+}
+
+// callTimeout performs one request/response exchange bounded by timeout.  The
+// deadline is applied to the connection so a slow or silent server cannot hang
+// the caller.
+func (c *Client) callTimeout(ctx context.Context, method Method, out any, timeout time.Duration) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	conn, err := Dial(ctx, c.endpoint)
@@ -66,6 +100,8 @@ func (c *Client) call(ctx context.Context, method Method, out any) (err error) {
 		return fmt.Errorf("dialing %s: %w", c.endpoint, err)
 	}
 	defer func() { _ = conn.Close() }()
+
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	if err = json.NewEncoder(conn).Encode(Request{Version: ProtocolVersion, Method: method}); err != nil {
 		return fmt.Errorf("sending %s: %w", method, err)

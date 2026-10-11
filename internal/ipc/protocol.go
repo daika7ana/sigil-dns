@@ -1,5 +1,5 @@
 // Package ipc implements the versioned request/response protocol spoken over
-// the dns-client named pipe (SPEC §2, §4.7).
+// the dns-client named pipe (SPEC §2, §4.7, §15).
 //
 // The transport is abstracted so the protocol is testable off Windows: Windows
 // uses a named pipe with a locking SDDL; other platforms use a Unix socket.
@@ -8,36 +8,87 @@ package ipc
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/daika7ana/dns-client/internal/version"
 )
 
 // ProtocolVersion is the current IPC protocol version.  Peers must send it in
 // every request; unknown versions are rejected.
-const ProtocolVersion = 1
+const ProtocolVersion = version.ProtocolVersion
+
+// Capability bits reported by the info method.
+const (
+	// CapInfo marks the info method.
+	CapInfo uint64 = 1 << iota
+
+	// CapConfigSummary marks the config_summary method.
+	CapConfigSummary
+
+	// CapReload marks the admin reload method.
+	CapReload
+)
+
+// Capabilities is the set of capability bits this build supports.
+const Capabilities = CapInfo | CapConfigSummary | CapReload
 
 // Method is an IPC request method.
 type Method string
 
 // Methods.
 const (
-	// MethodStatus is read-only and available to any connected caller.
+	// MethodStatus is read-only.
 	MethodStatus Method = "status"
+
+	// MethodInfo is read-only: protocol/app version and capabilities.
+	MethodInfo Method = "info"
+
+	// MethodConfigSummary is read-only: the sanitized config summary.
+	MethodConfigSummary Method = "config_summary"
 
 	// MethodEnable is state-changing and requires administrator privileges.
 	MethodEnable Method = "enable"
 
 	// MethodDisable is state-changing and requires administrator privileges.
 	MethodDisable Method = "disable"
+
+	// MethodReload is state-changing and requires administrator privileges.
+	MethodReload Method = "reload"
 )
+
+// Privilege classifies a method's required caller identity (SPEC §15.3.2).
+type Privilege int
+
+// Privileges.
+const (
+	// ReadOnly methods may be called by any caller (status pipe).
+	ReadOnly Privilege = iota
+
+	// Admin methods require an administrator/SYSTEM caller (control pipe).
+	Admin
+)
+
+// methodPrivileges is the single source of truth for method authorization.  It
+// is a table so a test can assert every method's classification and that every
+// non-read-only method is rejected for a non-admin caller.
+var methodPrivileges = map[Method]Privilege{
+	MethodStatus:        ReadOnly,
+	MethodInfo:          ReadOnly,
+	MethodConfigSummary: ReadOnly,
+	MethodEnable:        Admin,
+	MethodDisable:       Admin,
+	MethodReload:        Admin,
+}
 
 // valid reports whether m is a known method.
 func (m Method) valid() (ok bool) {
-	switch m {
-	case MethodStatus, MethodEnable, MethodDisable:
-		return true
-	default:
-		return false
-	}
+	_, ok = methodPrivileges[m]
+
+	return ok
 }
+
+// privilege returns the required privilege for m.  It is only meaningful for a
+// valid method.
+func (m Method) privilege() (p Privilege) { return methodPrivileges[m] }
 
 // Request is the JSON envelope of a request.
 type Request struct {
@@ -89,4 +140,7 @@ var (
 
 	// ErrNoAuthorizer is returned by Serve when no Authorizer is supplied.
 	ErrNoAuthorizer = errors.New("no authorizer supplied")
+
+	// ErrUnsupported is returned when a method is not available on this server.
+	ErrUnsupported = errors.New("method not supported by this server")
 )

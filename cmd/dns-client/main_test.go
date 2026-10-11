@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/state"
 )
@@ -35,5 +36,145 @@ func TestServiceLifecycleDegradedEnable(t *testing.T) {
 
 	if _, err = lc.Status(); !errors.Is(err, state.ErrNoState) {
 		t.Fatalf("Status err = %v, want ErrNoState", err)
+	}
+}
+
+// fakeDaemon is an in-memory svcDaemon for reload tests.
+type fakeDaemon struct {
+	st           *state.State
+	enableErr    error
+	disableErr   error
+	enableCalls  int
+	disableCalls int
+}
+
+func (f *fakeDaemon) Status() (st *state.State, err error) { return f.st, nil }
+
+func (f *fakeDaemon) Startup(context.Context) (reenable bool, err error) { return false, nil }
+
+func (f *fakeDaemon) Enable(context.Context) (err error) {
+	f.enableCalls++
+
+	return f.enableErr
+}
+
+func (f *fakeDaemon) Disable(context.Context) (err error) {
+	f.disableCalls++
+
+	return f.disableErr
+}
+
+func TestReloadSwapWhenIdle(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}
+	want := ipc.ConfigSummary{Profile: "default", Provider: "Quad9", ConfigValid: true}
+
+	lc := &serviceLifecycle{
+		inner: old,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, want, nil },
+	}
+
+	sum, err := lc.Reload(context.Background())
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if sum.Provider != "Quad9" {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if old.disableCalls != 0 || next.enableCalls != 0 {
+		t.Fatalf("idle reload should not toggle: disable=%d enable=%d", old.disableCalls, next.enableCalls)
+	}
+	if lc.inner != svcDaemon(next) {
+		t.Fatal("inner was not swapped")
+	}
+}
+
+func TestReloadRestoresAndReenables(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+
+	lc := &serviceLifecycle{
+		inner: old,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{ConfigValid: true}, nil },
+	}
+
+	if _, err := lc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if old.disableCalls != 1 {
+		t.Fatalf("old.Disable calls = %d, want 1", old.disableCalls)
+	}
+	if next.enableCalls != 1 || old.enableCalls != 0 {
+		t.Fatalf("enable calls: next=%d old=%d, want 1/0", next.enableCalls, old.enableCalls)
+	}
+	if lc.inner != svcDaemon(next) {
+		t.Fatal("inner was not swapped after reload")
+	}
+}
+
+func TestReloadRollsBackOnEnableFailure(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new config bad")}
+
+	lc := &serviceLifecycle{
+		inner: old,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	_, err := lc.Reload(context.Background())
+	if err == nil {
+		t.Fatal("Reload should fail when the new config cannot be enabled")
+	}
+	if old.disableCalls != 1 || next.enableCalls != 1 {
+		t.Fatalf("calls: disable=%d nextEnable=%d", old.disableCalls, next.enableCalls)
+	}
+	if old.enableCalls != 1 {
+		t.Fatalf("rollback old.Enable calls = %d, want 1", old.enableCalls)
+	}
+	if lc.inner != svcDaemon(old) {
+		t.Fatal("inner should remain the last-known-good lifecycle")
+	}
+}
+
+func TestReloadRollbackFailure(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("rollback bad")}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new bad")}
+
+	lc := &serviceLifecycle{
+		inner: old,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	if _, err := lc.Reload(context.Background()); err == nil {
+		t.Fatal("Reload should fail")
+	}
+	if lc.inner != svcDaemon(old) {
+		t.Fatal("inner should remain the old lifecycle")
+	}
+}
+
+func TestReloadBuildErrorKeepsCurrent(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	buildErr := errors.New("config corrupt")
+
+	lc := &serviceLifecycle{
+		inner: old,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) {
+			return nil, ipc.ConfigSummary{ConfigValid: false, ConfigError: "config could not be loaded or validated"}, buildErr
+		},
+	}
+
+	sum, err := lc.Reload(context.Background())
+	if !errors.Is(err, buildErr) {
+		t.Fatalf("err = %v, want build error", err)
+	}
+	if sum.ConfigValid || sum.ConfigError == "" {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if old.disableCalls != 0 {
+		t.Fatal("a build failure must not touch the running lifecycle")
+	}
+	if lc.inner != svcDaemon(old) {
+		t.Fatal("inner should be unchanged")
 	}
 }

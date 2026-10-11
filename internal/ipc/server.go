@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/dns-client/internal/version"
 )
 
 // Robustness limits for the IPC server (M7).
@@ -46,6 +48,13 @@ type Lifecycle interface {
 	Disable(ctx context.Context) (err error)
 }
 
+// Reloader optionally handles the admin reload method.  It is set on the control
+// pipe only.
+type Reloader interface {
+	// Reload reloads the configuration and returns the new summary.
+	Reload(ctx context.Context) (sum ConfigSummary, err error)
+}
+
 // Authorizer derives the identity of a connected peer.  It is injected by the
 // transport (or by tests); it must never trust the request body.
 type Authorizer func(conn net.Conn) Caller
@@ -56,13 +65,15 @@ type Authorizer func(conn net.Conn) Caller
 func AdminAuthorizer(net.Conn) Caller { return Caller{Admin: true} }
 
 // ReadOnlyAuthorizer denies administrative privileges.  The status pipe is
-// served with this authorizer, so enable/disable are rejected.
+// served with this authorizer, so enable/disable/reload are rejected.
 func ReadOnlyAuthorizer(net.Conn) Caller { return Caller{Admin: false} }
 
 // Server dispatches IPC requests.
 type Server struct {
 	lc             Lifecycle
+	reloader       Reloader
 	logger         *slog.Logger
+	configPath     string
 	requestTimeout time.Duration
 	maxConns       int
 	sanitize       bool
@@ -90,6 +101,21 @@ func (s *Server) SanitizeStatus() *Server {
 	return s
 }
 
+// SetConfigPath sets the config file path used by config_summary.  The service
+// sets it to the fixed default path.
+func (s *Server) SetConfigPath(path string) *Server {
+	s.configPath = path
+
+	return s
+}
+
+// SetReloader sets the reload handler (control pipe only).
+func (s *Server) SetReloader(r Reloader) *Server {
+	s.reloader = r
+
+	return s
+}
+
 // Handle validates and dispatches a single request.  It never panics on
 // untrusted input.
 func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp Response) {
@@ -100,34 +126,25 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 		return errorResponse(ErrMethod)
 	}
 
-	// Defence in depth: the SDDL is the primary boundary, but reject
-	// state-changing methods from non-admin callers here too.
-	if (req.Method == MethodEnable || req.Method == MethodDisable) && !caller.Admin {
+	// Single authorization table (SPEC §15.3.2): the SDDL is the primary
+	// boundary, but reject admin methods from non-admin callers here too.
+	if req.Method.privilege() == Admin && !caller.Admin {
 		return errorResponse(ErrForbidden)
 	}
 
 	switch req.Method {
 	case MethodStatus:
-		st, err := s.lc.Status()
-		if err != nil {
-			if errors.Is(err, state.ErrNoState) {
-				return okResponse(nil)
-			}
+		return s.handleStatus()
 
-			return errorResponse(err)
-		}
+	case MethodInfo:
+		return marshalOK(Info{
+			ProtocolVersion: ProtocolVersion,
+			AppVersion:      version.Version,
+			Capabilities:    Capabilities,
+		})
 
-		var data []byte
-		if s.sanitize {
-			data, err = json.Marshal(sanitizeStatus(st))
-		} else {
-			data, err = json.Marshal(st)
-		}
-		if err != nil {
-			return errorResponse(err)
-		}
-
-		return okResponse(data)
+	case MethodConfigSummary:
+		return marshalOK(s.configSummary())
 
 	case MethodEnable:
 		if err := s.lc.Enable(ctx); err != nil {
@@ -143,9 +160,80 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 
 		return okResponse(nil)
 
+	case MethodReload:
+		if s.reloader == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		sum, err := s.reloader.Reload(ctx)
+		if err != nil {
+			return errorResponse(err)
+		}
+
+		return marshalOK(sum)
+
 	default:
 		return errorResponse(ErrMethod)
 	}
+}
+
+// handleStatus returns the full or sanitized status.
+func (s *Server) handleStatus() (resp Response) {
+	st, err := s.lc.Status()
+	if err != nil {
+		if errors.Is(err, state.ErrNoState) {
+			return okResponse(nil)
+		}
+
+		return errorResponse(err)
+	}
+
+	if s.sanitize {
+		return marshalOK(sanitizeStatus(st))
+	}
+
+	data, err := json.Marshal(st)
+	if err != nil {
+		return errorResponse(err)
+	}
+
+	return okResponse(data)
+}
+
+// configSummary loads the config from s.configPath and returns a sanitized
+// summary.  A missing file falls back to defaults (valid); a broken file yields
+// a secret-free error summary.
+func (s *Server) configSummary() (sum ConfigSummary) {
+	path := s.configPath
+
+	cfg, err := config.Load(path)
+	if err != nil && !errors.Is(err, config.ErrNoConfig) {
+		return ConfigSummary{
+			ConfigValid: false,
+			ConfigError: SanitizedConfigError(err),
+			Revision:    Revision(path),
+		}
+	}
+
+	if cfg == nil {
+		cfg = config.Default()
+	}
+
+	sum = Summarize(cfg)
+	sum.ConfigValid = true
+	sum.Revision = Revision(path)
+
+	return sum
+}
+
+// marshalOK marshals v into a success response.
+func marshalOK(v any) (resp Response) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return errorResponse(err)
+	}
+
+	return okResponse(data)
 }
 
 // sanitizeStatus converts persisted state into the safe status DTO.

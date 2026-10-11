@@ -18,7 +18,6 @@ import (
 
 	"github.com/daika7ana/dns-client/internal/health"
 	"github.com/daika7ana/dns-client/internal/intercept"
-	"github.com/daika7ana/dns-client/internal/redact"
 	"github.com/daika7ana/dns-client/internal/resolver"
 	"github.com/daika7ana/dns-client/internal/state"
 )
@@ -27,6 +26,7 @@ import (
 type Config struct {
 	Logger         *slog.Logger
 	StatePath      string
+	ProfileName    string
 	Upstreams      []string
 	Bootstrap      []string
 	Rules          []resolver.Rule
@@ -127,7 +127,10 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// 5. Flush DNS.
 	l.flush(ctx)
-	l.logger.InfoContext(ctx, "enabled", "upstream", redact.List(l.upstreamsOrDefault()), "health", hr.Detail)
+	// Never log upstreams: a DoT/DoQ URL carries the resolver id as a hostname
+	// label, so even redacted scheme+host leaks it.  Log the profile name and
+	// the upstream count instead.
+	l.logger.InfoContext(ctx, "enabled", "profile", l.cfg.ProfileName, "upstreams", len(l.upstreamsOrDefault()), "health", hr.Detail)
 
 	return nil
 }
