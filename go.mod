@@ -5,6 +5,7 @@ go 1.26.9
 require (
 	github.com/AdguardTeam/dnsproxy v0.86.0
 	github.com/miekg/dns v1.1.72
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -12,6 +13,7 @@ require (
 	github.com/AdguardTeam/golibs v0.35.13 // indirect
 	github.com/ameshkov/dnsstamps v1.0.3 // indirect
 	github.com/bluele/gcache v0.0.2 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect

@@ -72,9 +72,8 @@ func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
 
 	r, err := New(Config{
 		Logger:    slog.Default(),
-		Upstream:  upstreamAddr,
+		Upstreams: []string{upstreamAddr},
 		Listen:    []string{"127.0.0.1:0"},
-		Bootstrap: "", // IP upstream needs no bootstrap
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

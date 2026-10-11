@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/daika7ana/dns-client/internal/health"
@@ -25,10 +26,11 @@ import (
 type Config struct {
 	Logger         *slog.Logger
 	StatePath      string
-	Upstream       string
-	Bootstrap      string
+	Upstreams      []string
+	Bootstrap      []string
 	Listen         []string
 	CacheSizeBytes int
+	CacheDisabled  bool
 }
 
 // Lifecycle owns the resolver, state store, and interception controller.
@@ -103,7 +105,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		Intercept:     state.MechanismNRPT,
 		Snapshot:      &state.Snapshot{},
 		Dirty:         true,
-		Upstream:      l.upstreamOrDefault(),
+		Upstream:      strings.Join(l.upstreamsOrDefault(), ","),
 		Health:        toStateHealth(hr),
 	}
 	if err = l.store.Save(st); err != nil {
@@ -262,10 +264,11 @@ func (l *Lifecycle) Status() (st *state.State, err error) { return l.store.Load(
 func (l *Lifecycle) newResolver() (res *resolver.Resolver, err error) {
 	return resolver.New(resolver.Config{
 		Logger:         l.logger,
-		Upstream:       l.cfg.Upstream,
-		Bootstrap:      l.effectiveBootstrap(),
+		Upstreams:      l.upstreamsOrDefault(),
+		Bootstrap:      l.bootstrapOrDefault(),
 		Listen:         l.cfg.Listen,
 		CacheSizeBytes: l.cfg.CacheSizeBytes,
+		CacheDisabled:  l.cfg.CacheDisabled,
 	})
 }
 
@@ -343,23 +346,22 @@ func (l *Lifecycle) flush(ctx context.Context) {
 	}
 }
 
-// upstreamOrDefault returns the configured upstream or the resolver default.
-func (l *Lifecycle) upstreamOrDefault() (u string) {
-	if l.cfg.Upstream != "" {
-		return l.cfg.Upstream
+// upstreamsOrDefault returns the configured upstreams or the resolver default.
+func (l *Lifecycle) upstreamsOrDefault() (ups []string) {
+	if len(l.cfg.Upstreams) > 0 {
+		return l.cfg.Upstreams
 	}
 
-	return resolver.DefaultUpstream
+	return []string{resolver.DefaultUpstream}
 }
 
-// effectiveBootstrap returns the configured bootstrap or the default, unless
-// the upstream is a plain IP address (then none is needed).
-func (l *Lifecycle) effectiveBootstrap() (b string) {
-	if l.cfg.Bootstrap != "" {
+// bootstrapOrDefault returns the configured bootstrap or the default.
+func (l *Lifecycle) bootstrapOrDefault() (b []string) {
+	if len(l.cfg.Bootstrap) > 0 {
 		return l.cfg.Bootstrap
 	}
 
-	return resolver.DefaultBootstrap
+	return []string{resolver.DefaultBootstrap}
 }
 
 // toStateHealth converts a health result for persistence.

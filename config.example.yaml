@@ -1,0 +1,63 @@
+# dns-client configuration (SPEC §8).
+#
+# Copy to the platform default path, or run `dns-client config init`:
+#   Windows: %ProgramData%\dns-client\config.yaml
+#   Linux:   ~/.config/dns-client/config.yaml (or $XDG_CONFIG_HOME)
+#
+# Precedence when starting: command-line flags > this file > built-in defaults.
+
+schema_version: 1
+mode: off          # on | off
+profile: default   # which entry under profiles is active
+
+profiles:
+  default:
+    # Quad9 "Secure" (malware blocking, DNSSEC-validating), dual-stack.
+    upstreams:
+      - https://dns.quad9.net/dns-query
+    bootstrap:
+      - 9.9.9.9
+      - 149.112.112.112
+      - "2620:fe::fe"
+      - "2620:fe::9"
+    cache:
+      enabled: true
+      size_bytes: 67108864   # 64 MiB
+
+    # Phase 3 (parsed and validated, not implemented yet).
+    per_domain: []
+    filtering:
+      enabled: false
+      lists: []
+      block_response: 0.0.0.0
+
+  # ---------------------------------------------------------------------------
+  # Example: NextDNS (requires your profile id).
+  #
+  # Ultralow (default, best routing): connect by hostname with NO bootstrap.
+  #   dns-client providers show nextdns/ultralow/doh --id <id>
+  # Anycast (bootstrap-pinned, avoids the system resolver; worse routing):
+  #   dns-client providers show nextdns/anycast/doh --id <id>
+  # ---------------------------------------------------------------------------
+  # nextdns:
+  #   upstreams:
+  #     - https://dns.nextdns.io/<id>
+  #   bootstrap: []          # ultralow: empty on purpose
+  #   cache: { enabled: true, size_bytes: 67108864 }
+
+  # ---------------------------------------------------------------------------
+  # Example: ControlD custom profile (requires your id).
+  #   dns-client providers show controld/custom/doh --id <id>
+  #
+  # ControlD free presets p0–p3 and named presets share bootstrap IPs:
+  #   dns-client providers show controld/p1/doh
+  # ---------------------------------------------------------------------------
+  # controld:
+  #   upstreams:
+  #     - https://dns.controld.com/<id>
+  #   bootstrap:
+  #     - 76.76.2.22
+  #     - 76.76.10.22
+  #     - "2606:1a40::22"
+  #     - "2606:1a40:1::22"
+  #   cache: { enabled: true, size_bytes: 67108864 }

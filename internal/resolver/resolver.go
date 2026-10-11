@@ -44,30 +44,33 @@ var DefaultListen = []string{"127.0.0.1:53", "[::1]:53"}
 // Config configures a Resolver.
 type Config struct {
 	Logger         *slog.Logger
-	Upstream       string
-	Bootstrap      string
+	Upstreams      []string
+	Bootstrap      []string
 	Listen         []string
 	CacheSizeBytes int
+	CacheDisabled  bool
 }
 
 // Resolver is a running (or startable) loopback DNS resolver.
 type Resolver struct {
-	logger       *slog.Logger
-	upstreamConf *proxy.UpstreamConfig
-	bootstrap    *upstream.UpstreamResolver
-	handler      *probeHandler
-	proxy        *proxy.Proxy
-	listen       []string
-	cacheSize    int
+	logger        *slog.Logger
+	upstreamConf  *proxy.UpstreamConfig
+	handler       *probeHandler
+	proxy         *proxy.Proxy
+	bootstrap     []*upstream.UpstreamResolver
+	listen        []string
+	cacheSize     int
+	cacheDisabled bool
 }
 
 // New builds a Resolver.  It creates the upstreams but does not bind anything
 // until Start is called.
 func New(cfg Config) (r *Resolver, err error) {
 	r = &Resolver{
-		logger:    loggerOrDefault(cfg.Logger),
-		listen:    cfg.Listen,
-		cacheSize: cfg.CacheSizeBytes,
+		logger:        loggerOrDefault(cfg.Logger),
+		listen:        cfg.Listen,
+		cacheSize:     cfg.CacheSizeBytes,
+		cacheDisabled: cfg.CacheDisabled,
 	}
 	if len(r.listen) == 0 {
 		r.listen = DefaultListen
@@ -76,35 +79,56 @@ func New(cfg Config) (r *Resolver, err error) {
 		r.cacheSize = DefaultCacheSizeBytes
 	}
 
-	upstreamAddr := cfg.Upstream
-	if upstreamAddr == "" {
-		upstreamAddr = DefaultUpstream
+	upstreamAddrs := cfg.Upstreams
+	if len(upstreamAddrs) == 0 {
+		upstreamAddrs = []string{DefaultUpstream}
 	}
 
 	opts := &upstream.Options{
 		Logger:  r.logger,
 		Timeout: 10 * time.Second,
 	}
-	if cfg.Bootstrap != "" {
-		boot, bErr := upstream.NewUpstreamResolver(cfg.Bootstrap, nil)
+
+	// Build one plain-DNS resolver per bootstrap address and combine them in
+	// parallel, so dual-stack bootstrap lists work.
+	var boots upstream.ParallelResolver
+	for _, addr := range cfg.Bootstrap {
+		boot, bErr := upstream.NewUpstreamResolver(addr, nil)
 		if bErr != nil {
-			return nil, fmt.Errorf("creating bootstrap resolver: %w", bErr)
+			_ = r.closeBootstrap()
+
+			return nil, fmt.Errorf("creating bootstrap resolver %q: %w", addr, bErr)
 		}
-		r.bootstrap = boot
-		opts.Bootstrap = boot
+		r.bootstrap = append(r.bootstrap, boot)
+		boots = append(boots, boot)
+	}
+	if len(boots) > 0 {
+		opts.Bootstrap = boots
 	}
 
-	ups, err := upstream.AddressToUpstream(upstreamAddr, opts)
-	if err != nil {
-		_ = r.closeBootstrap()
+	var ups []upstream.Upstream
+	for _, addr := range upstreamAddrs {
+		u, uErr := upstream.AddressToUpstream(addr, opts)
+		if uErr != nil {
+			closeUpstreams(ups)
+			_ = r.closeBootstrap()
 
-		return nil, fmt.Errorf("creating upstream %q: %w", upstreamAddr, err)
+			return nil, fmt.Errorf("creating upstream %q: %w", addr, uErr)
+		}
+		ups = append(ups, u)
 	}
 
-	r.upstreamConf = &proxy.UpstreamConfig{Upstreams: []upstream.Upstream{ups}}
+	r.upstreamConf = &proxy.UpstreamConfig{Upstreams: ups}
 	r.handler = &probeHandler{synthetic: SyntheticName()}
 
 	return r, nil
+}
+
+// closeUpstreams closes a partially built upstream list.
+func closeUpstreams(ups []upstream.Upstream) {
+	for _, u := range ups {
+		_ = u.Close()
+	}
 }
 
 // SyntheticName returns a per-process random name that only this resolver's
@@ -171,7 +195,7 @@ func (r *Resolver) build(addrs []string) (p *proxy.Proxy, err error) {
 		TCPListenAddr:  tcp,
 		UpstreamConfig: r.upstreamConf,
 		RequestHandler: r.handler,
-		CacheEnabled:   true,
+		CacheEnabled:   !r.cacheDisabled,
 		CacheSizeBytes: r.cacheSize,
 	})
 }
@@ -230,7 +254,7 @@ func (r *Resolver) ClearCache() {
 }
 
 // Shutdown stops the listeners and closes the upstreams.  The bootstrap
-// resolver's upstream is closed separately since dnsproxy does not own it.
+// resolvers' upstreams are closed separately since dnsproxy does not own them.
 func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 	var errs []error
 	if r.proxy != nil {
@@ -246,14 +270,15 @@ func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 	return errors.Join(errs...)
 }
 
-// closeBootstrap closes the bootstrap upstream if one was created.
+// closeBootstrap closes the bootstrap upstreams if any were created.
 func (r *Resolver) closeBootstrap() (err error) {
-	if r.bootstrap != nil {
-		err = r.bootstrap.Close()
-		r.bootstrap = nil
+	errs := make([]error, 0, len(r.bootstrap))
+	for _, b := range r.bootstrap {
+		errs = append(errs, b.Close())
 	}
+	r.bootstrap = nil
 
-	return err
+	return errors.Join(errs...)
 }
 
 // probeHandler answers the synthetic probe name itself and forwards everything
