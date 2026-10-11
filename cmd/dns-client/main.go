@@ -27,6 +27,7 @@ import (
 
 	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/drift"
+	"github.com/daika7ana/dns-client/internal/gui"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/providers"
@@ -77,6 +78,8 @@ func run(args []string) (err error) {
 		return cmdService(rest)
 	case "--service":
 		return cmdServiceHost(rest)
+	case "--gui":
+		return cmdGUI(rest)
 	case "--tray":
 		return cmdTray(rest)
 	case "-h", "--help", "help":
@@ -552,6 +555,16 @@ func cmdServiceHost(args []string) (err error) {
 	return service.Run(agent)
 }
 
+// cmdGUI starts the read-only go-gui status window (SPEC §15).  It is inert
+// unless the binary was built with -tags gui (gui.Run returns ErrNotBuilt).
+func cmdGUI(args []string) (err error) {
+	if _, err = parseFlags("gui", args); err != nil {
+		return err
+	}
+
+	return gui.Run(gui.Config{})
+}
+
 // cmdTray starts the tray UI, which talks to the service over IPC.
 func cmdTray(args []string) (err error) {
 	if _, err = parseFlags("tray", args); err != nil {
@@ -756,6 +769,7 @@ Commands:
   service start      start the Windows service
   service stop       stop the Windows service
   --service          run the service host (invoked by the SCM)
+  --gui              run the status window (requires a -tags gui build)
   --tray             run the tray UI (requires a -tags tray build)
 
 Flags:

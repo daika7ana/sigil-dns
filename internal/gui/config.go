@@ -1,0 +1,21 @@
+// Package gui hosts the go-gui status window (SPEC §15, phase 6/2).  With the
+// "gui" build tag it is a real Read-only window; without it Run is a stub so
+// the default binary stays GUI-free (mirrors internal/tray).
+package gui
+
+import "errors"
+
+// ErrNotBuilt is returned when the binary was built without GUI support.
+var ErrNotBuilt = errors.New("gui support is not built into this binary (rebuild with -tags gui)")
+
+// Config configures the status window.
+type Config struct {
+	// GuiPath is the user-scope gui.json path (window geometry + theme
+	// preference).  Empty uses the platform default
+	// (%LOCALAPPDATA%\dns-client\gui.json).  Never a security boundary.
+	GuiPath string
+
+	// Endpoint overrides the read-only status pipe/socket.  Empty uses
+	// ipc.StatusEndpoint().  Tests set it; production leaves it empty.
+	Endpoint string
+}
