@@ -24,7 +24,7 @@ profiles:
       enabled: true
       size_bytes: 67108864   # 64 MiB
 
-    # Phase 3 (parsed and validated, not implemented yet).
+    # Per-domain routing and blocklists (see docs/CONFIG.md).
     # Per-domain routing (dnsmasq-style).  Notes:
     #   - a domain matches itself and its subdomains; the most specific rule wins
     #   - "*.sub.example" matches subdomains only (not sub.example itself)

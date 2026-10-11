@@ -597,7 +597,7 @@ Commands:
   providers show     show generated endpoints for provider[/variant[/protocol]]
   config path        print the resolved config path
   config init        write a default config (never clobbers)
-  service install    register the Windows service (runs as NT SERVICE\dns-client)
+  service install    register the Windows service (runs as LocalSystem)
   service uninstall  remove the Windows service
   service start      start the Windows service
   service stop       stop the Windows service

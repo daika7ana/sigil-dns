@@ -44,14 +44,14 @@ type Cache struct {
 	SizeBytes int  `yaml:"size_bytes"`
 }
 
-// PerDomain is a phase-3 per-domain routing rule.  TODO(phase 3): implement the
-// dnsmasq-style parser and wire these into dnsproxy's UpstreamConfig.
+// PerDomain is a per-domain routing rule, wired into dnsproxy's UpstreamConfig
+// by internal/resolver (see rulesToLines + proxy.ParseUpstreamsConfig).
 type PerDomain struct {
 	Domains  []string `yaml:"domains"`
 	Upstream string   `yaml:"upstream"`
 }
 
-// FilterList is a phase-3 blocklist entry.  TODO(phase 3): load into urlfilter.
+// FilterList is a blocklist entry, loaded into urlfilter by internal/filter.
 type FilterList struct {
 	URL     string `yaml:"url"`
 	Enabled bool   `yaml:"enabled"`
@@ -286,7 +286,7 @@ func (p Profile) validate(name string) (err error) {
 		return fmt.Errorf("profile %q: cache enabled with non-positive size_bytes", name)
 	}
 
-	// Phase-3 fields: validated but unused.  TODO(phase 3): rule matching.
+	// Per-domain and filtering fields: validated here, applied by the resolver.
 	for i, pd := range p.PerDomain {
 		if len(pd.Domains) == 0 || strings.TrimSpace(pd.Upstream) == "" {
 			return fmt.Errorf("profile %q: per_domain %d needs domains and an upstream", name, i)
