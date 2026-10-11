@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
@@ -39,13 +42,28 @@ func (f *fakeAgentLC) Disable(context.Context) (err error) {
 	return nil
 }
 
+// testEndpoint returns a platform-appropriate, unique IPC endpoint: a named
+// pipe on Windows (a filesystem path is not a valid pipe name), else a temp
+// Unix socket.
+func testEndpoint(t *testing.T, kind string) (endpoint string) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		var b [8]byte
+		_, _ = rand.Read(b[:])
+
+		return `\\.\pipe\dns-client-test-` + kind + "-" + hex.EncodeToString(b[:])
+	}
+
+	return filepath.Join(t.TempDir(), kind+".sock")
+}
+
 // newTestAgent returns an Agent with isolated IPC endpoints.
 func newTestAgent(t *testing.T, lc Lifecycle) (a *Agent) {
 	t.Helper()
 
-	dir := t.TempDir()
-	a = NewAgent(lc, nil, filepath.Join(dir, "control.sock"))
-	a.SetStatusEndpoint(filepath.Join(dir, "status.sock"))
+	a = NewAgent(lc, nil, testEndpoint(t, "control"))
+	a.SetStatusEndpoint(testEndpoint(t, "status"))
 
 	return a
 }
