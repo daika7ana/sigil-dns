@@ -64,7 +64,9 @@ feature set of YogaDNS, without a kernel driver.
   adapter DNS writes require. Least privilege remains a future hardening goal
   (service SID + explicit grants) once those operations can be delegated.
 - **Tray**: unelevated user process; reads status over the read-only status pipe; state-changing ops prompt UAC.
-- One Go module; one binary with `--service` / `--tray` / `--cli` modes.
+  **Deferred to v1.1** — v1 ships the service + CLI; the `--tray` hook and the read-only status pipe
+  exist, but no tray UI is built yet (see §11).
+- One Go module; one binary with `--service` / `--cli` modes (and a `--tray` hook).
 
 ---
 
@@ -318,11 +320,13 @@ snapshot, dirty marker, active profile, last health result.
 
 - Dev (Linux): `GOOS=windows GOARCH=amd64 go build ./...` for compile checks + pure-Go unit tests.
   Cannot test adapter/NRPT/service/tray locally → **Windows 11 VM/CI is a phase-1 prerequisite**.
-- Tray uses `fyne.io/systray` → CGO. Gate the tray package behind a **build tag** so Linux
-  `go build ./...` doesn't need MinGW. **Release builds run on `windows-latest`** (native Go).
+- Tray (**v1.1**) is gated behind a **build tag** (`tray`) so Linux `go build ./...` never needs a C
+  toolchain. Implementation choice is still open: `fyne.io/systray` (CGO/MinGW) vs a pure-Go Win32
+  tray via `golang.org/x/sys/windows` (`Shell_NotifyIcon`) — v1 defers the decision.
+  **Release builds run on `windows-latest`** (native Go).
 - Signing: OV code-signing cert (EV only needed for a kernel driver, which we don't ship). GH
-  Actions + `signtool`.
-- Ship: service installer (`sc create` / WiX) + tray exe + config + LICENSE (GPLv3).
+  Actions + `signtool`, gated on repository secrets (unsigned artifacts otherwise).
+- Ship: Windows binary + service installer + `config.example.yaml` + README + LICENSE (GPLv3).
 
 ---
 
@@ -333,13 +337,13 @@ snapshot, dirty marker, active profile, last health result.
    snapshot + dirty recovery. *No UI.*
 2. **Config + providers** — YAML config, presets, DoH/DoT selection, single-instance guard.
 3. **Rules + filtering** — domain-rule parser (dnsmasq syntax) + urlfilter blocklists; cache flush.
-4. **Service + tray** — service wrapper, SDDL-locked pipe, build-tagged tray, drift watcher +
-   reconcile loop.
-5. **Packaging + signing** — installer, GH Actions, docs.
+4. **Service + IPC + drift** — service wrapper, SDDL-locked dual pipes, drift watcher + reconcile
+   loop. *(Tray UI deferred to v1.1 — the `--tray` hook and read-only status pipe are in place.)*
+5. **Packaging + signing** — installer, GH Actions release, docs.
 
 ### Cut from v1 (YAGNI — add on demand)
-optimistic cache · multi-profile system · scheduled list updates · ARM64 · log-viewer UI ·
-rule-editor UI (YAML only) · `$dnsrewrite` UX.
+tray UI (v1.1) · optimistic cache · multi-profile system · scheduled list updates · ARM64 ·
+log-viewer UI · rule-editor UI (YAML only) · `$dnsrewrite` UX.
 
 ---
 
