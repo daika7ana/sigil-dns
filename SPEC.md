@@ -45,20 +45,25 @@ feature set of YogaDNS, without a kernel driver.
                                       ▼
              127.0.0.1:53 / [::1]:53  (UDP + TCP)
    ┌────────────────────────  dns-client service  ────────────────────────┐
-   │  runs as NT SERVICE\dns-client (NOT LocalSystem)                       │
+   │  runs as LocalSystem (v1 deviation; see §4.7)                          │
    │  dnsproxy.Proxy ──► urlfilter DNSEngine ──► per-domain routing ──► DoH  │
    │      ▲                    (blocklists)          (dnsmasq rules)  upstream│
    └──────┬────────────────────────────────────────────────────────────────┘
-          ▲  named pipe (SDDL-locked) — versioned request/response
-          │
+          ▲  named pipes (SDDL-locked) — versioned request/response
+          │  control (admin) + status (read-only)
    ┌──────┴──────┐
-   │  Tray GUI   │  unelevated; toggles prompt UAC
+   │  Tray GUI   │  unelevated; reads status over the read-only pipe
    └─────────────┘
 ```
 
 - **Service**: elevated, owns resolver + config + interception lifecycle + state file.
-  Run as the dedicated virtual account `NT SERVICE\dns-client`, **not** LocalSystem.
-- **Tray**: unelevated user process; status read-only over the pipe; state-changing ops prompt UAC.
+  Run as **LocalSystem** for v1. The originally-planned least-privilege virtual
+  account `NT SERVICE\dns-client` is infeasible: it cannot create pipe instances
+  under the pipe SDDL, is locked out of its own state file by `state.secure()`,
+  and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) and
+  adapter DNS writes require. Least privilege remains a future hardening goal
+  (service SID + explicit grants) once those operations can be delegated.
+- **Tray**: unelevated user process; reads status over the read-only status pipe; state-changing ops prompt UAC.
 - One Go module; one binary with `--service` / `--tray` / `--cli` modes.
 
 ---
@@ -143,11 +148,24 @@ MDM/Intune, VPN, and other DNS tools rewriting servers. Add:
 ### 4.7 Security of the IPC path
 Unelevated→SYSTEM DNS control is a privilege path (any local process could redirect auth/corp
 traffic). Therefore:
-- **Named pipe only** (no local HTTP).
-- Explicit **SDDL**: Administrators = state-changing ops; Authenticated Users = read-only status
-  at most.
-- Tray prompts **UAC** for toggle if needed; service identity is `NT SERVICE\dns-client`.
-- State file ACLed to SYSTEM + Administrators.
+- **Named pipes only** (no local HTTP), split by privilege:
+  - **Control pipe** `\\.\pipe\dns-client` — state-changing ops. SDDL
+    `D:P(A;;GA;;;SY)(A;;GA;;;BA)` (SYSTEM + Administrators only).
+  - **Status pipe** `\\.\pipe\dns-client-status` — read-only. SDDL
+    `D:P(A;;GA;;;SY)(A;;GRGW;;;AU)` (SYSTEM plus Authenticated Users with
+    GR+GW, which go-winio needs to dial). Served with a read-only authorizer, so
+    `enable`/`disable` are rejected even though any local user can connect. The
+    status payload is a sanitized DTO that omits `active_upstream` (resolver id)
+    and interface GUIDs.
+- Per-method authorization is enforced in the server as defence in depth, in
+  addition to the pipe SDDL. There is no implicit authorizer: every listener
+  names one explicitly.
+- Tray needs no UAC to read status (read-only pipe); toggling prompts **UAC**.
+- **Service account**: v1 runs as **LocalSystem**, not the least-privilege
+  virtual account `NT SERVICE\dns-client` (see §2 for why).
+- State file **and its directory** are ACLed to SYSTEM + Administrators via
+  `SetSecurityInfo` (well-known SIDs, locale-independent). ACL failures are
+  returned, not swallowed.
 
 ### 4.8 WSL
 WSL2 (NAT) may bypass loopback DNS. Document (`dnsTunneling`/`.wslconfig`). Not automated in v1.

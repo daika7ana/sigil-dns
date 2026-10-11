@@ -3,8 +3,12 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +16,18 @@ import (
 
 	"github.com/daika7ana/dns-client/internal/state"
 )
+
+// testEndpoint returns a unique, platform-appropriate endpoint: a named pipe on
+// Windows, a temp Unix socket elsewhere.
+func testEndpoint(t *testing.T) (endpoint string) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`\\.\pipe\dns-client-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+	}
+
+	return filepath.Join(t.TempDir(), "ipc.sock")
+}
 
 // fakeLifecycle is an in-memory ipc.Lifecycle.
 type fakeLifecycle struct {
@@ -154,7 +170,7 @@ func TestServeConnGarbage(t *testing.T) {
 func startTestServer(t *testing.T, lc Lifecycle, auth Authorizer) (endpoint string) {
 	t.Helper()
 
-	endpoint = filepath.Join(t.TempDir(), "ipc.sock")
+	endpoint = testEndpoint(t)
 	ln, err := Listen(endpoint)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -216,5 +232,183 @@ func TestClientForbidden(t *testing.T) {
 func TestDefaultEndpointNonEmpty(t *testing.T) {
 	if DefaultEndpoint() == "" {
 		t.Fatal("DefaultEndpoint is empty")
+	}
+	if StatusEndpoint() == "" {
+		t.Fatal("StatusEndpoint is empty")
+	}
+	if DefaultEndpoint() == StatusEndpoint() {
+		t.Fatal("control and status endpoints must differ")
+	}
+}
+
+func TestServeRequiresAuthorizer(t *testing.T) {
+	endpoint := testEndpoint(t)
+	ln, err := Listen(endpoint)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	if err = Serve(context.Background(), ln, NewServer(&fakeLifecycle{}, nil), nil); !errors.Is(err, ErrNoAuthorizer) {
+		t.Fatalf("Serve with nil authorizer = %v, want ErrNoAuthorizer", err)
+	}
+}
+
+func TestStatusSanitized(t *testing.T) {
+	lc := &fakeLifecycle{st: &state.State{
+		Mode:      state.ModeOn,
+		Intercept: state.MechanismNRPT,
+		Upstream:  "https://dns.nextdns.io/SECRETID",
+		Dirty:     true,
+	}}
+	srv := NewServer(lc, nil).SanitizeStatus()
+
+	resp := srv.Handle(context.Background(), Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodStatus})
+	if !resp.OK {
+		t.Fatalf("status: %+v", resp)
+	}
+	if strings.Contains(string(resp.Data), "SECRETID") {
+		t.Fatalf("sanitized status leaked active_upstream: %s", resp.Data)
+	}
+
+	var dto StatusDTO
+	if err := json.Unmarshal(resp.Data, &dto); err != nil {
+		t.Fatalf("unmarshal DTO: %v", err)
+	}
+	if !dto.Enabled || dto.Mode != string(state.ModeOn) || dto.Mechanism != string(state.MechanismNRPT) || !dto.Dirty {
+		t.Fatalf("DTO = %+v", dto)
+	}
+}
+
+func TestClientRejectsBadServerVersion(t *testing.T) {
+	endpoint := testEndpoint(t)
+	ln, err := Listen(endpoint)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		c, aErr := ln.Accept()
+		if aErr != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+
+		var req Request
+		_ = json.NewDecoder(c).Decode(&req)
+		_ = json.NewEncoder(c).Encode(Response{Version: 999, OK: true})
+	}()
+
+	if _, err = NewClient(endpoint).Status(context.Background()); !errors.Is(err, ErrVersion) {
+		t.Fatalf("bad server version err = %v, want ErrVersion", err)
+	}
+}
+
+func TestOversizedRequestRejected(t *testing.T) {
+	endpoint := startTestServer(t, &fakeLifecycle{}, AdminAuthorizer)
+
+	conn, err := Dial(context.Background(), endpoint)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	payload := `{"version":1,"method":"status","params":"` + strings.Repeat("A", maxRequestBytes+1024) + `"}`
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_, _ = conn.Write([]byte(payload))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp Response
+	derr := json.NewDecoder(conn).Decode(&resp)
+	if derr == nil && resp.OK {
+		t.Fatal("oversized request was accepted")
+	}
+}
+
+func TestRequestTimeout(t *testing.T) {
+	srv := NewServer(&fakeLifecycle{}, nil)
+	srv.requestTimeout = 50 * time.Millisecond
+
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		srv.serveConn(context.Background(), server, Caller{Admin: true})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveConn did not time out on an idle client")
+	}
+}
+
+// errListener fails Accept a fixed number of times before yielding conn.
+type errListener struct {
+	conn          net.Conn
+	errsRemaining int
+}
+
+func (l *errListener) Accept() (net.Conn, error) {
+	if l.errsRemaining > 0 {
+		l.errsRemaining--
+
+		return nil, errors.New("transient accept error")
+	}
+	if l.conn != nil {
+		c := l.conn
+		l.conn = nil
+
+		return c, nil
+	}
+
+	return nil, net.ErrClosed
+}
+
+func (l *errListener) Close() error   { return nil }
+func (l *errListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+func TestServeRetriesTransientAccept(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	ln := &errListener{errsRemaining: 2, conn: server}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, ln, NewServer(&fakeLifecycle{}, nil), AdminAuthorizer) }()
+
+	// The server should recover and serve the connection.
+	if err := json.NewEncoder(client).Encode(Request{Version: ProtocolVersion, Method: MethodStatus}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var resp Response
+	if err := json.NewDecoder(client).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("response = %+v", resp)
+	}
+
+	cancel()
+	_ = client.Close()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not stop")
+	}
+}
+
+func TestServeGivesUpAfterRepeatedAcceptFailures(t *testing.T) {
+	ln := &errListener{errsRemaining: maxAcceptFailures}
+
+	err := Serve(context.Background(), ln, NewServer(&fakeLifecycle{}, nil), AdminAuthorizer)
+	if err == nil {
+		t.Fatal("Serve should give up after repeated Accept failures")
 	}
 }

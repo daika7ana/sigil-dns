@@ -15,12 +15,13 @@ type fakeAgentLC struct {
 	st           *state.State
 	startupErr   error
 	enableErr    error
+	stErr        error
 	reenable     bool
 	enableCalls  int
 	disableCalls int
 }
 
-func (f *fakeAgentLC) Status() (st *state.State, err error) { return f.st, nil }
+func (f *fakeAgentLC) Status() (st *state.State, err error) { return f.st, f.stErr }
 
 func (f *fakeAgentLC) Startup(context.Context) (reenable bool, err error) {
 	return f.reenable, f.startupErr
@@ -38,14 +39,27 @@ func (f *fakeAgentLC) Disable(context.Context) (err error) {
 	return nil
 }
 
+// newTestAgent returns an Agent with isolated IPC endpoints.
+func newTestAgent(t *testing.T, lc Lifecycle) (a *Agent) {
+	t.Helper()
+
+	dir := t.TempDir()
+	a = NewAgent(lc, nil, filepath.Join(dir, "control.sock"))
+	a.SetStatusEndpoint(filepath.Join(dir, "status.sock"))
+
+	return a
+}
+
 func TestAgentRecoveryReenables(t *testing.T) {
-	lc := &fakeAgentLC{reenable: true}
-	a := NewAgent(lc, nil, filepath.Join(t.TempDir(), "no.sock"))
+	lc := &fakeAgentLC{reenable: true, st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
 
 	ctx := context.Background()
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	defer func() { _ = a.Stop(context.Background()) }()
+
 	if lc.enableCalls != 1 {
 		t.Fatalf("enableCalls = %d, want 1", lc.enableCalls)
 	}
@@ -60,29 +74,54 @@ func TestAgentRecoveryReenables(t *testing.T) {
 
 func TestAgentNoReenable(t *testing.T) {
 	lc := &fakeAgentLC{reenable: false}
-	a := NewAgent(lc, nil, filepath.Join(t.TempDir(), "no.sock"))
+	a := newTestAgent(t, lc)
 
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	defer func() { _ = a.Stop(context.Background()) }()
+
 	if lc.enableCalls != 0 {
 		t.Fatalf("enableCalls = %d, want 0", lc.enableCalls)
 	}
 }
 
-func TestAgentStartupError(t *testing.T) {
+// TestAgentStartupErrorDegraded: a recovery failure must not take the service
+// down; IPC stays available.
+func TestAgentStartupErrorDegraded(t *testing.T) {
 	want := errors.New("boom")
-	a := NewAgent(&fakeAgentLC{startupErr: want}, nil, filepath.Join(t.TempDir(), "no.sock"))
+	lc := &fakeAgentLC{startupErr: want, st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
 
-	if err := a.Start(context.Background()); !errors.Is(err, want) {
-		t.Fatalf("Start err = %v, want %v", err, want)
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start should degrade, got err = %v", err)
+	}
+	defer func() { _ = a.Stop(context.Background()) }()
+
+	c := ipc.NewClient(a.endpoint)
+	if _, err := c.Status(context.Background()); err != nil {
+		t.Fatalf("IPC not available after degraded start: %v", err)
+	}
+}
+
+// TestAgentEnableFailureDegraded: an enable failure keeps the service up.
+func TestAgentEnableFailureDegraded(t *testing.T) {
+	lc := &fakeAgentLC{reenable: true, enableErr: errors.New("nrpt failed"), st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
+
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start should degrade, got err = %v", err)
+	}
+	defer func() { _ = a.Stop(context.Background()) }()
+
+	if lc.enableCalls != 1 {
+		t.Fatalf("enableCalls = %d, want 1", lc.enableCalls)
 	}
 }
 
 func TestAgentServesIPC(t *testing.T) {
 	lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOn}}
-	endpoint := filepath.Join(t.TempDir(), "ipc.sock")
-	a := NewAgent(lc, nil, endpoint)
+	a := newTestAgent(t, lc)
 
 	ctx := context.Background()
 	if err := a.Start(ctx); err != nil {
@@ -90,7 +129,7 @@ func TestAgentServesIPC(t *testing.T) {
 	}
 	defer func() { _ = a.Stop(context.Background()) }()
 
-	c := ipc.NewClient(endpoint)
+	c := ipc.NewClient(a.endpoint)
 
 	st, err := c.Status(ctx)
 	if err != nil {
@@ -113,4 +152,71 @@ func TestAgentServesIPC(t *testing.T) {
 	if lc.disableCalls != 1 {
 		t.Fatalf("disableCalls = %d, want 1", lc.disableCalls)
 	}
+}
+
+// TestAgentStatusPipeReadOnly checks the read-only status pipe returns the
+// sanitized DTO and rejects state-changing methods.
+func TestAgentStatusPipeReadOnly(t *testing.T) {
+	lc := &fakeAgentLC{st: &state.State{
+		Mode:      state.ModeOn,
+		Intercept: state.MechanismNRPT,
+		Upstream:  "https://dns.nextdns.io/SECRETID",
+		Dirty:     true,
+	}}
+	a := newTestAgent(t, lc)
+
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = a.Stop(context.Background()) }()
+
+	c := ipc.NewClient(a.statusEndpoint)
+	dto, err := c.StatusSummary(context.Background())
+	if err != nil {
+		t.Fatalf("StatusSummary: %v", err)
+	}
+	if dto == nil || !dto.Enabled || dto.Mode != string(state.ModeOn) || dto.Mechanism != string(state.MechanismNRPT) {
+		t.Fatalf("DTO = %+v", dto)
+	}
+
+	if err = c.Enable(context.Background()); err == nil {
+		t.Fatal("Enable on status pipe should be forbidden")
+	}
+	if lc.enableCalls != 0 {
+		t.Fatal("status pipe reached Enable")
+	}
+}
+
+// TestAgentStopGated checks Stop does not error or call Disable when nothing was
+// enabled.
+func TestAgentStopGated(t *testing.T) {
+	t.Run("no state", func(t *testing.T) {
+		lc := &fakeAgentLC{stErr: state.ErrNoState}
+		a := newTestAgent(t, lc)
+
+		if err := a.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := a.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if lc.disableCalls != 0 {
+			t.Fatalf("disableCalls = %d, want 0", lc.disableCalls)
+		}
+	})
+
+	t.Run("mode off clean", func(t *testing.T) {
+		lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOff}}
+		a := newTestAgent(t, lc)
+
+		if err := a.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := a.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if lc.disableCalls != 0 {
+			t.Fatalf("disableCalls = %d, want 0", lc.disableCalls)
+		}
+	})
 }

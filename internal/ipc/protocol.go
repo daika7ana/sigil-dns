@@ -86,4 +86,7 @@ var (
 
 	// ErrMalformed is returned for unparseable input.
 	ErrMalformed = errors.New("malformed request")
+
+	// ErrNoAuthorizer is returned by Serve when no Authorizer is supplied.
+	ErrNoAuthorizer = errors.New("no authorizer supplied")
 )

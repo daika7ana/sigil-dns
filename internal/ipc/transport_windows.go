@@ -9,29 +9,49 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
-// PipeName is the fixed IPC endpoint.  Documented in README and SPEC.
-const PipeName = `\\.\pipe\dns-client`
+// Named pipe endpoints.  Both are documented in README and SPEC §2/§4.7.
+const (
+	// PipeName is the control pipe: state-changing methods, admin/SYSTEM only.
+	PipeName = `\\.\pipe\dns-client`
 
-// PipeSDDL is the pipe security descriptor:
-//
-//	D:  discretionary ACL
-//	P   protected (no inherited ACEs)
-//	(A;;GA;;;BA)  allow Generic All to Built-in Administrators
-//	(A;;GA;;;SY)  allow Generic All to Local System / the service account
-//
-// Authenticated Users are NOT granted access: this is an elevated
-// (unelevated->SYSTEM DNS-control) path, so it must not be open to any local
-// process (SPEC §4.7).  A separate read-only pipe for unelevated tray status is
-// a follow-up.
-const PipeSDDL = `D:P(A;;GA;;;BA)(A;;GA;;;SY)`
+	// StatusPipeName is the read-only status pipe.
+	StatusPipeName = `\\.\pipe\dns-client-status`
+)
 
-// DefaultEndpoint returns the named pipe path.
+// PipeSDDL is the control-pipe security descriptor: Generic All to SYSTEM (the
+// service) and Administrators only.
+//
+//	D: discretionary ACL, P: protected (no inherited ACEs)
+//	(A;;GA;;;SY) SYSTEM            (A;;GA;;;BA) Built-in Administrators
+const PipeSDDL = `D:P(A;;GA;;;SY)(A;;GA;;;BA)`
+
+// StatusPipeSDDL is the status-pipe security descriptor: Generic All to SYSTEM
+// and Generic Read+Write to Authenticated Users.  AU needs both GR and GW
+// because go-winio dials the pipe with GENERIC_READ|GENERIC_WRITE.
+//
+//	D:P(A;;GA;;;SY)(A;;GRGW;;;AU)
+const StatusPipeSDDL = `D:P(A;;GA;;;SY)(A;;GRGW;;;AU)`
+
+// DefaultEndpoint returns the control-pipe path.
 func DefaultEndpoint() (endpoint string) { return PipeName }
 
-// Listen creates the named-pipe listener with the locking SDDL.
+// StatusEndpoint returns the read-only status-pipe path.
+func StatusEndpoint() (endpoint string) { return StatusPipeName }
+
+// Listen creates the control-pipe listener with the admin-only SDDL.
 func Listen(endpoint string) (ln net.Listener, err error) {
+	return listenPipe(endpoint, PipeSDDL)
+}
+
+// ListenStatus creates the read-only status-pipe listener.
+func ListenStatus(endpoint string) (ln net.Listener, err error) {
+	return listenPipe(endpoint, StatusPipeSDDL)
+}
+
+// listenPipe opens a named-pipe listener with the given SDDL.
+func listenPipe(endpoint, sddl string) (ln net.Listener, err error) {
 	return winio.ListenPipe(endpoint, &winio.PipeConfig{
-		SecurityDescriptor: PipeSDDL,
+		SecurityDescriptor: sddl,
 		MessageMode:        false,
 	})
 }
@@ -41,11 +61,7 @@ func Dial(ctx context.Context, endpoint string) (conn net.Conn, err error) {
 	return winio.DialPipeContext(ctx, endpoint)
 }
 
-// defaultAuthorizer treats every connected peer as an administrator.  This is
-// sound because PipeSDDL only lets Built-in Administrators and SYSTEM connect.
-// Per-connection token impersonation (to allow unelevated read-only callers) is
-// deferred: go-winio does not expose the pipe handle from net.Conn.
-func defaultAuthorizer(net.Conn) Caller { return Caller{Admin: true} }
-
-// DefaultAuthorizer implements the platform default.
-var DefaultAuthorizer Authorizer = defaultAuthorizer
+// Note on peer identity: go-winio's pipe connection exposes Fd(), so
+// ImpersonateNamedPipeClient is possible.  We do NOT use impersonation: the
+// admin/status split plus each pipe's SDDL provides the boundary, and the
+// server's per-method check is the defence-in-depth layer.

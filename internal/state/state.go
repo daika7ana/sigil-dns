@@ -12,10 +12,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -174,7 +172,10 @@ func (s *Store) writeAtomic(st *State) (err error) {
 	}
 
 	syncDir(dir)
-	s.secure(s.path)
+
+	if err = secure(s.path); err != nil {
+		return fmt.Errorf("securing state: %w", err)
+	}
 
 	return nil
 }
@@ -190,22 +191,10 @@ func syncDir(dir string) {
 	_ = d.Close()
 }
 
-// secure restricts the state file ACL to SYSTEM and Administrators on Windows.
-// Best-effort: on failure the file is still usable.
-func (s *Store) secure(path string) {
-	if runtime.GOOS != "windows" {
-		return
-	}
-
-	// icacls is present on all supported Windows versions.  SDDL: SYSTEM and
-	// Administrators get full control, inheritance is removed.
-	_ = exec.Command(
-		"icacls", path,
-		"/inheritance:r",
-		"/grant:r", "SYSTEM:F",
-		"/grant:r", "Administrators:F",
-	).Run()
-}
+// secure restricts the state file (and its directory) to SYSTEM and
+// Administrators.  It is implemented per-platform: a real ACL via
+// SetSecurityInfo on Windows, a no-op elsewhere.  Both are provided in
+// state_secure_*.go.
 
 // Lock is a cross-platform single-instance guard backed by an exclusive lock
 // file containing the owning pid.

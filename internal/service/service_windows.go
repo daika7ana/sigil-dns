@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -17,13 +16,13 @@ import (
 // Registration (equivalent to the CLI's `dns-client service install`):
 //
 //	sc create dns-client binPath= "\"C:\path\to\dns-client.exe\" --service" ^
-//	    start= auto obj= "NT SERVICE\dns-client" sidtype= unrestricted
+//	    start= auto obj= "LocalSystem"
 //	sc description dns-client "System-wide encrypted DNS client (loopback resolver + NRPT interception)."
 //
-// The dedicated virtual account `NT SERVICE\dns-client` (not LocalSystem) gets
-// a service SID; grant it access to the state and config directories when
-// hardening.  Install/Uninstall use the SCM API so the account and SID type are
-// set correctly without shelling out.
+// v1 runs as LocalSystem (see SPEC §2): the least-privilege virtual account
+// cannot own the pipe instances, is locked out of its own state file, and
+// lacks the admin rights NRPT/adapter writes require.  Install/Uninstall use the
+// SCM API.
 
 // handler adapts Agent to the SCM's svc.Handler.
 type handler struct {
@@ -44,33 +43,48 @@ func (h *handler) Execute(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := h.agent.Start(ctx); err != nil {
-		h.agent.logger.Error("service start failed", "err", err)
-
-		return false, 1
-	}
-
+	// Report Running before crash recovery + re-enable (which can invoke a slow
+	// PowerShell/health check) so the SCM ~30 s start budget (error 1053) is not
+	// tripped.  A degraded start keeps the service up so an operator can
+	// status/disable.
 	changes <- svc.Status{State: svc.Running, Accepts: accepts}
 
-	for c := range r {
-		switch c.Cmd {
-		case svc.Interrogate:
-			changes <- c.CurrentStatus
-		case svc.Stop, svc.Shutdown:
-			changes <- svc.Status{State: svc.StopPending}
-			cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- h.agent.Start(ctx) }()
 
-			if err := h.agent.Stop(context.Background()); err != nil {
-				h.agent.logger.Error("service stop failed", "err", err)
+	for {
+		select {
+		case err := <-errCh:
+			errCh = nil
+
+			if err != nil {
+				h.agent.logger.Error("service start failed", "err", err)
+				changes <- svc.Status{State: svc.StopPending}
 
 				return false, 1
 			}
+		case c, ok := <-r:
+			if !ok {
+				return false, 0
+			}
 
-			return false, 0
+			switch c.Cmd {
+			case svc.Interrogate:
+				changes <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				changes <- svc.Status{State: svc.StopPending}
+				cancel()
+
+				if err := h.agent.Stop(context.Background()); err != nil {
+					h.agent.logger.Error("service stop failed", "err", err)
+
+					return false, 1
+				}
+
+				return false, 0
+			}
 		}
 	}
-
-	return false, 0
 }
 
 // Run runs the service host under the SCM.
@@ -96,18 +110,34 @@ func Install() (err error) {
 		Description:      Description,
 		StartType:        mgr.StartAutomatic,
 		ServiceStartName: Account,
-		SidType:          windows.SERVICE_SID_TYPE_UNRESTRICTED,
 	}, "--service")
 	if err != nil {
 		return fmt.Errorf("creating service: %w", err)
 	}
 	defer func() { _ = s.Close() }()
 
+	// Restart on failure (SPEC §9: keep DNS working; never leave a loopbacked
+	// system with a dead service).
+	err = s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+	}, 86400)
+	if err != nil {
+		return fmt.Errorf("setting recovery actions: %w", err)
+	}
+
+	// Also run the recovery actions for non-crash failures.
+	_ = s.SetRecoveryActionsOnNonCrashFailures(true)
+
 	return nil
 }
 
-// Uninstall removes the service from the SCM.
+// Uninstall stops the service (best-effort) and then removes it, so a dangling
+// NRPT rule can never point at a service that no longer exists.
 func Uninstall() (err error) {
+	_ = Stop()
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("connecting to SCM: %w", err)

@@ -6,16 +6,18 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/state"
 )
 
-// Service identity.  The service runs as the virtual account, never
-// LocalSystem (SPEC §2).
+// Service identity.  v1 runs as LocalSystem: the least-privilege virtual account
+// cannot own the pipe instances or perform NRPT/adapter writes (SPEC §2).
 const (
 	// Name is the SCM service name.
 	Name = "dns-client"
@@ -26,8 +28,15 @@ const (
 	// Description is the service description.
 	Description = "System-wide encrypted DNS client (loopback resolver + NRPT interception)."
 
-	// Account is the dedicated virtual account the service runs as.
-	Account = `NT SERVICE\dns-client`
+	// Account is the account the service runs as.
+	Account = "LocalSystem"
+)
+
+// IPC listener retry policy (M6): a transient bind failure must not leave the
+// service deaf for its whole lifetime.
+const (
+	ipcListenAttempts = 5
+	ipcListenBackoff  = 200 * time.Millisecond
 )
 
 // ErrUnsupported is returned by the non-Windows stubs.
@@ -62,12 +71,14 @@ type Watcher interface {
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
 // and restore on stop.
 type Agent struct {
-	lc       Lifecycle
-	watcher  Watcher
-	logger   *slog.Logger
-	endpoint string
-	ln       net.Listener
-	cancel   context.CancelFunc
+	lc             Lifecycle
+	watcher        Watcher
+	logger         *slog.Logger
+	endpoint       string
+	statusEndpoint string
+	ln             net.Listener
+	sln            net.Listener
+	cancel         context.CancelFunc
 }
 
 // NewAgent returns an Agent.  An empty endpoint uses the platform default.
@@ -80,12 +91,21 @@ func NewAgent(lc Lifecycle, logger *slog.Logger, endpoint string) (a *Agent) {
 		endpoint = ipc.DefaultEndpoint()
 	}
 
-	return &Agent{lc: &lockedLifecycle{lc: lc}, logger: logger, endpoint: endpoint}
+	return &Agent{
+		lc:             &lockedLifecycle{lc: lc},
+		logger:         logger,
+		endpoint:       endpoint,
+		statusEndpoint: ipc.StatusEndpoint(),
+	}
 }
 
 // SetWatcher sets the optional background reconciler.  It must be called before
 // Start.
 func (a *Agent) SetWatcher(w Watcher) { a.watcher = w }
+
+// SetStatusEndpoint overrides the read-only status endpoint.  Tests use it to
+// isolate listeners; production uses the platform default.
+func (a *Agent) SetStatusEndpoint(endpoint string) { a.statusEndpoint = endpoint }
 
 // lockedLifecycle serializes lifecycle calls from the SCM and IPC clients.
 type lockedLifecycle struct {
@@ -125,32 +145,41 @@ func (l *lockedLifecycle) Disable(ctx context.Context) (err error) {
 	return l.lc.Disable(ctx)
 }
 
-// Start runs crash recovery (restore first, then re-enable if mode=on) and
-// begins serving IPC.  Per SPEC §9 the lock is held for the service lifetime
-// when a re-enable happens.
+// Start binds the IPC listeners, then runs crash recovery and (if mode=on)
+// re-enable.  It returns an error only when IPC cannot be served at all; a
+// recovery or enable failure leaves the service running in a degraded state
+// with IPC available so an operator can still status/disable it.
 func (a *Agent) Start(ctx context.Context) (err error) {
-	reenable, err := a.lc.Startup(ctx)
-	if err != nil {
+	if err = a.startIPC(); err != nil {
 		return err
 	}
 
-	if reenable {
-		if err = a.lc.Enable(ctx); err != nil {
-			return err
-		}
-	}
-
-	a.startIPC()
-
-	// Start drift detection for the service lifetime; it idles when mode=off.
 	if a.watcher != nil {
 		a.watcher.Start()
+	}
+
+	reenable, err := a.lc.Startup(ctx)
+	if err != nil {
+		a.logger.ErrorContext(ctx, "crash recovery failed; running degraded", "err", err)
+
+		return nil
+	}
+
+	if !reenable {
+		return nil
+	}
+
+	if err = a.lc.Enable(ctx); err != nil {
+		a.logger.ErrorContext(ctx, "enable failed; running degraded", "err", err)
+
+		return nil
 	}
 
 	return nil
 }
 
-// Stop shuts the IPC server down and disables/restores interception.
+// Stop shuts the IPC servers down and, only if interception is actually active,
+// disables/restores it.
 func (a *Agent) Stop(ctx context.Context) (err error) {
 	if a.watcher != nil {
 		a.watcher.Stop()
@@ -158,33 +187,88 @@ func (a *Agent) Stop(ctx context.Context) (err error) {
 
 	a.stopIPC()
 
+	st, sErr := a.lc.Status()
+	if sErr != nil {
+		if errors.Is(sErr, state.ErrNoState) {
+			// Never enabled: nothing to restore.
+			return nil
+		}
+
+		return sErr
+	}
+	if st == nil || (st.Mode != state.ModeOn && !st.Dirty) {
+		// Nothing to restore; avoid erroring on the stop path.
+		return nil
+	}
+
 	return a.lc.Disable(ctx)
 }
 
-// startIPC starts the IPC listener and server, non-fatally.
-func (a *Agent) startIPC() {
-	ln, err := ipc.Listen(a.endpoint)
+// startIPC binds the control and status pipes, retrying transient failures with
+// backoff.  A control-pipe failure is fatal; a status-pipe failure is logged.
+func (a *Agent) startIPC() (err error) {
+	ln, err := a.listenWithRetry(a.endpoint)
 	if err != nil {
-		a.logger.Error("ipc listen failed", "endpoint", a.endpoint, "err", err)
-
-		return
+		return err
 	}
 	a.ln = ln
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	srv := ipc.NewServer(a.lc, a.logger)
+	control := ipc.NewServer(a.lc, a.logger)
 	go func() {
-		if err := ipc.Serve(ctx, ln, srv, nil); err != nil {
-			a.logger.Error("ipc serve stopped", "err", err)
+		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
+			a.logger.Error("ipc control serve stopped", "err", sErr)
 		}
 	}()
+	a.logger.Info("ipc control listening", "endpoint", a.endpoint)
 
-	a.logger.Info("ipc listening", "endpoint", a.endpoint)
+	a.startStatusPipe(ctx)
+
+	return nil
 }
 
-// stopIPC stops the IPC listener.
+// startStatusPipe starts the read-only status listener, non-fatally.
+func (a *Agent) startStatusPipe(ctx context.Context) {
+	endpoint := a.statusEndpoint
+
+	sln, err := ipc.ListenStatus(endpoint)
+	if err != nil {
+		a.logger.Error("ipc status listen failed", "endpoint", endpoint, "err", err)
+
+		return
+	}
+	a.sln = sln
+
+	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus()
+	go func() {
+		if sErr := ipc.Serve(ctx, sln, status, ipc.ReadOnlyAuthorizer); sErr != nil {
+			a.logger.Error("ipc status serve stopped", "err", sErr)
+		}
+	}()
+	a.logger.Info("ipc status listening", "endpoint", endpoint)
+}
+
+// listenWithRetry retries Listen with linear backoff.
+func (a *Agent) listenWithRetry(endpoint string) (ln net.Listener, err error) {
+	for attempt := 1; attempt <= ipcListenAttempts; attempt++ {
+		ln, err = ipc.Listen(endpoint)
+		if err == nil {
+			return ln, nil
+		}
+
+		a.logger.Error("ipc control listen failed", "endpoint", endpoint, "attempt", attempt, "err", err)
+
+		if attempt < ipcListenAttempts {
+			time.Sleep(ipcListenBackoff * time.Duration(attempt))
+		}
+	}
+
+	return nil, fmt.Errorf("listening on %s: %w", endpoint, err)
+}
+
+// stopIPC stops both IPC listeners.
 func (a *Agent) stopIPC() {
 	if a.cancel != nil {
 		a.cancel()
@@ -193,5 +277,9 @@ func (a *Agent) stopIPC() {
 	if a.ln != nil {
 		_ = a.ln.Close()
 		a.ln = nil
+	}
+	if a.sln != nil {
+		_ = a.sln.Close()
+		a.sln = nil
 	}
 }

@@ -340,6 +340,34 @@ func cmdService(args []string) (err error) {
 	}
 }
 
+// serviceLifecycle lets the Windows service boot even when the config is
+// corrupt: Startup/Status/Disable work from persisted state alone, while Enable
+// reports a clear error until the config loads.
+type serviceLifecycle struct {
+	inner     *lifecycle.Lifecycle
+	enableErr error
+}
+
+// Status implements service.Lifecycle.
+func (s *serviceLifecycle) Status() (st *state.State, err error) { return s.inner.Status() }
+
+// Startup implements service.Lifecycle.
+func (s *serviceLifecycle) Startup(ctx context.Context) (reenable bool, err error) {
+	return s.inner.Startup(ctx)
+}
+
+// Enable implements service.Lifecycle.
+func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
+	if s.enableErr != nil {
+		return s.enableErr
+	}
+
+	return s.inner.Enable(ctx)
+}
+
+// Disable implements service.Lifecycle.
+func (s *serviceLifecycle) Disable(ctx context.Context) (err error) { return s.inner.Disable(ctx) }
+
 // cmdServiceHost runs the service host.  It is invoked by the SCM (via the
 // registered "--service" argument), not directly.
 func cmdServiceHost(args []string) (err error) {
@@ -348,12 +376,24 @@ func cmdServiceHost(args []string) (err error) {
 		return err
 	}
 
-	resolved, err := o.resolveSettings()
-	if err != nil {
-		return err
+	// Never refuse to boot on a bad config: always start the host so crash
+	// recovery (restore) and IPC status work, and degrade enable until the
+	// config loads.
+	var lc service.Lifecycle
+
+	resolved, rErr := o.resolveSettings()
+	if rErr != nil {
+		logger().Error("config unavailable; service starts degraded", "err", rErr)
+
+		lc = &serviceLifecycle{
+			inner:     o.lifecycleForState(),
+			enableErr: fmt.Errorf("configuration unavailable: %w", rErr),
+		}
+	} else {
+		lc = &serviceLifecycle{inner: o.lifecycleFor(resolved)}
 	}
 
-	agent := service.NewAgent(o.lifecycleFor(resolved), logger(), "")
+	agent := service.NewAgent(lc, logger(), "")
 	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, logger()))
 
 	return service.Run(agent)
