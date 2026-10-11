@@ -49,10 +49,21 @@ type Lifecycle interface {
 	Disable(ctx context.Context) (err error)
 }
 
+// Watcher is a background reconciler (drift detection) started with the service
+// and stopped when the service stops.  It is optional.
+type Watcher interface {
+	// Start launches the background loop.
+	Start()
+
+	// Stop terminates the background loop.
+	Stop()
+}
+
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
 // and restore on stop.
 type Agent struct {
 	lc       Lifecycle
+	watcher  Watcher
 	logger   *slog.Logger
 	endpoint string
 	ln       net.Listener
@@ -71,6 +82,10 @@ func NewAgent(lc Lifecycle, logger *slog.Logger, endpoint string) (a *Agent) {
 
 	return &Agent{lc: &lockedLifecycle{lc: lc}, logger: logger, endpoint: endpoint}
 }
+
+// SetWatcher sets the optional background reconciler.  It must be called before
+// Start.
+func (a *Agent) SetWatcher(w Watcher) { a.watcher = w }
 
 // lockedLifecycle serializes lifecycle calls from the SCM and IPC clients.
 type lockedLifecycle struct {
@@ -127,11 +142,20 @@ func (a *Agent) Start(ctx context.Context) (err error) {
 
 	a.startIPC()
 
+	// Start drift detection for the service lifetime; it idles when mode=off.
+	if a.watcher != nil {
+		a.watcher.Start()
+	}
+
 	return nil
 }
 
 // Stop shuts the IPC server down and disables/restores interception.
 func (a *Agent) Stop(ctx context.Context) (err error) {
+	if a.watcher != nil {
+		a.watcher.Stop()
+	}
+
 	a.stopIPC()
 
 	return a.lc.Disable(ctx)

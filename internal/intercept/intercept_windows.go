@@ -166,6 +166,70 @@ func resetAdapters(ctx context.Context, entries []dnsEntry) (err error) {
 	return err
 }
 
+// SnapshotAdapters captures the current per-interface DNS servers.  Exported
+// for drift detection; also usable for the per-adapter fallback.
+func SnapshotAdapters(ctx context.Context) (entries []AdapterEntry, err error) {
+	raw, err := snapshotAdapters(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	entries = make([]AdapterEntry, 0, len(raw))
+	for _, e := range raw {
+		entries = append(entries, AdapterEntry{Index: e.Index, IPv4: e.IPv4, IPv6: e.IPv6})
+	}
+
+	return entries, nil
+}
+
+// ApplyAdapters points both families of each interface at loopback.
+func ApplyAdapters(ctx context.Context, entries []AdapterEntry) (err error) {
+	return applyAdapters(ctx, toDNSEntries(entries))
+}
+
+// ResetAdapters restores the captured per-interface DNS servers.
+func ResetAdapters(ctx context.Context, entries []AdapterEntry) (err error) {
+	return resetAdapters(ctx, toDNSEntries(entries))
+}
+
+// toDNSEntries converts exported entries to the internal form.
+func toDNSEntries(entries []AdapterEntry) (out []dnsEntry) {
+	out = make([]dnsEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, dnsEntry{Index: e.Index, IPv4: e.IPv4, IPv6: e.IPv6})
+	}
+
+	return out
+}
+
+// ProbeNRPT reports whether our rule is present and any foreign rules.
+func ProbeNRPT(ctx context.Context) (st NRPTState, err error) {
+	const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$ours = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' }).Count
+Write-Output "ours=$ours"
+Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'dns-client' } | ForEach-Object {
+    Write-Output ("foreign={0}|{1}" -f $_.DisplayName, $_.Namespace)
+}
+`
+	out, err := runPS(ctx, script)
+	if err != nil {
+		return NRPTState{}, err
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "ours=1":
+			st.Ours = true
+		case strings.HasPrefix(line, "foreign="):
+			st.Conflicts = append(st.Conflicts, strings.TrimPrefix(line, "foreign="))
+		}
+	}
+
+	return st, nil
+}
+
 // psList renders addrs as a PowerShell array literal with each item quoted.
 func psList(addrs []string) (list string) {
 	quoted := make([]string, len(addrs))

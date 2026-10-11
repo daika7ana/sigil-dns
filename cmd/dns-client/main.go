@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/drift"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/providers"
@@ -353,6 +354,7 @@ func cmdServiceHost(args []string) (err error) {
 	}
 
 	agent := service.NewAgent(o.lifecycleFor(resolved), logger(), "")
+	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, logger()))
 
 	return service.Run(agent)
 }
