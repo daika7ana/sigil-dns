@@ -1,0 +1,22 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.dll
+*.syso
+*.test
+*.out
+
+# Go
+vendor/
+
+# App runtime state (must never be committed)
+*.state.json
+dns-client.log*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
