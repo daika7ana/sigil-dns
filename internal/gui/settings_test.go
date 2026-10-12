@@ -46,6 +46,26 @@ func TestDraftFromSnapshot(t *testing.T) {
 	}
 }
 
+// TestRuleDraftSeedsEnabled proves the editor's rule rows take their enable
+// state from the sanitized per-domain summary.
+func TestRuleDraftSeedsEnabled(t *testing.T) {
+	d := draftForProfile(ipc.ProfileSummary{
+		Name: "default",
+		PerDomain: []ipc.PerDomainSummary{
+			{Domains: []string{"a.example"}, Enabled: true},
+			{Domains: []string{"b.example"}, Enabled: false},
+		},
+	})
+
+	if len(d.perDomain) != 2 {
+		t.Fatalf("rules = %d, want 2", len(d.perDomain))
+	}
+	if !d.perDomain[0].enabled || d.perDomain[1].enabled {
+		t.Errorf("seeded enable states = %v/%v, want true/false",
+			d.perDomain[0].enabled, d.perDomain[1].enabled)
+	}
+}
+
 // TestDraftFromProfiles seeds from the per-profile list, picking the named
 // profile and never the active one unless it was asked for.
 func TestDraftFromProfiles(t *testing.T) {
@@ -148,7 +168,7 @@ func TestSettingsPageRenders(t *testing.T) {
 	}
 
 	for _, id := range []string{
-		"gui:nav:status", "gui:nav:settings", "gui:nav:about",
+		"gui:nav:status", "gui:nav:settings", "gui:nav:rules", "gui:nav:about",
 		"gui:service:uninstall",
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",
@@ -280,7 +300,8 @@ func TestSaveCarriesDraft(t *testing.T) {
 	})
 }
 
-// TestNavSwitchesPage checks the left nav toggles between Status and Settings.
+// TestNavSwitchesPage checks the left nav toggles between Status, Settings,
+// and the Rules page.
 func TestNavSwitchesPage(t *testing.T) {
 	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
 	app.snap = sampleSnapshot()
@@ -305,6 +326,24 @@ func TestNavSwitchesPage(t *testing.T) {
 	}
 	if len(w.ResolveID("gui:profile:save")) == 0 {
 		t.Fatal("Settings page did not render the editor")
+	}
+
+	if err := w.TestClick("gui:nav:rules"); err != nil {
+		t.Fatalf("click rules nav: %v", err)
+	}
+	w.TestRender(nil)
+
+	if app.page != pageRules {
+		t.Fatalf("page = %v, want rules", app.page)
+	}
+	if len(w.ResolveID("gui:edit:rules")) == 0 || len(w.ResolveID("gui:edit:lists")) == 0 {
+		t.Fatal("Rules page did not render the list/rule editors")
+	}
+	if len(w.ResolveID("gui:profile:save")) == 0 {
+		t.Fatal("Rules page did not render a Save control")
+	}
+	if len(w.ResolveID("gui:edit:provider")) != 0 {
+		t.Fatal("Settings editor must not render on the Rules page")
 	}
 }
 
@@ -356,14 +395,23 @@ func settingsApp() *App {
 	return app
 }
 
+// rulesApp is a verified App on the Rules page with a healthy snapshot.
+func rulesApp() *App {
+	app := settingsApp()
+	app.page = pageRules
+
+	return app
+}
+
 // newSettingsWindow builds a test window for app.  It is tall enough that the
-// whole Settings page fits without scrolling, so clicks land on the editor.
+// whole page — Settings or the Rules page, including the list and per-domain
+// sections — fits without scrolling, so clicks land on the editor.
 func newSettingsWindow(t *testing.T, app *App) *gogui.Window {
 	t.Helper()
 
 	w := gogui.NewTestWindow(t, gogui.WindowCfg{
 		Width:  defaultWidth,
-		Height: 1400,
+		Height: 2400,
 		State:  app,
 	})
 	w.SetView(view)

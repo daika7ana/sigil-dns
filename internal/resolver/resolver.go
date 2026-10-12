@@ -100,6 +100,7 @@ type Resolver struct {
 	proxy         *proxy.Proxy
 	bootstrap     []*upstream.UpstreamResolver
 	filterState   atomic.Pointer[filterState]
+	filterCfg     FilterConfig
 	listen        []string
 	cacheSize     int
 	cacheDisabled bool
@@ -110,6 +111,7 @@ type Resolver struct {
 func New(cfg Config) (r *Resolver, err error) {
 	r = &Resolver{
 		logger:        loggerOrDefault(cfg.Logger),
+		filterCfg:     cfg.Filter,
 		listen:        cfg.Listen,
 		cacheSize:     cfg.CacheSizeBytes,
 		cacheDisabled: cfg.CacheDisabled,
@@ -190,6 +192,13 @@ func New(cfg Config) (r *Resolver, err error) {
 	}
 
 	return r, nil
+}
+
+// RefreshLists re-downloads the configured filter lists, rebuilds the filter
+// engine, and clears the resolver cache.  It is safe when filtering is
+// disabled: reloadFilter then clears the filter state and the cache.
+func (r *Resolver) RefreshLists(ctx context.Context) (err error) {
+	return r.reloadFilter(ctx, r.filterCfg)
 }
 
 // reloadFilter loads the lists and swaps in a new filter state.

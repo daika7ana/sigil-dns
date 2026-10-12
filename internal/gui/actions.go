@@ -31,6 +31,11 @@ const (
 
 	// actionSetActive makes a profile the active one via elevate.Patch.
 	actionSetActive guiAction = "profile:active"
+
+	// actionRefreshLists re-downloads the active profile's filter lists.  It is
+	// a service-only action: it carries no config patch and drives the running
+	// service over the verified control pipe (elevate.ActionRefreshLists).
+	actionRefreshLists guiAction = "lists:refresh"
 )
 
 // powerState is the Status page's single power control: its on/off state,
@@ -113,6 +118,8 @@ var actionMetas = map[guiAction]actionMeta{
 		"Waiting for elevation to delete the profile...", "Profile deleted", "Could not delete the profile"},
 	actionSetActive: {"Set active", gogui.ButtonPrimary,
 		"Waiting for elevation to set the active profile...", "Active profile set", "Could not set the active profile"},
+	actionRefreshLists: {"Update blocklists", gogui.ButtonSecondary,
+		"Waiting for the service to update blocklists...", "Blocklists updated", "Could not update blocklists"},
 }
 
 // metaFor returns an action's presentation, or the unknown-action defaults.

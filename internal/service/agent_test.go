@@ -45,6 +45,8 @@ func (f *fakeAgentLC) Disable(context.Context) (err error) {
 
 func (f *fakeAgentLC) Restore(context.Context) (err error) { return nil }
 
+func (f *fakeAgentLC) RefreshLists(context.Context) (err error) { return nil }
+
 // testEndpoint returns a platform-appropriate, unique IPC endpoint: a named
 // pipe on Windows (a filesystem path is not a valid pipe name), else a temp
 // Unix socket.

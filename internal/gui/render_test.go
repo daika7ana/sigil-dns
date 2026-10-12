@@ -4,6 +4,7 @@ package gui
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -78,6 +79,500 @@ func TestSettingsLayoutWhileStopped(t *testing.T) {
 
 	assertPageLayout(t, app, defaultWidth, defaultHeight,
 		[]string{"gui:card:service", "gui:card:profiles", "gui:card:editor"})
+}
+
+// TestRulesLayout proves the Rules page lays out: both editor cards are
+// present, content-sized, on one column, and the page body is one scrollable
+// column.
+func TestRulesLayout(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{{"default", defaultWidth, defaultHeight}, {"large", wideWidth, wideHeight}} {
+		t.Run(size.name, func(t *testing.T) {
+			assertPageLayout(t, rulesApp(), size.w, size.h,
+				[]string{"gui:card:lists", "gui:card:rules"})
+		})
+	}
+}
+
+// TestRulesTwoCards proves the Rules page splits into two headed cards — the
+// filter-list card and the per-domain routing card — with exactly one Save row,
+// outside both cards.
+func TestRulesTwoCards(t *testing.T) {
+	w := newSettingsWindow(t, rulesApp())
+	root := w.TestRender(nil)
+
+	for _, id := range []string{"gui:card:lists", "gui:card:rules"} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	// Each body lives under its own card, and only its own card.
+	listsCard := mustFindLayout(t, w, root, "gui:card:lists")
+	rulesCard := mustFindLayout(t, w, root, "gui:card:rules")
+	listEditor := mustFindLayout(t, w, root, "gui:edit:lists")
+	ruleEditor := mustFindLayout(t, w, root, "gui:edit:rules")
+
+	if !layoutContains(listsCard, listEditor) {
+		t.Error("Filter lists card does not contain the list editor")
+	}
+	if !layoutContains(rulesCard, ruleEditor) {
+		t.Error("Per-domain routing card does not contain the rule editor")
+	}
+	if layoutContains(rulesCard, listEditor) {
+		t.Error("Per-domain routing card contains the list editor")
+	}
+	if layoutContains(listsCard, ruleEditor) {
+		t.Error("Filter lists card contains the rule editor")
+	}
+
+	// Exactly one Save, and it is outside both cards.
+	if n := len(w.ResolveID("gui:profile:save")); n != 1 {
+		t.Fatalf("Save rendered %d times, want exactly 1", n)
+	}
+	save := mustFindLayout(t, w, root, "gui:profile:save")
+	if layoutContains(listsCard, save) || layoutContains(rulesCard, save) {
+		t.Error("Save must sit outside both cards")
+	}
+
+	assertNoFindings(t, w)
+}
+
+// layoutContains reports whether target is parent or one of its descendants.
+func layoutContains(parent, target *gogui.Layout) bool {
+	if parent == target {
+		return true
+	}
+	for i := range parent.Children {
+		if layoutContains(&parent.Children[i], target) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestRulesPageScrolls proves the Rules page body is a scrollable column:
+// with a long rule set at the default window height the content overflows and
+// is reachable by scrolling, rather than growing the window.
+func TestRulesPageScrolls(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	for i := 0; i < 30; i++ {
+		app.draft.perDomain = append(app.draft.perDomain, ruleDraft{
+			domains: fmt.Sprintf("domain-%d.example", i), enabled: true,
+		})
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: defaultHeight, State: app,
+	})
+	w.SetView(view)
+	root := w.TestRender(nil)
+
+	page := mustFindLayout(t, w, root, "gui:rules")
+	if !page.Shape.Scrollable {
+		t.Fatal("Rules page body is not scrollable")
+	}
+
+	ids := w.ResolveID("gui:rules")
+	if ov, ok := w.ScrollOverflowY(ids[0]); !ok || ov <= 0 {
+		t.Errorf("Rules page hidden height = %.1f (ok=%v), want > 0", ov, ok)
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRulesListSection proves the filter-list editor renders on the Rules page
+// (one row per seeded list showing the redacted host, the add-by-URL field, and
+// the "Update blocklists" action) — and is absent from Settings — with no
+// widget findings.
+func TestRulesListSection(t *testing.T) {
+	app := rulesApp()
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	for _, id := range []string{
+		"gui:edit:lists",
+		"gui:list:0", "gui:list:1",
+		"gui:list:0:enable", "gui:list:0:remove",
+		"gui:list:1:enable", "gui:list:1:remove",
+		"gui:list:add:url", "gui:list:add",
+		"gui:lists:refresh",
+	} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	// The rows show the seeded redacted hosts, never a URL.
+	texts := textSet(mustFindLayout(t, w, root, "gui:edit:lists"))
+	for _, want := range []string{"ads.example.net", "trackers.example.org"} {
+		if !texts[want] {
+			t.Errorf("list section does not show %q", want)
+		}
+	}
+
+	if got := len(w.ResolveID("gui:list:2")); got != 0 {
+		t.Errorf("a third list row rendered without being added (%d)", got)
+	}
+
+	// Running service: the refresh action is offered.
+	assertDisabled(t, root, w, "gui:lists:refresh", false)
+	assertNoFindings(t, w)
+}
+
+// TestSettingsDropsMovedSections proves the filter-list and per-domain editors
+// no longer render on the Settings page (they moved to the Rules page).
+func TestSettingsDropsMovedSections(t *testing.T) {
+	w := newSettingsWindow(t, settingsApp())
+	w.TestRender(nil)
+
+	for _, id := range []string{"gui:edit:lists", "gui:edit:rules", "gui:rule:add", "gui:list:add"} {
+		if n := len(w.ResolveID(id)); n != 0 {
+			t.Errorf("%s still renders on Settings (%d), want moved to Rules", id, n)
+		}
+	}
+}
+
+// TestListAddRemoveRows drives the add-by-URL field and a remove control on the
+// Rules page and checks the draft rows track them.
+func TestListAddRemoveRows(t *testing.T) {
+	app := rulesApp()
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	if err := w.TestType("gui:list:add:url", "https://new.example/hosts.txt"); err != nil {
+		t.Fatalf("type list url: %v", err)
+	}
+	if err := w.TestClick("gui:list:add"); err != nil {
+		t.Fatalf("click add list: %v", err)
+	}
+	if len(app.draft.lists) != 3 {
+		t.Fatalf("lists = %d, want 3", len(app.draft.lists))
+	}
+	if app.listInput != "" {
+		t.Fatalf("add field not cleared: %q", app.listInput)
+	}
+	w.TestRender(nil)
+	if n := len(w.ResolveID("gui:list:2:host")); n != 1 {
+		t.Fatalf("new list row = %d, want 1", n)
+	}
+
+	if err := w.TestClick("gui:list:0:remove"); err != nil {
+		t.Fatalf("click remove list: %v", err)
+	}
+	// Remove asks first; confirm it.
+	w.TestRender(nil)
+	if err := w.TestClick("gui:list:0:remove:confirm:1"); err != nil {
+		t.Fatalf("confirm remove list: %v", err)
+	}
+	if len(app.draft.lists) != 2 {
+		t.Fatalf("lists after remove = %d, want 2", len(app.draft.lists))
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRefreshDisabledWhenStopped proves "Update blocklists" is inert while the
+// service is not running (the action would have nothing to drive).
+func TestRefreshDisabledWhenStopped(t *testing.T) {
+	app := rulesApp()
+	app.snap.running = false
+	app.snap.status = nil
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+	assertDisabled(t, root, w, "gui:lists:refresh", true)
+}
+
+// TestRulesRuleSection proves the per-domain editor renders on the Rules page
+// a row per rule (domains + upstream, upstream blank, an enable toggle) plus
+// the add control and the wildcard hint, with no findings.
+func TestRulesRuleSection(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{
+		{domains: "example.com, www.example.com", enabled: true},
+		{domains: "ads.example", upstream: "1.1.1.1", enabled: false},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true // keep the hand-built draft; do not reseed from the summary
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	for _, id := range []string{
+		"gui:edit:rules",
+		"gui:rule:0:domains", "gui:rule:0:upstream", "gui:rule:0:enable", "gui:rule:0:remove",
+		"gui:rule:1:domains", "gui:rule:1:upstream", "gui:rule:1:enable", "gui:rule:1:remove",
+		"gui:rule:add",
+	} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	// A seeded rule's upstream starts blank: the editor never reads a stored
+	// target.
+	if app.draft.perDomain[0].upstream != "" {
+		t.Errorf("seeded rule upstream = %q, want blank", app.draft.perDomain[0].upstream)
+	}
+
+	// The seeded enable state travels into the rows: rule 0 on, rule 1 off.
+	if !app.draft.perDomain[0].enabled || app.draft.perDomain[1].enabled {
+		t.Errorf("seeded enable states = %v/%v, want true/false",
+			app.draft.perDomain[0].enabled, app.draft.perDomain[1].enabled)
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRuleToggleRow proves clicking a rule's enable toggle flips only that
+// row's flag in the draft.
+func TestRuleToggleRow(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{
+		{domains: "a.example", enabled: true},
+		{domains: "b.example", enabled: true},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	if err := w.TestClick("gui:rule:1:enable"); err != nil {
+		t.Fatalf("click rule toggle: %v", err)
+	}
+	if app.draft.perDomain[0].enabled != true || app.draft.perDomain[1].enabled != false {
+		t.Fatalf("enable states = %v/%v, want true/false",
+			app.draft.perDomain[0].enabled, app.draft.perDomain[1].enabled)
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRulesWildcardHint proves the per-domain section explains how the `*.`
+// pattern matches, and that the domains input keeps it as typed (no
+// rewriting).
+func TestRulesWildcardHint(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{domains: "*.example.com", enabled: true}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	const want = "*.example.com matches subdomains only; example.com matches the domain and its subdomains"
+	if !textSet(root)[want] {
+		t.Errorf("wildcard hint not found; want %q", want)
+	}
+
+	// The value passes through untouched.
+	if app.draft.perDomain[0].domains != "*.example.com" {
+		t.Errorf("wildcard input rewritten: %q", app.draft.perDomain[0].domains)
+	}
+}
+
+// TestRuleAddRemoveRows drives the Add rule and per-row Remove controls on the
+// Rules page, and checks a new rule starts enabled.
+func TestRuleAddRemoveRows(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	if err := w.TestClick("gui:rule:add"); err != nil {
+		t.Fatalf("click add rule: %v", err)
+	}
+	if len(app.draft.perDomain) != 2 {
+		t.Fatalf("rules = %d, want 2", len(app.draft.perDomain))
+	}
+	if !app.draft.perDomain[1].enabled {
+		t.Error("a newly added rule must start enabled")
+	}
+	w.TestRender(nil)
+	if n := len(w.ResolveID("gui:rule:1:domains")); n != 1 {
+		t.Fatalf("added rule row = %d, want 1", n)
+	}
+
+	if err := w.TestClick("gui:rule:0:remove"); err != nil {
+		t.Fatalf("click remove rule: %v", err)
+	}
+	// Remove asks first; confirm it.
+	w.TestRender(nil)
+	if err := w.TestClick("gui:rule:0:remove:confirm:1"); err != nil {
+		t.Fatalf("confirm remove rule: %v", err)
+	}
+	if len(app.draft.perDomain) != 1 {
+		t.Fatalf("rules after remove = %d, want 1", len(app.draft.perDomain))
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRemoveConfirm proves both Remove controls ask before deleting: the confirm
+// dialog appears, the row survives until Yes, and No leaves it untouched.
+func TestRemoveConfirm(t *testing.T) {
+	ruleApp := func() *App {
+		app := rulesApp()
+		app.draft.name = "default"
+		app.draft.perDomain = []ruleDraft{
+			{domains: "a.example", enabled: true},
+			{domains: "b.example", enabled: true},
+		}
+		app.draft.rulesKnown = true
+		app.seeded = true
+
+		return app
+	}
+
+	t.Run("rule yes removes", func(t *testing.T) {
+		app := ruleApp()
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+
+		if err := w.TestClick("gui:rule:0:remove"); err != nil {
+			t.Fatalf("click remove: %v", err)
+		}
+		w.TestRender(nil)
+
+		// The dialog is up and nothing is removed yet.
+		if n := len(w.ResolveID("gui:rule:0:remove:confirm")); n != 1 {
+			t.Fatalf("confirm dialog missing (%d)", n)
+		}
+		if len(app.draft.perDomain) != 2 {
+			t.Fatalf("row removed before confirming: %d", len(app.draft.perDomain))
+		}
+
+		if err := w.TestClick("gui:rule:0:remove:confirm:1"); err != nil {
+			t.Fatalf("click confirm yes: %v", err)
+		}
+		w.TestRender(nil)
+		if len(app.draft.perDomain) != 1 || app.draft.perDomain[0].domains != "b.example" {
+			t.Fatalf("rules after confirm = %+v, want just b.example", app.draft.perDomain)
+		}
+		assertNoFindings(t, w)
+	})
+
+	t.Run("rule no keeps", func(t *testing.T) {
+		app := ruleApp()
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+
+		if err := w.TestClick("gui:rule:0:remove"); err != nil {
+			t.Fatalf("click remove: %v", err)
+		}
+		w.TestRender(nil)
+		if err := w.TestClick("gui:rule:0:remove:confirm"); err != nil {
+			t.Fatalf("click confirm no: %v", err)
+		}
+		w.TestRender(nil)
+		if len(app.draft.perDomain) != 2 {
+			t.Fatalf("row removed on cancel: %d", len(app.draft.perDomain))
+		}
+		assertNoFindings(t, w)
+	})
+
+	t.Run("list yes removes", func(t *testing.T) {
+		app := rulesApp()
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+		before := len(app.draft.lists)
+
+		if err := w.TestClick("gui:list:0:remove"); err != nil {
+			t.Fatalf("click remove: %v", err)
+		}
+		w.TestRender(nil)
+		if n := len(w.ResolveID("gui:list:0:remove:confirm")); n != 1 {
+			t.Fatalf("confirm dialog missing (%d)", n)
+		}
+		if len(app.draft.lists) != before {
+			t.Fatalf("list removed before confirming: %d", len(app.draft.lists))
+		}
+
+		if err := w.TestClick("gui:list:0:remove:confirm:1"); err != nil {
+			t.Fatalf("click confirm yes: %v", err)
+		}
+		w.TestRender(nil)
+		if len(app.draft.lists) != before-1 {
+			t.Fatalf("lists after confirm = %d, want %d", len(app.draft.lists), before-1)
+		}
+		assertNoFindings(t, w)
+	})
+
+	t.Run("list no keeps", func(t *testing.T) {
+		app := rulesApp()
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+		before := len(app.draft.lists)
+
+		if err := w.TestClick("gui:list:0:remove"); err != nil {
+			t.Fatalf("click remove: %v", err)
+		}
+		w.TestRender(nil)
+		if err := w.TestClick("gui:list:0:remove:confirm"); err != nil {
+			t.Fatalf("click confirm no: %v", err)
+		}
+		w.TestRender(nil)
+		if len(app.draft.lists) != before {
+			t.Fatalf("list removed on cancel: %d", len(app.draft.lists))
+		}
+		assertNoFindings(t, w)
+	})
+}
+
+// TestRuleRowItemsCentred proves the Enabled toggle and the Remove button are
+// vertically centred on the upstream input's centreline: the labelled input's
+// label stack used to leave them pinned high.
+func TestRuleRowItemsCentred(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	field := mustFindLayout(t, w, root, "gui:rule:0:upstream")
+	fieldCY := field.Shape.Y + field.Shape.Height/2
+	for _, id := range []string{"gui:rule:0:enable", "gui:rule:0:remove"} {
+		ly := mustFindLayout(t, w, root, id)
+		cy := ly.Shape.Y + ly.Shape.Height/2
+		if absF(cy-fieldCY) > 1 {
+			t.Errorf("%s centre %.1f is not on the upstream field centre %.1f", id, cy, fieldCY)
+		}
+	}
+}
+
+// TestRemoveButtonsDanger proves both Remove controls wear the theme's danger
+// (error) fill, matching the Delete / Uninstall destructive buttons.
+func TestRemoveButtonsDanger(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
+	app.draft.lists = []listDraft{{host: "ads.example", enabled: true, idx: 0}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+	want := gogui.CurrentTheme().Cfg.ColorError
+
+	for _, id := range []string{"gui:rule:0:remove", "gui:list:0:remove"} {
+		ly := mustFindLayout(t, w, root, id)
+		if ly.Shape.Color != want {
+			t.Errorf("%s fill = %v, want danger %v", id, ly.Shape.Color, want)
+		}
+	}
 }
 
 // TestSettingsOfflineNoticeWraps proves the long "Offline editing" notice
@@ -196,7 +691,7 @@ func TestNavRailCompact(t *testing.T) {
 	// The longest label ("Settings") must fit inside the fixed width with the
 	// theme's button inset, so the narrower rail does not clip it.
 	inset := gogui.CurrentTheme().PaddingButton
-	for _, id := range []string{"gui:nav:status", "gui:nav:settings", "gui:nav:about"} {
+	for _, id := range []string{"gui:nav:status", "gui:nav:settings", "gui:nav:rules", "gui:nav:about"} {
 		button := mustFindLayout(t, w, root, id)
 		if absF(button.Shape.Width-navRailWidth) > 1 {
 			t.Errorf("%s width %.0f != navRailWidth %d", id, button.Shape.Width, navRailWidth)
@@ -775,6 +1270,7 @@ func TestRenderArtifacts(t *testing.T) {
 	}{
 		{"status", statusApp},
 		{"settings", settingsApp},
+		{"rules", rulesApp},
 	}
 	sizes := []struct {
 		name string

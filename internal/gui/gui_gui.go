@@ -60,6 +60,11 @@ type App struct {
 	draft     profileDraft
 	seeded    bool
 
+	// listInput is the not-yet-added filter-list URL typed into the editor's
+	// add-list field.  It is transient UI state: it becomes a draft row on Add,
+	// and it never holds a value read from the config.
+	listInput string
+
 	// cached is the last sanitized summary, persisted to gui.json so the
 	// editor still works while the service is stopped.  cachedRev is the
 	// revision token that produced it (compared to avoid rewriting the file

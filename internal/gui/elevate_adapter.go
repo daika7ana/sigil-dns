@@ -104,6 +104,8 @@ func elevateActionFor(a guiAction) (elevate.Action, bool) {
 		return elevate.ActionServiceInstall, true
 	case actionUninstall:
 		return elevate.ActionServiceUninstall, true
+	case actionRefreshLists:
+		return elevate.ActionRefreshLists, true
 	case actionSaveProfile, actionAddProfile, actionRenameProfile, actionDeleteProfile, actionSetActive:
 		return elevate.ActionApply, true
 	default:
@@ -170,6 +172,16 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 			pp.Filtering.BlockResponse = new(br)
 		}
 	}
+	if lp := listPatch(d); lp != nil {
+		pp.Filtering.Lists = lp
+	}
+
+	// The full per-domain rule set replaces the profile's rules, so a deleted
+	// rule actually disappears.  Only sent when the seed carried the rule set:
+	// a legacy summary without it must never be saved as "no rules".
+	if d.rulesKnown {
+		pp.PerDomain = perDomainPatch(d.perDomain)
+	}
 
 	pp.Cache = &elevate.CachePatch{Enabled: new(d.cache)}
 	if mb := parseMiB(d.cacheSizeMB); mb > 0 {
@@ -178,4 +190,80 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	}
 
 	return pp
+}
+
+// listPatch builds the filter-list diff between the seeded lists and the editor
+// rows.  Existing lists are addressed by their original index — SetEnabled for
+// a changed toggle, Remove for a deleted row — so their (possibly
+// credential-bearing) URLs never travel; only a newly typed row carries a URL
+// (Add).  A nil result means no list changed.
+func listPatch(d profileDraft) *elevate.ListPatch {
+	lp := elevate.ListPatch{}
+	for i, seeded := range d.seededLists {
+		cur, ok := listAt(d.lists, i)
+		if !ok {
+			lp.Remove = append(lp.Remove, i)
+
+			continue
+		}
+		if cur.enabled != seeded.Enabled {
+			if lp.SetEnabled == nil {
+				lp.SetEnabled = map[int]bool{}
+			}
+			lp.SetEnabled[i] = cur.enabled
+		}
+	}
+
+	for _, l := range d.lists {
+		if l.idx < 0 {
+			if u := strings.TrimSpace(l.url); u != "" {
+				lp.Add = append(lp.Add, elevate.ListEntry{URL: u, Enabled: l.enabled})
+			}
+		}
+	}
+
+	if len(lp.SetEnabled) == 0 && len(lp.Remove) == 0 && len(lp.Add) == 0 {
+		return nil
+	}
+
+	return &lp
+}
+
+// listAt finds the current editor row for an existing list index.
+func listAt(lists []listDraft, idx int) (l listDraft, ok bool) {
+	for _, l := range lists {
+		if l.idx == idx {
+			return l, true
+		}
+	}
+
+	return listDraft{}, false
+}
+
+// perDomainPatch builds the full per-domain rule array from the editor rows.
+// Domains are always sent; a blank upstream names the existing rule to inherit
+// from by its original index (Keep), so deleting another row cannot shift the
+// source (replace-only, SPEC §15.2).  A row with no domains is dropped.  The
+// result is always non-nil so a removed rule is actually cleared.
+func perDomainPatch(rules []ruleDraft) *[]elevate.PerDomainPatch {
+	out := make([]elevate.PerDomainPatch, 0, len(rules))
+	for _, r := range rules {
+		domains := parseBootstrap(r.domains)
+		if len(domains) == 0 {
+			continue
+		}
+
+		p := elevate.PerDomainPatch{
+			Domains:  domains,
+			Upstream: strings.TrimSpace(r.upstream),
+			Enabled:  new(r.enabled),
+		}
+		if p.Upstream == "" && r.idx >= 0 {
+			p.Keep = new(r.idx)
+		}
+
+		out = append(out, p)
+	}
+
+	return &out
 }

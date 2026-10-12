@@ -34,6 +34,17 @@ type ListSummary struct {
 	Enabled bool `json:"enabled"`
 }
 
+// PerDomainSummary is one per-domain routing rule, reduced to its domains and
+// its enabled flag.  The upstream is never exposed; editing is replace-only
+// (SPEC §15.2).
+type PerDomainSummary struct {
+	// Domains is the rule's domain list (never an upstream).
+	Domains []string `json:"domains"`
+
+	// Enabled reports whether the rule is active.
+	Enabled bool `json:"enabled"`
+}
+
 // ProfileSummary is the sanitized per-profile view.  It never contains resolver
 // ids, upstream URLs, or full list URLs; IDSet is a boolean only.
 type ProfileSummary struct {
@@ -70,6 +81,13 @@ type ProfileSummary struct {
 
 	// Bootstrap is the list of bootstrap IP literals.
 	Bootstrap []string `json:"bootstrap,omitempty"`
+
+	// Lists is the per-list (host only) summary in config order, so the editor
+	// can address a list by index without its URL ever crossing the pipe.
+	Lists []ListSummary `json:"lists,omitempty"`
+
+	// PerDomain is the per-domain routing rules, reduced to their domains.
+	PerDomain []PerDomainSummary `json:"per_domain,omitempty"`
 }
 
 // ConfigSummary is the sanitized configuration view (SPEC §15.1).  It never
@@ -212,6 +230,20 @@ func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSumm
 		if b = strings.TrimSpace(b); b != "" {
 			s.Bootstrap = append(s.Bootstrap, redact.Upstream(b))
 		}
+	}
+
+	for _, l := range p.Filtering.Lists {
+		s.Lists = append(s.Lists, ListSummary{
+			Host:    redact.Upstream(l.URL),
+			Enabled: l.Enabled,
+		})
+	}
+
+	for _, r := range p.PerDomain {
+		s.PerDomain = append(s.PerDomain, PerDomainSummary{
+			Domains: append([]string(nil), r.Domains...),
+			Enabled: r.IsEnabled(),
+		})
 	}
 
 	s.IDSet = profileIDSet(p)

@@ -72,6 +72,49 @@ func (f *fakeRestorer) Restore(context.Context) (err error) {
 	return f.err
 }
 
+// fakeRefresher is an in-memory ipc.ListRefresher.
+type fakeRefresher struct {
+	err   error
+	calls int
+}
+
+func (f *fakeRefresher) RefreshLists(context.Context) (err error) {
+	f.calls++
+
+	return f.err
+}
+
+// TestHandleRefreshLists covers the admin-only refresh_lists method: rejected
+// for a non-admin caller, unsupported without a refresher, and dispatched when
+// wired.
+func TestHandleRefreshLists(t *testing.T) {
+	ctx := context.Background()
+
+	r := &fakeRefresher{}
+	srv := NewServer(&fakeLifecycle{}, nil).SetListRefresher(r)
+
+	if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodRefreshLists}); resp.OK ||
+		resp.Error != ErrForbidden.Error() {
+		t.Fatalf("refresh_lists non-admin: %+v", resp)
+	}
+	if r.calls != 0 {
+		t.Fatal("non-admin caller reached the refresher")
+	}
+
+	if resp := srv.Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodRefreshLists}); !resp.OK {
+		t.Fatalf("refresh_lists admin: %+v", resp)
+	}
+	if r.calls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", r.calls)
+	}
+
+	// Without a refresher the method is unsupported, not a panic.
+	if resp := NewServer(&fakeLifecycle{}, nil).Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodRefreshLists}); resp.OK ||
+		resp.Error != ErrUnsupported.Error() {
+		t.Fatalf("refresh_lists without handler: %+v", resp)
+	}
+}
+
 func TestEnvelopeRoundTrip(t *testing.T) {
 	req := Request{Version: ProtocolVersion, Method: MethodStatus}
 	data, err := json.Marshal(req)

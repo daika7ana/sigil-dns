@@ -61,6 +61,14 @@ type Restorer interface {
 	Restore(ctx context.Context) (err error)
 }
 
+// ListRefresher optionally handles the admin refresh_lists method.  It is set on
+// the control pipe only.
+type ListRefresher interface {
+	// RefreshLists re-downloads the filter lists and rebuilds the filter
+	// engine.
+	RefreshLists(ctx context.Context) (err error)
+}
+
 // Authorizer derives the identity of a connected peer.  It is injected by the
 // transport (or by tests); it must never trust the request body.
 type Authorizer func(conn net.Conn) Caller
@@ -79,6 +87,7 @@ type Server struct {
 	lc             Lifecycle
 	reloader       Reloader
 	restorer       Restorer
+	refresher      ListRefresher
 	logger         *slog.Logger
 	configPath     string
 	requestTimeout time.Duration
@@ -126,6 +135,13 @@ func (s *Server) SetReloader(r Reloader) *Server {
 // SetRestorer sets the restore handler (control pipe only).
 func (s *Server) SetRestorer(r Restorer) *Server {
 	s.restorer = r
+
+	return s
+}
+
+// SetListRefresher sets the filter-list refresh handler (control pipe only).
+func (s *Server) SetListRefresher(r ListRefresher) *Server {
+	s.refresher = r
 
 	return s
 }
@@ -192,6 +208,17 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 		}
 
 		if err := s.restorer.Restore(ctx); err != nil {
+			return errorResponse(err)
+		}
+
+		return okResponse(nil)
+
+	case MethodRefreshLists:
+		if s.refresher == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		if err := s.refresher.RefreshLists(ctx); err != nil {
 			return errorResponse(err)
 		}
 

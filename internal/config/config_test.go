@@ -373,7 +373,7 @@ func TestCloneProfileIsDeep(t *testing.T) {
 		Upstreams: []string{"https://a", "https://b"},
 		Bootstrap: []string{"1.1.1.1"},
 		Cache:     &Cache{Enabled: true, SizeBytes: 1024},
-		PerDomain: []PerDomain{{Domains: []string{"corp.example"}, Upstream: "tls://10.0.0.1"}},
+		PerDomain: []PerDomain{{Domains: []string{"corp.example"}, Upstream: "tls://10.0.0.1", Enabled: new(false)}},
 		Filtering: Filtering{Lists: []FilterList{{URL: "https://list.example/x", Enabled: true}}},
 	}
 
@@ -383,6 +383,7 @@ func TestCloneProfileIsDeep(t *testing.T) {
 	clone.Bootstrap[0] = "2.2.2.2"
 	clone.Cache.SizeBytes = 999
 	clone.PerDomain[0].Domains[0] = "changed.example"
+	*clone.PerDomain[0].Enabled = true
 	clone.Filtering.Lists[0].URL = "https://changed"
 
 	if original.Upstreams[0] != "https://a" {
@@ -397,8 +398,27 @@ func TestCloneProfileIsDeep(t *testing.T) {
 	if original.PerDomain[0].Domains[0] != "corp.example" {
 		t.Error("PerDomain inner slice aliased")
 	}
+	if original.PerDomain[0].Enabled == nil || *original.PerDomain[0].Enabled {
+		t.Error("PerDomain Enabled pointer aliased")
+	}
 	if original.Filtering.Lists[0].URL != "https://list.example/x" {
 		t.Error("Filtering lists aliased")
+	}
+}
+
+// TestPerDomainIsEnabled pins the nil-means-enabled default: an absent field
+// (legacy config or a new rule) is enabled, and only an explicit false disables.
+func TestPerDomainIsEnabled(t *testing.T) {
+	if !(PerDomain{}).IsEnabled() {
+		t.Error("an absent Enabled should be enabled")
+	}
+
+	off, on := false, true
+	if (PerDomain{Enabled: &off}).IsEnabled() {
+		t.Error("Enabled=false should be disabled")
+	}
+	if !(PerDomain{Enabled: &on}).IsEnabled() {
+		t.Error("Enabled=true should be enabled")
 	}
 }
 

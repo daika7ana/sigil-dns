@@ -55,13 +55,19 @@ const (
 
 	// ActionServiceStop stops the Windows service.
 	ActionServiceStop Action = "service_stop"
+
+	// ActionRefreshLists re-downloads the active profile's filter lists and
+	// rebuilds the filter engine.  It does not touch the config; it drives the
+	// running service over the verified control pipe.
+	ActionRefreshLists Action = "refresh_lists"
 )
 
 // valid reports whether a is a known action.
 func (a Action) valid() (ok bool) {
 	switch a {
 	case ActionEnable, ActionDisable, ActionRestore, ActionApply,
-		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop:
+		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop,
+		ActionRefreshLists:
 		return true
 	default:
 		return false
@@ -77,6 +83,12 @@ func (a Action) serviceAction() (ok bool) {
 	default:
 		return false
 	}
+}
+
+// noPatch reports whether a takes no config patch (service actions and the
+// service-only refresh_lists action).
+func (a Action) noPatch() (ok bool) {
+	return a.serviceAction() || a == ActionRefreshLists
 }
 
 // Patch is the allowlisted set of config fields a request may change.  Only the
@@ -110,13 +122,64 @@ type ProfilePatch struct {
 	Bootstrap *[]string       `json:"bootstrap,omitempty"`
 	Filtering *FilteringPatch `json:"filtering,omitempty"`
 	Cache     *CachePatch     `json:"cache,omitempty"`
+
+	// PerDomain replaces the profile's per-domain routing rules.  A blank
+	// Upstream on an entry keeps the existing rule's upstream at the same index
+	// (replace-only), so a configured per-domain upstream never has to travel.
+	PerDomain *[]PerDomainPatch `json:"per_domain,omitempty"`
 }
 
 // FilteringPatch is the allowlisted filtering patch.
 type FilteringPatch struct {
-	Enabled       *bool   `json:"enabled,omitempty"`
-	BlockResponse *string `json:"block_response,omitempty"`
-	BlockTTL      *uint32 `json:"block_ttl,omitempty"`
+	Enabled       *bool      `json:"enabled,omitempty"`
+	BlockResponse *string    `json:"block_response,omitempty"`
+	BlockTTL      *uint32    `json:"block_ttl,omitempty"`
+	Lists         *ListPatch `json:"lists,omitempty"`
+}
+
+// ListPatch is the allowlisted set of filter-list operations.  Existing lists
+// are addressed by their index in config order so their (possibly
+// credential-bearing) URLs never round-trip; only a newly added list carries a
+// URL.  It is applied after the scalar filtering fields.
+type ListPatch struct {
+	// SetEnabled maps an existing list index to a new enabled state.
+	SetEnabled map[int]bool `json:"set_enabled,omitempty"`
+
+	// Add appends new lists.
+	Add []ListEntry `json:"add,omitempty"`
+
+	// Remove deletes existing lists by index.
+	Remove []int `json:"remove,omitempty"`
+}
+
+// ListEntry is one list to append.
+type ListEntry struct {
+	// URL is the list source (http(s) URL or local path).
+	URL string `json:"url"`
+
+	// Enabled reports whether the added list starts enabled.
+	Enabled bool `json:"enabled"`
+}
+
+// PerDomainPatch is one per-domain routing rule.  Domains are always
+// re-specified; a blank Upstream keeps the existing rule's upstream, named by
+// Keep (the source rule's original index), so a configured target never has to
+// travel and a deletion elsewhere in the list cannot shift the source.
+type PerDomainPatch struct {
+	// Domains is the rule's domain list (dnsmasq conventions).
+	Domains []string `json:"domains"`
+
+	// Upstream is the routing target; blank keeps the existing rule's target
+	// named by Keep.
+	Upstream string `json:"upstream,omitempty"`
+
+	// Keep is the original index of an existing rule whose upstream is
+	// inherited when Upstream is blank.  It is required for a blank upstream
+	// and ignored when Upstream is set.
+	Keep *int `json:"keep,omitempty"`
+
+	// Enabled toggles the rule; nil (absent) leaves it enabled.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // CachePatch is the allowlisted cache patch.
@@ -179,7 +242,7 @@ func (r Request) Validate() (err error) {
 		return errors.New("missing request id")
 	}
 
-	if r.Action.serviceAction() {
+	if r.Action.noPatch() {
 		if !r.Patch.empty() {
 			return errors.New("service actions do not take a config patch")
 		}
@@ -280,6 +343,12 @@ func (pp ProfilePatch) validateShape() (err error) {
 		}
 	}
 
+	if pp.PerDomain != nil {
+		if err = validatePerDomainPatch(*pp.PerDomain); err != nil {
+			return err
+		}
+	}
+
 	if pp.Cache != nil {
 		if err = pp.Cache.validateShape(); err != nil {
 			return err
@@ -314,6 +383,48 @@ func (f FilteringPatch) validateShape() (err error) {
 	}
 	if f.BlockResponse != nil && strings.TrimSpace(*f.BlockResponse) == "" {
 		return errors.New("block_response must not be empty")
+	}
+	if f.Lists != nil {
+		if err = f.Lists.validateShape(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateShape enforces the list-operation constraints.  Indices are checked
+// against the profile's actual list count when the patch is applied (only then
+// is the config in hand); here only the intrinsic shape is checked.
+func (l ListPatch) validateShape() (err error) {
+	for i := range l.SetEnabled {
+		if i < 0 {
+			return errors.New("list index must not be negative")
+		}
+	}
+	for _, i := range l.Remove {
+		if i < 0 {
+			return errors.New("list index must not be negative")
+		}
+	}
+	for _, e := range l.Add {
+		if strings.TrimSpace(e.URL) == "" {
+			return errors.New("an added list needs a url")
+		}
+	}
+
+	return nil
+}
+
+// validatePerDomainPatch enforces the per-domain rule constraints.
+func validatePerDomainPatch(rules []PerDomainPatch) (err error) {
+	for _, r := range rules {
+		if len(r.Domains) == 0 {
+			return errors.New("a per-domain rule needs at least one domain")
+		}
+		if r.Keep != nil && *r.Keep < 0 {
+			return errors.New("a per-domain keep index must not be negative")
+		}
 	}
 
 	return nil
@@ -423,11 +534,19 @@ func applyProfilePatch(p *config.Profile, pp ProfilePatch) (err error) {
 	}
 
 	if pp.Filtering != nil {
-		applyFilteringPatch(&p.Filtering, pp.Filtering)
+		if err = applyFilteringPatch(&p.Filtering, pp.Filtering); err != nil {
+			return err
+		}
 	}
 
 	if pp.Cache != nil {
 		applyCachePatch(p, pp.Cache)
+	}
+
+	if pp.PerDomain != nil {
+		if err = applyPerDomainPatch(p, *pp.PerDomain); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -621,7 +740,7 @@ func selectionNeedsID(sel providers.Selection) (needs bool) {
 }
 
 // applyFilteringPatch merges the allowlisted filtering fields.
-func applyFilteringPatch(f *config.Filtering, fp *FilteringPatch) {
+func applyFilteringPatch(f *config.Filtering, fp *FilteringPatch) (err error) {
 	if fp.Enabled != nil {
 		f.Enabled = *fp.Enabled
 	}
@@ -631,6 +750,90 @@ func applyFilteringPatch(f *config.Filtering, fp *FilteringPatch) {
 	if fp.BlockTTL != nil {
 		f.BlockTTL = *fp.BlockTTL
 	}
+	if fp.Lists != nil {
+		if err = applyListPatch(&f.Lists, *fp.Lists); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyListPatch applies the allowlisted filter-list operations: in-place
+// enable toggles, then removals by descending index, then appends.  Existing
+// lists are addressed only by index; a new list carries its URL.  Every
+// addressed index must be within [0, len(*lists)); an out-of-range index is a
+// static error (the value is never echoed) so a stale UI cannot corrupt an
+// unrelated list.
+func applyListPatch(lists *[]config.FilterList, lp ListPatch) (err error) {
+	cur := *lists
+
+	for i := range lp.SetEnabled {
+		if i < 0 || i >= len(cur) {
+			return errors.New("list index is out of range")
+		}
+	}
+	for _, i := range lp.Remove {
+		if i < 0 || i >= len(cur) {
+			return errors.New("list index is out of range")
+		}
+	}
+
+	for i, enabled := range lp.SetEnabled {
+		cur[i].Enabled = enabled
+	}
+
+	// Remove in descending index order so an earlier removal never shifts a
+	// later index.
+	if len(lp.Remove) > 0 {
+		idx := append([]int(nil), lp.Remove...)
+		sort.Sort(sort.Reverse(sort.IntSlice(idx)))
+
+		for _, i := range idx {
+			cur = append(cur[:i], cur[i+1:]...)
+		}
+	}
+
+	for _, e := range lp.Add {
+		cur = append(cur, config.FilterList{URL: strings.TrimSpace(e.URL), Enabled: e.Enabled})
+	}
+
+	*lists = cur
+
+	return nil
+}
+
+// applyPerDomainPatch replaces p's per-domain routing rules.  A non-blank
+// Upstream sets the rule's target; a blank Upstream keeps the target of the
+// existing rule named by Keep (replace-only), so a configured target never has
+// to travel and the source is explicit rather than positional.  A blank
+// upstream with no in-range Keep (a new rule), or whose inherited upstream is
+// blank, is a static error.
+func applyPerDomainPatch(p *config.Profile, patches []PerDomainPatch) (err error) {
+	old := p.PerDomain
+	out := make([]config.PerDomain, 0, len(patches))
+
+	for _, rp := range patches {
+		up := strings.TrimSpace(rp.Upstream)
+		if up == "" {
+			if rp.Keep == nil || *rp.Keep < 0 || *rp.Keep >= len(old) ||
+				strings.TrimSpace(old[*rp.Keep].Upstream) == "" {
+				return errors.New("a new per-domain rule needs an upstream")
+			}
+
+			up = old[*rp.Keep].Upstream
+		}
+
+		out = append(out, config.PerDomain{
+			Domains:  append([]string(nil), rp.Domains...),
+			Upstream: up,
+			Enabled:  rp.Enabled,
+		})
+	}
+
+	p.PerDomain = out
+
+	return nil
 }
 
 // applyCachePatch merges the allowlisted cache fields.

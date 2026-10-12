@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/daika7ana/dns-client/internal/elevate"
+	"github.com/daika7ana/dns-client/internal/ipc"
 )
 
 // TestElevateActionFor covers the full GUI-action -> elevate.Action mapping.
@@ -16,6 +17,7 @@ func TestElevateActionFor(t *testing.T) {
 		actionRestore:       elevate.ActionRestore,
 		actionInstall:       elevate.ActionServiceInstall,
 		actionUninstall:     elevate.ActionServiceUninstall,
+		actionRefreshLists:  elevate.ActionRefreshLists,
 		actionSaveProfile:   elevate.ActionApply,
 		actionAddProfile:    elevate.ActionApply,
 		actionRenameProfile: elevate.ActionApply,
@@ -35,12 +37,14 @@ func TestElevateActionFor(t *testing.T) {
 	}
 }
 
-// TestServiceRequestHasEmptyPatch checks the two service actions map to the
-// two elevate actions with no config patch and a valid request.
+// TestServiceRequestHasEmptyPatch checks the no-patch actions (the service
+// lifecycle and the refresh_lists action) map to their elevate action with no
+// config patch and a valid request.
 func TestServiceRequestHasEmptyPatch(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
-		actionInstall:   elevate.ActionServiceInstall,
-		actionUninstall: elevate.ActionServiceUninstall,
+		actionInstall:      elevate.ActionServiceInstall,
+		actionUninstall:    elevate.ActionServiceUninstall,
+		actionRefreshLists: elevate.ActionRefreshLists,
 	}
 
 	for a, want := range cases {
@@ -137,6 +141,131 @@ func TestSavePatchMapping(t *testing.T) {
 			t.Errorf("invalid size should be omitted")
 		}
 	})
+}
+
+// TestListDiffMapping checks the seeded-list vs editor-list diff: a changed
+// toggle is SetEnabled by original index, a deleted row is Remove by index, a
+// new row travels as Add with its URL, and an unchanged seed sends no list
+// patch at all.
+func TestListDiffMapping(t *testing.T) {
+	seeded := []ipc.ListSummary{
+		{Host: "ads.example", Enabled: true},
+		{Host: "track.example", Enabled: false},
+		{Host: "gone.example", Enabled: true},
+	}
+
+	t.Run("toggle, remove and add", func(t *testing.T) {
+		d := profileDraft{
+			name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+			seededLists: seeded,
+			lists: []listDraft{
+				{host: "ads.example", enabled: false, idx: 0}, // toggled off
+				{host: "track.example", enabled: false, idx: 1},
+				// idx 2 removed
+				{url: " https://new.example/hosts.txt ", enabled: true, idx: -1},
+			},
+		}
+
+		pp := saveRequest(t, d).Patch.Profiles["w"]
+		if pp.Filtering == nil || pp.Filtering.Lists == nil {
+			t.Fatal("no list patch built")
+		}
+		lp := pp.Filtering.Lists
+
+		if v, ok := lp.SetEnabled[0]; !ok || v {
+			t.Errorf("SetEnabled[0] = (%v, %v), want (false, true)", v, ok)
+		}
+		if _, ok := lp.SetEnabled[1]; ok {
+			t.Errorf("unchanged list 1 must not be in SetEnabled")
+		}
+		if len(lp.Remove) != 1 || lp.Remove[0] != 2 {
+			t.Errorf("Remove = %v, want [2]", lp.Remove)
+		}
+		if len(lp.Add) != 1 || lp.Add[0].URL != "https://new.example/hosts.txt" || !lp.Add[0].Enabled {
+			t.Errorf("Add = %+v", lp.Add)
+		}
+	})
+
+	t.Run("unchanged seed sends no list patch", func(t *testing.T) {
+		d := profileDraft{
+			name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+			seededLists: seeded,
+			lists: []listDraft{
+				{host: "ads.example", enabled: true, idx: 0},
+				{host: "track.example", enabled: false, idx: 1},
+				{host: "gone.example", enabled: true, idx: 2},
+			},
+		}
+
+		pp := saveRequest(t, d).Patch.Profiles["w"]
+		if pp.Filtering.Lists != nil {
+			t.Errorf("unchanged lists built a patch: %+v", pp.Filtering.Lists)
+		}
+	})
+}
+
+// TestPerDomainMapping checks the editor rows become the full rule array:
+// domains are always sent, a typed upstream is trimmed, a kept rule's blank
+// upstream names its source by original index (Keep), a new rule has no Keep,
+// every entry carries its enable state, and a row with no domains is dropped.
+func TestPerDomainMapping(t *testing.T) {
+	d := profileDraft{
+		name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+		rulesKnown: true,
+		perDomain: []ruleDraft{
+			{domains: "example.com, www.example.com", idx: 2, enabled: true},          // blank upstream -> Keep 2
+			{domains: "ads.example", upstream: "  1.1.1.1  ", idx: 0, enabled: false}, // toggled off
+			{domains: "new.example", idx: -1, enabled: true},                          // new rule: no Keep
+			{domains: "   ", idx: 5, enabled: true},                                   // no domains: dropped
+		},
+	}
+
+	pp := saveRequest(t, d).Patch.Profiles["w"]
+	if pp.PerDomain == nil {
+		t.Fatal("no per-domain array built")
+	}
+	rules := *pp.PerDomain
+	if len(rules) != 3 {
+		t.Fatalf("rules = %d, want 3", len(rules))
+	}
+	if len(rules[0].Domains) != 2 || rules[0].Domains[0] != "example.com" ||
+		rules[0].Upstream != "" || rules[0].Keep == nil || *rules[0].Keep != 2 {
+		t.Errorf("rule 0 = %+v, want a blank upstream kept by index 2", rules[0])
+	}
+	if rules[1].Upstream != "1.1.1.1" || rules[1].Keep != nil {
+		t.Errorf("rule 1 = %+v, want an explicit upstream and no Keep", rules[1])
+	}
+	if rules[2].Keep != nil {
+		t.Errorf("rule 2 Keep = %v, want nil for a new rule", *rules[2].Keep)
+	}
+
+	// Every emitted entry carries its enable state, so a toggled-off rule is
+	// actually disabled by the full-replace array.
+	if rules[0].Enabled == nil || !*rules[0].Enabled {
+		t.Errorf("rule 0 Enabled = %v, want &true", rules[0].Enabled)
+	}
+	if rules[1].Enabled == nil || *rules[1].Enabled {
+		t.Errorf("rule 1 Enabled = %v, want &false", rules[1].Enabled)
+	}
+	if rules[2].Enabled == nil || !*rules[2].Enabled {
+		t.Errorf("rule 2 Enabled = %v, want &true", rules[2].Enabled)
+	}
+}
+
+// TestLegacySummaryDoesNotSendRules proves a draft seeded from a legacy
+// top-level summary (which carries no per-domain rules) does not send an empty
+// rule array — that would silently clear the profile's rules on an unrelated
+// save.
+func TestLegacySummaryDoesNotSendRules(t *testing.T) {
+	d := draftFromActiveProfile(&ipc.ConfigSummary{Profile: "w", Provider: "quad9"})
+	if d.rulesKnown {
+		t.Fatal("legacy summary must leave the rule set unknown")
+	}
+
+	pp := saveRequest(t, d).Patch.Profiles["w"]
+	if pp.PerDomain != nil {
+		t.Errorf("legacy summary sent a rule array: %+v", *pp.PerDomain)
+	}
 }
 
 // TestNoIDProviderDropsTypedID proves a value typed into the Resolver ID field

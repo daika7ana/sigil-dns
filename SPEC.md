@@ -216,8 +216,9 @@ WSL2 (NAT) may bypass loopback DNS. Document (`dnsTunneling`/`.wslconfig`). Not 
   user-supplied (defaults disabled).
 - `urlfilter.NewDNSEngine(storage)` → `MatchRequest` before forwarding.
 - Blocked response: `0.0.0.0` / `::` (configurable) or NXDOMAIN. Support `$dnsrewrite`.
-- List updates: **manual + on-start with ETag** (no scheduled updater in v1). Reload with a cache
-  flush (§5).
+- List updates: **on-start + manual** — the admin `refresh_lists` IPC method re-downloads the active
+  profile's lists, rebuilds the engine, and flushes the cache (§5); no scheduled updater in v1.
+  Changed-content dedupe is an unconditional GET compared by content checksum (sha256), not ETag.
 
 ---
 
@@ -305,8 +306,9 @@ profiles:
     upstreams: ["https://dns.quad9.net/dns-query"]
     bootstrap: [9.9.9.9, 149.112.112.112]
     per_domain:
-      - domains: ["corp.example"]
+      - domains: ["corp.example"]   # exact or *.wildcard; dnsmasq semantics (see §5)
         upstream: "tls://10.0.0.1"
+        enabled: true               # optional; omitted = enabled
     cache: { enabled: true, size_bytes: 67108864 }
     filtering:
       enabled: true
@@ -368,7 +370,7 @@ snapshot, dirty marker, active profile, last health result.
 5. **Packaging + signing** — installer, GH Actions release, docs.
 6. **GUI** — go-gui config client (§15): sanitized reads + elevated-helper apply, full profile /
    filtering / cache editing, service management, enable/disable UX, packaging. *Rules/lists editing
-   still pending (§15.4). Supersedes the earlier "tray" idea.*
+   shipped in a later GUI phase (§15.4 phase 5). Supersedes the earlier "tray" idea.*
 
 ### Cut from v1 (YAGNI — add on demand)
 optimistic cache · concurrent multi-profile resolution (many profiles are stored, one active at a
@@ -440,30 +442,37 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   bool, active profile name, bootstrap IP literals, rule/list **counts** and list **hosts**, filtering
   + cache settings, `config_valid` with a secret-free error, a revision token, and a `profiles` list —
   one sanitized `ProfileSummary` per profile: name, active flag, provider/variant/protocol labels,
-  `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals; never ids or upstream
-  URLs). `id_set` is provider-aware (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only
+  `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals, per-list **hosts** (+
+  enabled) and per-domain rule **domains** (+ enabled); never ids or upstream URLs). `id_set` is
+  provider-aware (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only
   the DoH-path heuristic. The provider catalog is rendered **locally** from `internal/providers` (no
   IPC, no secrets).
 - **Writes** — a **one-shot elevated helper**: the GUI re-launches the *same signed binary*
   `--apply <staging>` via `ShellExecuteW "runas"`. The helper re-loads and validates the staged patch
   with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
-  existing admin control pipe (`reload` / `enable` / `disable`). The allowlist is the **whole config
-  surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches (provider /
-  variant / protocol / id / custom URL / bootstrap / filtering / cache), the structural `AddProfile` /
-  `RenameProfile` / `DeleteProfile`, and the service actions `service_install` / `service_uninstall` /
-  `service_start` / `service_stop`. Every field is validated (bootstrap as IP literals, provider /
-  variant / protocol against the registry, id charset + length, explicit-zero rejection); ids travel
-  only inside the DPAPI-sealed staging body, and a blank id means *keep* (replace-only). **No new IPC
-  methods**: the §15.3 privilege table is unchanged. No persistent broker and no second privileged
-  surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
+  existing admin control pipe (`reload` / `enable` / `disable` / `refresh_lists`). The allowlist is the
+  **whole config surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches
+  (provider / variant / protocol / id / custom URL / bootstrap / filtering / cache, plus **per-list
+  operations** — toggle/add/remove existing lists by index — and **per-domain rules** with a per-rule
+  `enabled` flag), the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service
+  actions `service_install` / `service_uninstall` / `service_start` / `service_stop` / `refresh_lists`.
+  Every field is validated (bootstrap as IP literals, provider / variant / protocol against the
+  registry, id charset + length, explicit-zero rejection); ids travel only inside the DPAPI-sealed
+  staging body, and a blank id means *keep* (replace-only). Exactly one new control-pipe method was
+  added, `refresh_lists`; it is classified `Admin` in the §15.3 privilege table (the status pipe
+  rejects it). No persistent broker and no second privileged surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
   so a write no longer raises its own UAC prompt — consent is per **launch**, not per action — but the
   helper remains the sole writer and the only path that touches staged input.
-- **Surface** — two pages. **Status**: a banner plus a single header power control (Enable / Disable,
-  and Restore only for a crash-leftover dirty state) and profile / filtering / cache cards.
-  **Settings**: a service card (install / remove + state), a profile list with add / rename / delete /
-  set-active, and a per-profile editor (provider / variant / protocol, masked id, custom URL,
-  bootstrap, filtering + block response, cache + size). Enable starts the service and applies
-  interception; Disable removes it. A `gui.lock` beside `gui.json` enforces a single GUI instance.
+- **Surface** — three pages (left nav rail). **Status**: a banner plus a single header power control
+  (Enable / Disable, and Restore only for a crash-leftover dirty state) and profile / filtering /
+  cache cards. **Settings**: a service card (install / remove + state), a profile list with add /
+  rename / delete / set-active, and a per-profile editor (provider / variant / protocol, masked id,
+  custom URL, bootstrap, filtering + block response, cache + size). **Rules**: the filter-list editor
+  and the per-domain routing rules in one **scrollable** column — per-list and per-rule enable
+  toggles, add / remove, a `*.` wildcard hint, and an "Update blocklists" action that drives the admin
+  `refresh_lists` method (offered only while the service is running). Enable starts the service and
+  applies interception; Disable removes it. A `gui.lock` beside `gui.json` enforces a single GUI
+  instance.
 - **Identity** — before trusting reads or sending writes, verify the pipe server *is* the service:
   `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
   untrusted and refuse writes (kills pipe-squatting without a nonce).
@@ -519,7 +528,7 @@ while the helper's re-validation, field allowlist, and ACL-enforced atomic write
 12. Verify service identity before trusting reads or sending actions.
 
 ### 15.4 Phases
-Status: **phases 0–4 and 6–7 are implemented; phase 5 is not.**
+Status: **phases 0–7 are implemented.**
 0. **Preconditions** — DONE: ACL `config.yaml` (+ dir); upstreams redacted from logs; non-secret
    profile metadata (`provider`/`variant`/`protocol`).
 1. **IPC extension** — DONE: `info` + `config_summary` (status pipe, now with the `profiles` list),
@@ -530,8 +539,11 @@ Status: **phases 0–4 and 6–7 are implemented; phase 5 is not.**
    editor now writes through the elevated helper (superseding the original "no elevation" scope).
 4. **Elevation + Apply** — DONE: the allowlist is the full config surface plus the service actions,
    with DPAPI staging, the `--apply` helper, per-launch UAC UX, and revision-conflict abort.
-5. **Rules/lists editing + `refresh_lists`** — **REMAINING**: the editor covers provider / filtering /
-   cache fields, but per-list rule editing (beyond list toggles) and `refresh_lists` are not built.
+5. **Rules/lists editing + `refresh_lists`** — DONE: a dedicated scrollable **Rules** page holds the
+   filter-list editor (add / remove / per-list enable, addressed by index so list URLs never round-trip)
+   and the per-domain routing rules (domains, replace-only upstream by `Keep` index, per-rule `enabled`
+   toggle, `*.` wildcard hint); the admin `refresh_lists` method re-downloads lists live, exposed in the
+   GUI as "Update blocklists" and in the CLI as `refresh`.
 6. **Enable/disable/degrade UX** — DONE: a single header power control, service management via the
    helper, and the dirty/"Restore now" banner.
 7. **Packaging** — DONE: go-gui binary (no cgo), installer ships the GUI + Start-Menu shortcut, and a

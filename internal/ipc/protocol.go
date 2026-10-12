@@ -29,10 +29,13 @@ const (
 
 	// CapRestore marks the admin restore method.
 	CapRestore
+
+	// CapRefreshLists marks the admin refresh_lists method.
+	CapRefreshLists
 )
 
 // Capabilities is the set of capability bits this build supports.
-const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore
+const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore | CapRefreshLists
 
 // Method is an IPC request method.
 type Method string
@@ -60,6 +63,11 @@ const (
 	// MethodRestore is state-changing and requires administrator privileges.
 	// It is config-independent (crash/dirty recovery).
 	MethodRestore Method = "restore"
+
+	// MethodRefreshLists is state-changing and requires administrator
+	// privileges.  It re-downloads the active profile's filter lists and
+	// rebuilds the filter engine without tearing down interception.
+	MethodRefreshLists Method = "refresh_lists"
 )
 
 // Privilege classifies a method's required caller identity (SPEC §15.3.2).
@@ -85,6 +93,7 @@ var methodPrivileges = map[Method]Privilege{
 	MethodDisable:       Admin,
 	MethodReload:        Admin,
 	MethodRestore:       Admin,
+	MethodRefreshLists:  Admin,
 }
 
 // valid reports whether m is a known method.

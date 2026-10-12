@@ -232,12 +232,12 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return startService()
 	case ActionServiceStop:
 		return stopService()
-	case ActionApply, ActionRestore:
+	case ActionApply, ActionRestore, ActionRefreshLists:
 	}
 
 	changed := false
 
-	if req.Action != ActionRestore {
+	if req.Action != ActionRestore && req.Action != ActionRefreshLists {
 		// Resolve the config path from the ProgramData KnownFolder inside the
 		// elevated helper: never trust %ProgramData% from the caller's env.
 		path := config.SystemPath()
@@ -582,6 +582,13 @@ func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (m
 		}
 
 		return "interception disabled", nil
+
+	case ActionRefreshLists:
+		if err = client.RefreshLists(ctx); err != nil {
+			return "", err
+		}
+
+		return "lists refreshed", nil
 
 	case ActionApply:
 		if !changed {

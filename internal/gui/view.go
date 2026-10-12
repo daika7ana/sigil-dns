@@ -29,6 +29,7 @@ type pageKind int
 const (
 	pageStatus pageKind = iota
 	pageSettings
+	pageRules
 	pageAbout
 )
 
@@ -85,6 +86,8 @@ func pageContent(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	switch app.page {
 	case pageSettings:
 		return settingsPage(t, app, windowWidth)
+	case pageRules:
+		return rulesPage(t, app)
 	case pageAbout:
 		return aboutPage(t)
 	default:
@@ -104,6 +107,7 @@ func navRail(t gogui.Theme, app *App) gogui.View {
 		Content: []gogui.View{
 			navButton(t, pageStatus, "Status", app.page),
 			navButton(t, pageSettings, "Settings", app.page),
+			navButton(t, pageRules, "Rules", app.page),
 			navButton(t, pageAbout, "About", app.page),
 		},
 	})
@@ -139,6 +143,8 @@ func pageName(p pageKind) (name string) {
 	switch p {
 	case pageSettings:
 		return "settings"
+	case pageRules:
+		return "rules"
 	case pageAbout:
 		return "about"
 	default:

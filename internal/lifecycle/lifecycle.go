@@ -22,6 +22,10 @@ import (
 	"github.com/daika7ana/dns-client/internal/state"
 )
 
+// ErrNotRunning is returned when a resolver-scoped operation is requested while
+// no resolver is running.
+var ErrNotRunning = errors.New("resolver is not running")
+
 // Config configures a Lifecycle.
 type Config struct {
 	Logger         *slog.Logger
@@ -265,6 +269,17 @@ func (l *Lifecycle) Run(ctx context.Context) (err error) {
 
 // Status returns the persisted state, or state.ErrNoState.
 func (l *Lifecycle) Status() (st *state.State, err error) { return l.store.Load() }
+
+// RefreshLists re-downloads the running resolver's filter lists and rebuilds
+// its filter engine (SPEC §15.1).  It returns ErrNotRunning when no resolver is
+// active.
+func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
+	if l.res == nil {
+		return ErrNotRunning
+	}
+
+	return l.res.RefreshLists(ctx)
+}
 
 // newResolver builds a resolver from the config.
 func (l *Lifecycle) newResolver() (res *resolver.Resolver, err error) {

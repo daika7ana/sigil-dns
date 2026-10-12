@@ -51,11 +51,22 @@ type Cache struct {
 }
 
 // PerDomain is a per-domain routing rule, wired into dnsproxy's UpstreamConfig
-// by internal/resolver (see rulesToLines + proxy.ParseUpstreamsConfig).
+// by internal/resolver (see rulesToLines + proxy.ParseUpstreamsConfig).  Domains
+// accept the dnsmasq conventions the resolver documents: "*.sub.domain" matches
+// the subdomains of sub.domain (not the base), while "sub.domain" matches the
+// base and all subdomains.
 type PerDomain struct {
 	Domains  []string `yaml:"domains"`
 	Upstream string   `yaml:"upstream"`
+
+	// Enabled toggles the rule without deleting it.  A nil (absent) field means
+	// enabled, so existing rules keep matching across an upgrade.
+	Enabled *bool `yaml:"enabled,omitempty"`
 }
+
+// IsEnabled reports whether the rule is active.  A nil Enabled (an absent
+// field, or a legacy config) is enabled.
+func (pd PerDomain) IsEnabled() (on bool) { return pd.Enabled == nil || *pd.Enabled }
 
 // FilterList is a blocklist entry, loaded into urlfilter by internal/filter.
 type FilterList struct {
@@ -479,6 +490,10 @@ func cloneProfile(p Profile) (q Profile) {
 		for i, pd := range p.PerDomain {
 			q.PerDomain[i] = pd
 			q.PerDomain[i].Domains = slices.Clone(pd.Domains)
+			if pd.Enabled != nil {
+				enabled := *pd.Enabled
+				q.PerDomain[i].Enabled = &enabled
+			}
 		}
 	}
 

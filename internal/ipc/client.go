@@ -63,6 +63,13 @@ func (c *Client) Restore(ctx context.Context) (err error) {
 	return c.callTimeout(ctx, MethodRestore, nil, reloadTimeout)
 }
 
+// RefreshLists asks the service (control pipe) to re-download its filter lists
+// and rebuild the filter engine.  Downloads can be slow, so it uses the long
+// reload timeout.
+func (c *Client) RefreshLists(ctx context.Context) (err error) {
+	return c.callTimeout(ctx, MethodRefreshLists, nil, reloadTimeout)
+}
+
 // call performs one request/response exchange with the default timeout.
 func (c *Client) call(ctx context.Context, method Method, out any) (err error) {
 	return c.callTimeout(ctx, method, out, clientTimeout)

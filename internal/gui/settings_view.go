@@ -25,12 +25,8 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	floor := selectFloor(windowWidth)
 
 	content := []gogui.View{}
-	if !canEdit(app.snap) {
-		content = append(content, notice(t,
-			"Service identity not verified",
-			"Editing is unavailable until the dns-client service is verified."))
-	} else if hint := editingHint(app); hint != "" {
-		content = append(content, notice(t, "Offline editing", hint))
+	if v := editNotice(t, app); v != nil {
+		content = append(content, v)
 	}
 
 	content = append(content,
@@ -47,6 +43,56 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 		Scrollable: true,
 		Content:    content,
 	})
+}
+
+// rulesPage is the filter-list and per-domain routing editor.  It renders in
+// ONE scrollable column (the same pattern as the Status page) so a long list
+// scrolls instead of growing the window.  The two editors are separate cards
+// with their own headings; one Save row sits below both, outside the cards,
+// because it applies the whole shared profile draft rather than either card
+// alone.
+func rulesPage(t gogui.Theme, app *App) gogui.View {
+	app.ensureDraft()
+	disabled := app.busy || !canEdit(app.snap) || app.draft.name == ""
+
+	content := []gogui.View{}
+	if v := editNotice(t, app); v != nil {
+		content = append(content, v)
+	}
+	content = append(content,
+		caption(t, "Editing profile: "+fallback(app.draft.name, "—")),
+		cardSpaced(t, "gui:card:lists", "Filter lists", gogui.SpacingSmall, []gogui.View{
+			listSection(t, app, app.draft, disabled),
+		}),
+		cardSpaced(t, "gui:card:rules", "Per-domain routing", gogui.SpacingSmall, []gogui.View{
+			ruleSection(t, app.draft, disabled),
+		}),
+		saveRow(t, app.draft, disabled),
+	)
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         "gui:rules",
+		Sizing:     gogui.FillFill,
+		Spacing:    gogui.SpacingMedium,
+		Scrollable: true,
+		Content:    content,
+	})
+}
+
+// editNotice is the trust/offline banner shown above an editor page (Settings
+// and Rules), or nil when neither applies.  Editing is refused while the
+// service identity is unverified; the offline hint explains a cached config.
+func editNotice(t gogui.Theme, app *App) gogui.View {
+	if !canEdit(app.snap) {
+		return notice(t,
+			"Service identity not verified",
+			"Editing is unavailable until the dns-client service is verified.")
+	}
+	if hint := editingHint(app); hint != "" {
+		return notice(t, "Offline editing", hint)
+	}
+
+	return nil
 }
 
 // editingHint explains the offline-editing situation, or "" when the service is
@@ -408,6 +454,190 @@ func saveRow(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	})
 }
 
+// listSection is the filter-list editor: one row per list (an existing row
+// shows its redacted host), an add-by-URL field, and the service action that
+// re-downloads the active profile's lists.  It is the body of the "Filter
+// lists" card, so the card title carries the heading and there is no second
+// sub-heading here.
+func listSection(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.View {
+	children := []gogui.View{}
+	if len(d.lists) == 0 {
+		children = append(children, caption(t, "No filter lists yet."))
+	}
+	for i := range d.lists {
+		children = append(children, listRow(t, d, i, disabled))
+	}
+
+	// Add-by-URL: paste a URL and Add.  Only a new list carries its URL in
+	// full; existing lists are edited by index (SPEC §15.2).
+	children = append(children,
+		gogui.Row(gogui.ContainerCfg{
+			ID:         "gui:list:add:row",
+			Sizing:     gogui.FillFit,
+			Spacing:    gogui.SpacingSmall,
+			Padding:    gogui.PaddingNone,
+			SizeBorder: gogui.NoBorder,
+			VAlign:     gogui.VAlignMiddle,
+			Content: []gogui.View{
+				gogui.Input(gogui.InputCfg{
+					ID: "gui:list:add:url", Sizing: gogui.FillFit,
+					Text:        app.listInput,
+					Placeholder: "https://example.com/hosts.txt",
+					Disabled:    disabled,
+					OnTextChanged: func(text string, ctx gogui.EventCtx) {
+						setListInput(ctx, text)
+					},
+				}),
+				gogui.Button(gogui.ButtonCfg{
+					ID: "gui:list:add", Variant: gogui.ButtonSecondary, Label: "Add list",
+					Sizing: gogui.FitFit, Disabled: disabled, OnClick: addList,
+				}),
+			},
+		}),
+		refreshRow(t, app, disabled),
+	)
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID: "gui:edit:lists", Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder, Content: children,
+	})
+}
+
+// listRow is one filter list: its redacted host (or a newly typed URL), an
+// enable toggle, and a remove control.
+func listRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
+	l := d.lists[i]
+	label := l.host
+	if l.idx < 0 {
+		label = l.url
+	}
+
+	return gogui.Row(gogui.ContainerCfg{
+		ID: fmt.Sprintf("gui:list:%d", i), Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingSmall, Padding: gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder, VAlign: gogui.VAlignMiddle,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				ID: fmt.Sprintf("gui:list:%d:host", i), Text: fallback(label, "(list)"),
+				TextStyle: t.TextStyleBody, Sizing: gogui.FillFit, Mode: gogui.TextModeWrap,
+			}),
+			gogui.Toggle(gogui.ToggleCfg{
+				ID: fmt.Sprintf("gui:list:%d:enable", i), Label: "Enabled",
+				Selected: l.enabled, Disabled: disabled, OnClick: listToggle(i),
+			}),
+			gogui.Button(gogui.ButtonCfg{
+				ID: fmt.Sprintf("gui:list:%d:remove", i), Variant: gogui.ButtonDanger,
+				Label: "Remove", Sizing: gogui.FitFit, Disabled: disabled, OnClick: removeList(i),
+			}),
+		},
+	})
+}
+
+// refreshRow is the "Update blocklists" service action: it re-downloads the
+// active profile's lists over the running service.  It carries no config patch,
+// so it is offered only while the service is up.
+func refreshRow(t gogui.Theme, app *App, disabled bool) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		ID: "gui:lists:refresh:row", Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Button(gogui.ButtonCfg{
+				ID: "gui:lists:refresh", Variant: gogui.ButtonSecondary,
+				Label: "Update blocklists", Sizing: gogui.FillFit,
+				Disabled: disabled || !app.snap.running,
+				OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionRefreshLists) },
+			}),
+			caption(t, "Downloads the active profile's lists again. The service must be running."),
+		},
+	})
+}
+
+// ruleSection is the per-domain routing editor: comma-separated domains and an
+// upstream per row, with an enable toggle, add/remove controls, and a one-line
+// note on how wildcard patterns match.  A blank upstream keeps the existing
+// rule's target (the stored one is never shown).  It is the body of the
+// "Per-domain routing" card, so the card title carries the heading.
+func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
+	children := []gogui.View{
+		caption(t, "*.example.com matches subdomains only; example.com matches the domain and its subdomains"),
+	}
+	if len(d.perDomain) == 0 {
+		children = append(children, caption(t, "No per-domain rules."))
+	}
+	for i := range d.perDomain {
+		children = append(children, ruleRow(t, d, i, disabled))
+	}
+	children = append(children, gogui.Button(gogui.ButtonCfg{
+		ID: "gui:rule:add", Variant: gogui.ButtonSecondary, Label: "Add rule",
+		Sizing: gogui.FillFit, Disabled: disabled, OnClick: addRule,
+	}))
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID: "gui:edit:rules", Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder, Content: children,
+	})
+}
+
+// ruleRow is one per-domain rule: its domain list, an enable toggle, and an
+// upstream input with a remove control.  The upstream starts blank and blank
+// means "keep"; the stored target is never seeded or shown.
+//
+// The "Upstream" label is a sibling of the control row rather than the input's
+// own Label.  A labelled Input wraps label+field in a Column, so centring the
+// toggle and remove against that whole stack (VAlignMiddle) leaves them high of
+// the field's centreline; keeping the row to the bare field makes the centring
+// exact and stays correct however tall the field grows.
+func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
+	r := d.perDomain[i]
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID: fmt.Sprintf("gui:rule:%d", i), Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Input(gogui.InputCfg{
+				ID: fmt.Sprintf("gui:rule:%d:domains", i), Label: "Domains (comma-separated)",
+				Sizing: gogui.FillFit, Text: r.domains,
+				Placeholder: "example.com, *.example.com", Disabled: disabled,
+				OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleDomains(i, text, ctx) },
+			}),
+			gogui.Column(gogui.ContainerCfg{
+				Sizing: gogui.FillFit, Spacing: gogui.SpacingSmall,
+				Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+				Content: []gogui.View{
+					gogui.Text(gogui.TextCfg{
+						Text: "Upstream", TextStyle: t.TextStyleLabel, Sizing: gogui.FillFit,
+					}),
+					gogui.Row(gogui.ContainerCfg{
+						Sizing: gogui.FillFit, Spacing: gogui.SpacingSmall,
+						Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+						VAlign: gogui.VAlignMiddle,
+						Content: []gogui.View{
+							gogui.Input(gogui.InputCfg{
+								ID:     fmt.Sprintf("gui:rule:%d:upstream", i),
+								Sizing: gogui.FillFit, Text: r.upstream,
+								Placeholder: "leave blank to keep", Disabled: disabled,
+								OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleUpstream(i, text, ctx) },
+							}),
+							gogui.Toggle(gogui.ToggleCfg{
+								ID: fmt.Sprintf("gui:rule:%d:enable", i), Label: "Enabled",
+								Selected: r.enabled, Disabled: disabled, OnClick: ruleToggle(i),
+							}),
+							gogui.Button(gogui.ButtonCfg{
+								ID: fmt.Sprintf("gui:rule:%d:remove", i), Variant: gogui.ButtonDanger,
+								Label: "Remove", Sizing: gogui.FitFit, Disabled: disabled, OnClick: removeRule(i),
+							}),
+						},
+					}),
+				},
+			}),
+		},
+	})
+}
+
 // notice is a calm inline banner for a blocking condition.
 func notice(t gogui.Theme, title, detail string) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
@@ -465,8 +695,124 @@ func setSelectedProfile(ctx gogui.EventCtx, vals []string) {
 	name := first(vals)
 	app.selected = name
 	app.draft = draftFromSummary(app.summary(), name)
+	app.listInput = ""
 	app.seeded = true
 	ctx.Window.InvalidateLayout()
+}
+
+// --- list + rule editor handlers (main thread) ---
+
+// setListInput buffers the not-yet-added list URL.  It is UI state only: no
+// config value is ever read into it.
+func setListInput(ctx gogui.EventCtx, text string) {
+	app := gogui.State[App](ctx.Window)
+	app.listInput = text
+	ctx.Window.InvalidateLayout()
+}
+
+// addList appends the buffered URL as a new draft list row (enabled), then
+// clears the field.  A blank input is ignored.
+func addList(ctx gogui.EventCtx) {
+	app := gogui.State[App](ctx.Window)
+	url := strings.TrimSpace(app.listInput)
+	if url == "" {
+		return
+	}
+
+	app.draft.lists = append(app.draft.lists, listDraft{url: url, enabled: true, idx: -1})
+	app.listInput = ""
+	app.seeded = true
+	ctx.Window.InvalidateLayout()
+}
+
+// listToggle flips one list row's enabled flag.
+func listToggle(i int) func(gogui.EventCtx) {
+	return func(ctx gogui.EventCtx) {
+		updateDraft(ctx, func(d *profileDraft) {
+			if i >= 0 && i < len(d.lists) {
+				d.lists[i].enabled = !d.lists[i].enabled
+			}
+		})
+	}
+}
+
+// removeList asks before dropping one list row.  A seeded row removed here
+// becomes a Remove-by-index in the request; a new row simply disappears.  The
+// row is only removed once the confirm dialog is accepted.
+func removeList(i int) func(gogui.EventCtx) {
+	return func(ctx gogui.EventCtx) {
+		ctx.Window.Dialog(gogui.DialogCfg{
+			DialogType: gogui.DialogConfirm,
+			Title:      "Remove list",
+			Body:       "Remove this list?",
+			FocusID:    fmt.Sprintf("gui:list:%d:remove:confirm", i),
+			OnOkYes: func(w *gogui.Window) {
+				updateDraft(gogui.EventCtx{Window: w}, func(d *profileDraft) {
+					if i >= 0 && i < len(d.lists) {
+						d.lists = append(d.lists[:i], d.lists[i+1:]...)
+					}
+				})
+			},
+		})
+	}
+}
+
+// addRule appends an empty per-domain rule row for the user to fill in.  idx is
+// -1: a brand-new rule has no existing target to inherit, so it must carry an
+// upstream.  It starts enabled.
+func addRule(ctx gogui.EventCtx) {
+	updateDraft(ctx, func(d *profileDraft) {
+		d.perDomain = append(d.perDomain, ruleDraft{enabled: true, idx: -1})
+	})
+}
+
+// setRuleDomains stores one rule's comma-separated domain input.
+func setRuleDomains(i int, text string, ctx gogui.EventCtx) {
+	updateDraft(ctx, func(d *profileDraft) {
+		if i >= 0 && i < len(d.perDomain) {
+			d.perDomain[i].domains = text
+		}
+	})
+}
+
+// setRuleUpstream stores one rule's upstream input (blank = keep).
+func setRuleUpstream(i int, text string, ctx gogui.EventCtx) {
+	updateDraft(ctx, func(d *profileDraft) {
+		if i >= 0 && i < len(d.perDomain) {
+			d.perDomain[i].upstream = text
+		}
+	})
+}
+
+// ruleToggle flips one per-domain rule's enabled flag.
+func ruleToggle(i int) func(gogui.EventCtx) {
+	return func(ctx gogui.EventCtx) {
+		updateDraft(ctx, func(d *profileDraft) {
+			if i >= 0 && i < len(d.perDomain) {
+				d.perDomain[i].enabled = !d.perDomain[i].enabled
+			}
+		})
+	}
+}
+
+// removeRule asks before dropping one per-domain rule row.  The row is only
+// removed once the confirm dialog is accepted.
+func removeRule(i int) func(gogui.EventCtx) {
+	return func(ctx gogui.EventCtx) {
+		ctx.Window.Dialog(gogui.DialogCfg{
+			DialogType: gogui.DialogConfirm,
+			Title:      "Remove rule",
+			Body:       "Remove this rule?",
+			FocusID:    fmt.Sprintf("gui:rule:%d:remove:confirm", i),
+			OnOkYes: func(w *gogui.Window) {
+				updateDraft(gogui.EventCtx{Window: w}, func(d *profileDraft) {
+					if i >= 0 && i < len(d.perDomain) {
+						d.perDomain = append(d.perDomain[:i], d.perDomain[i+1:]...)
+					}
+				})
+			},
+		})
+	}
 }
 
 // setPage switches the visible screen.

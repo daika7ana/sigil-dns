@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -29,12 +30,46 @@ type profileDraft struct {
 	blockResp   string // "0.0.0.0" or "nxdomain"
 	cache       bool
 	cacheSizeMB string // MiB, as typed
+
+	// lists are the editable filter-list rows in config order.  A seeded row
+	// carries an existing list's redacted host and its original config index;
+	// a row with idx < 0 is one the user typed and carries the full URL that
+	// travels for it.  seededLists is the immutable seed the list diff is
+	// computed against (redacted hosts only — never a URL).
+	lists       []listDraft
+	seededLists []ipc.ListSummary
+
+	// perDomain holds the editable per-domain routing rules.  domains is the
+	// comma-separated input; upstream starts blank = keep (a stored upstream is
+	// never available, so it is never seeded).  rulesKnown reports whether the
+	// seed carried the full rule set: a legacy summary without it must not be
+	// saved as if it had no rules, or an unrelated save would clear them.
+	perDomain  []ruleDraft
+	rulesKnown bool
+}
+
+// listDraft is one editable filter-list row.
+type listDraft struct {
+	host    string // redacted host of an existing list (display only)
+	url     string // full URL of a newly added list (idx < 0)
+	enabled bool
+	idx     int // original config index of an existing list; -1 for a new one
+}
+
+// ruleDraft is one editable per-domain routing rule.
+type ruleDraft struct {
+	domains  string // comma-separated domains, as typed
+	upstream string // blank = keep the existing rule's upstream
+	enabled  bool   // the rule's active state (a disabled rule is skipped)
+	idx      int    // original config index of an existing rule; -1 for a new one
 }
 
 // draftForProfile maps one sanitized ProfileSummary into the editor buffer.
 // The resolver id and upstream URL are never read: both start blank, which
 // means "keep" (SPEC §15.2).
 func draftForProfile(p ipc.ProfileSummary) profileDraft {
+	seeded := append([]ipc.ListSummary(nil), p.Lists...)
+
 	return profileDraft{
 		name:        p.Name,
 		provider:    p.Provider,
@@ -47,12 +82,19 @@ func draftForProfile(p ipc.ProfileSummary) profileDraft {
 		blockResp:   p.BlockResponse,
 		cache:       p.CacheEnabled,
 		cacheSizeMB: miBString(p.CacheSizeBytes),
+		lists:       listDrafts(seeded),
+		seededLists: seeded,
+		perDomain:   ruleDrafts(p.PerDomain),
+		rulesKnown:  true,
 	}
 }
 
 // draftFromActiveProfile maps the legacy top-level (active-profile) fields when
-// a summary predates the per-profile list.
+// a summary predates the per-profile list.  That summary carries list hosts but
+// no per-domain details, so the rules stay unknown (never saved as "none").
 func draftFromActiveProfile(sum *ipc.ConfigSummary) profileDraft {
+	seeded := append([]ipc.ListSummary(nil), sum.Lists...)
+
 	return profileDraft{
 		name:        sum.Profile,
 		provider:    sum.Provider,
@@ -65,7 +107,32 @@ func draftFromActiveProfile(sum *ipc.ConfigSummary) profileDraft {
 		blockResp:   sum.BlockResponse,
 		cache:       sum.CacheEnabled,
 		cacheSizeMB: miBString(sum.CacheSizeBytes),
+		lists:       listDrafts(seeded),
+		seededLists: seeded,
+		rulesKnown:  false,
 	}
+}
+
+// listDrafts maps seeded list summaries into editable rows, preserving config
+// order so an existing list is addressed by its original index.
+func listDrafts(seeded []ipc.ListSummary) (out []listDraft) {
+	for i, l := range seeded {
+		out = append(out, listDraft{host: l.Host, enabled: l.Enabled, idx: i})
+	}
+
+	return out
+}
+
+// ruleDrafts maps per-domain summaries into editable rows.  The upstream is
+// never seeded: the editor never reads a stored target, and a blank input means
+// "keep" (SPEC §15.2).  Each row keeps its original index so a kept rule's
+// target is inherited by that index, not by its position in the edited list.
+func ruleDrafts(rules []ipc.PerDomainSummary) (out []ruleDraft) {
+	for i, r := range rules {
+		out = append(out, ruleDraft{domains: strings.Join(r.Domains, ", "), enabled: r.Enabled, idx: i})
+	}
+
+	return out
 }
 
 // draftFromSummary seeds the editor for the named profile from a sanitized
@@ -92,7 +159,7 @@ func draftFromSummary(sum *ipc.ConfigSummary, name string) (d profileDraft) {
 // Save can create the config.  It mirrors config.Default(): the "default"
 // profile on ControlD's free p0 endpoint (resolver.DefaultUpstream), cache on
 // at the default size.  The resolver id is blank — blank means "keep", and we
-// never invent one.
+// never invent one.  The rule set is empty and known (a new profile has none).
 func defaultDraft() profileDraft {
 	return profileDraft{
 		name:        config.DefaultProfileName,
@@ -106,6 +173,7 @@ func defaultDraft() profileDraft {
 		blockResp:   "",
 		cache:       true,
 		cacheSizeMB: strconv.Itoa(config.DefaultCacheSizeBytes >> 20),
+		rulesKnown:  true,
 	}
 }
 
@@ -148,14 +216,14 @@ func (a *App) selectedSummary() (p ipc.ProfileSummary, ok bool) {
 
 // draftDirty reports whether the editor buffer differs from the selected
 // profile's sanitized values — i.e. whether there are unsaved edits to carry
-// alongside a rename.
+// alongside a rename.  The draft carries slices, so a plain == cannot be used.
 func (a *App) draftDirty() (dirty bool) {
 	p, ok := a.selectedSummary()
 	if !ok {
 		return false
 	}
 
-	return a.draft != draftForProfile(p)
+	return !reflect.DeepEqual(a.draft, draftForProfile(p))
 }
 
 // parseBootstrap splits a comma-separated list, trimming whitespace and

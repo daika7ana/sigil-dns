@@ -205,6 +205,40 @@ profiles:
 	}
 }
 
+// TestPerDomainSummaryEnabled proves the per-rule enabled flag is reported and
+// an absent field defaults to enabled (legacy configs stay active).
+func TestPerDomainSummaryEnabled(t *testing.T) {
+	body := `schema_version: 1
+mode: on
+profile: default
+profiles:
+  default:
+    upstreams: [https://freedns.controld.com/p0]
+    cache: { enabled: true, size_bytes: 1048576 }
+    per_domain:
+      - domains: ["off.example"]
+        upstream: "tls://10.0.0.1"
+        enabled: false
+      - domains: ["on.example"]
+        upstream: "tls://10.0.0.2"
+`
+	sum := LoadSummary(writeConfigFile(t, body))
+	if !sum.ConfigValid {
+		t.Fatalf("config invalid: %+v", sum)
+	}
+	if len(sum.Profiles) != 1 || len(sum.Profiles[0].PerDomain) != 2 {
+		t.Fatalf("per-domain summary = %+v, want 2 rules", sum.Profiles)
+	}
+
+	rules := sum.Profiles[0].PerDomain
+	if rules[0].Enabled {
+		t.Errorf("rule 0 Enabled = true, want false")
+	}
+	if !rules[1].Enabled {
+		t.Errorf("rule 1 Enabled = false, want true (absent field)")
+	}
+}
+
 func TestConfigSummaryBrokenConfig(t *testing.T) {
 	path := writeConfigFile(t, "mode: [not,a,scalar]\n")
 	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)
@@ -237,6 +271,7 @@ func TestPrivilegeTable(t *testing.T) {
 		MethodDisable:       Admin,
 		MethodReload:        Admin,
 		MethodRestore:       Admin,
+		MethodRefreshLists:  Admin,
 	}
 	if len(methodPrivileges) != len(want) {
 		t.Fatalf("privilege table has %d entries, want %d", len(methodPrivileges), len(want))
@@ -277,7 +312,7 @@ func TestStatusPipeRejectsAdminMethods(t *testing.T) {
 	srv := NewServer(&fakeLifecycle{}, nil).SetReloader(&fakeReloader{}).SanitizeStatus()
 	ctx := context.Background()
 
-	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload} {
+	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists} {
 		resp := srv.Handle(ctx, ReadOnlyAuthorizer(nil), Request{Version: ProtocolVersion, Method: m})
 		if resp.OK || resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s on status pipe = %+v, want ErrForbidden", m, resp)

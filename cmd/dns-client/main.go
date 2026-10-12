@@ -83,6 +83,8 @@ func run(args []string) (err error) {
 		return cmdStatus(rest)
 	case "reload":
 		return cmdReload(rest)
+	case "refresh":
+		return cmdRefresh(rest)
 	case "run":
 		return cmdRun(rest)
 	case "providers":
@@ -142,7 +144,7 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 		fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
 	case "config":
 		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
-	case "reload", "gui", "tray":
+	case "reload", "refresh", "gui", "tray":
 		// These commands take no flags.
 	}
 
@@ -192,6 +194,9 @@ func (o options) listenAddrs() (listen []string) {
 func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
 	rules := make([]resolver.Rule, 0, len(r.PerDomain))
 	for _, pd := range r.PerDomain {
+		if !pd.IsEnabled() {
+			continue
+		}
 		rules = append(rules, resolver.Rule{Domains: pd.Domains, Upstream: pd.Upstream})
 	}
 
@@ -353,6 +358,25 @@ func cmdReload(args []string) (err error) {
 	return printSummary(sum)
 }
 
+// cmdRefresh asks the running service (control pipe) to re-download its filter
+// lists and rebuild the filter engine.
+func cmdRefresh(args []string) (err error) {
+	if _, err = parseFlags("refresh", args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if err = ipc.NewClient(ipc.DefaultEndpoint()).RefreshLists(ctx); err != nil {
+		return fmt.Errorf("refresh failed (is the dns-client service running?): %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "filter lists refreshed")
+
+	return nil
+}
+
 func cmdRun(args []string) (err error) {
 	o, err := parseFlags("run", args)
 	if err != nil {
@@ -431,6 +455,7 @@ type svcDaemon interface {
 	Enable(ctx context.Context) (err error)
 	Disable(ctx context.Context) (err error)
 	Restore(ctx context.Context) (err error)
+	RefreshLists(ctx context.Context) (err error)
 }
 
 // serviceLifecycle lets the Windows service boot even when the config is
@@ -465,6 +490,11 @@ func (s *serviceLifecycle) Disable(ctx context.Context) (err error) { return s.i
 
 // Restore implements service.Lifecycle (config-independent crash/dirty recovery).
 func (s *serviceLifecycle) Restore(ctx context.Context) (err error) { return s.inner.Restore(ctx) }
+
+// RefreshLists re-downloads the active profile's filter lists (SPEC §15.1).
+func (s *serviceLifecycle) RefreshLists(ctx context.Context) (err error) {
+	return s.inner.RefreshLists(ctx)
+}
 
 // Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
 func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, err error) {
@@ -786,6 +816,7 @@ Commands:
   restore            restore interception from persisted state
   status             print persisted state (--summary: sanitized config summary)
   reload             reload config.yaml via the service (admin)
+  refresh            re-download filter lists via the service (admin)
   run                foreground resolver only (dev/CI)
   providers list     list provider presets
   providers show     show generated endpoints for provider[/variant[/protocol]]
