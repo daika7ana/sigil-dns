@@ -49,7 +49,7 @@ const (
 //
 //	./dev/go generate ./cmd/dns-client
 //
-//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest dns-client.manifest -arch amd64 -o rsrc_windows_amd64.syso
+//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest dns-client.manifest -ico dns-client.ico -arch amd64 -o rsrc_windows_amd64.syso
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "dns-client:", err)

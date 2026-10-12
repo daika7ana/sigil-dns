@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/ipc"
 )
 
@@ -118,4 +119,43 @@ func readPayload(conn net.Conn) (status *ipc.StatusDTO, summary *ipc.ConfigSumma
 	}
 
 	return status, summary, info
+}
+
+// offlineSummary returns the sanitized summary of the on-disk config, or nil
+// when there is no usable file.  It is the GUI's read-back path while the
+// service is not running (stopped or not yet installed): without it a save made
+// offline is never visible again, because the editor falls back to a stale
+// gui.json cache or the built-in default — so saved settings appeared to reset
+// on restart.  It mirrors ipc.Server.configSummary and never exposes ids or
+// credential-bearing URLs (ipc.Summarize strips them).
+func offlineSummary() *ipc.ConfigSummary {
+	return fileSummary(config.SystemPath())
+}
+
+// fileSummary loads the config at path and reduces it to the sanitized summary.
+// A missing file yields nil so the caller falls back to the cache or the
+// built-in default; a broken file yields a secret-free error summary.
+func fileSummary(path string) *ipc.ConfigSummary {
+	if path == "" {
+		return nil
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		if errors.Is(err, config.ErrNoConfig) {
+			return nil
+		}
+
+		return &ipc.ConfigSummary{
+			ConfigValid: false,
+			ConfigError: ipc.SanitizedConfigError(err),
+			Revision:    ipc.Revision(path),
+		}
+	}
+
+	sum := ipc.Summarize(cfg)
+	sum.ConfigValid = true
+	sum.Revision = ipc.Revision(path)
+
+	return &sum
 }

@@ -297,12 +297,12 @@ func expandCloudflare(variant string, proto Protocol) (ep Endpoints, err error) 
 		"security": {
 			dohHost:   "security.cloudflare-dns.com",
 			dotHost:   "security.cloudflare-dns.com",
-			bootstrap: []string{"1.1.1.2", "1.0.0.2"},
+			bootstrap: []string{"1.1.1.2", "1.0.0.2", "2606:4700:4700::1112", "2606:4700:4700::1002"},
 		},
 		"family": {
 			dohHost:   "family.cloudflare-dns.com",
 			dotHost:   "family.cloudflare-dns.com",
-			bootstrap: []string{"1.1.1.3", "1.0.0.3"},
+			bootstrap: []string{"1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"},
 		},
 	}
 	if variant == "" {

@@ -47,6 +47,7 @@ type statusVisual struct {
 func view(w *gogui.Window) gogui.View {
 	app := gogui.State[App](w)
 	t := gogui.CurrentTheme()
+	windowWidth, _ := w.WindowSize()
 
 	content := []gogui.View{
 		header(t, app),
@@ -56,7 +57,7 @@ func view(w *gogui.Window) gogui.View {
 			Spacing: gogui.SpacingMedium,
 			Content: []gogui.View{
 				navRail(t, app),
-				pageContent(t, app),
+				pageContent(t, app, windowWidth),
 			},
 		}),
 	}
@@ -78,9 +79,9 @@ func view(w *gogui.Window) gogui.View {
 }
 
 // pageContent is the body of the selected page.
-func pageContent(t gogui.Theme, app *App) gogui.View {
+func pageContent(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	if app.page == pageSettings {
-		return settingsPage(t, app)
+		return settingsPage(t, app, windowWidth)
 	}
 
 	return statusPage(t, app)
@@ -326,15 +327,19 @@ func toastOverlay(t gogui.Theme, app *App) gogui.View {
 	})
 }
 
-// noticePalette maps a notice severity onto its title style and wash.
+// noticePalette maps a notice severity onto its title style and wash.  The
+// theme's *Subtle colors are translucent (the toolkit builds them as the
+// severity hue at alpha 30-40), so the wash is composited Over the opaque panel
+// fill: a toast floats over live page content, so it must read as a solid card
+// rather than a see-through sheet, while still carrying the severity tint.
 func noticePalette(t gogui.Theme, k noticeKind) (title gogui.TextStyle, bg gogui.Color) {
 	switch k {
 	case noticeSuccess:
-		return t.TextStyleSuccess, t.ColorSuccessSubtle
+		return t.TextStyleSuccess, t.ColorSuccessSubtle.Over(t.ColorPanel)
 	case noticeWarning:
-		return t.TextStyleWarning, t.ColorWarningSubtle
+		return t.TextStyleWarning, t.ColorWarningSubtle.Over(t.ColorPanel)
 	case noticeError:
-		return t.TextStyleError, t.ColorErrorSubtle
+		return t.TextStyleError, t.ColorErrorSubtle.Over(t.ColorPanel)
 	default:
 		return t.TextStyleBody, t.ColorPanel
 	}

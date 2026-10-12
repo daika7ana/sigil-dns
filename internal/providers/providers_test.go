@@ -81,8 +81,8 @@ func TestExpandQuad9(t *testing.T) {
 
 func TestExpandCloudflare(t *testing.T) {
 	standardBoot := []string{"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"}
-	securityBoot := []string{"1.1.1.2", "1.0.0.2"}
-	familyBoot := []string{"1.1.1.3", "1.0.0.3"}
+	securityBoot := []string{"1.1.1.2", "1.0.0.2", "2606:4700:4700::1112", "2606:4700:4700::1002"}
+	familyBoot := []string{"1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"}
 
 	cases := []struct {
 		name      string

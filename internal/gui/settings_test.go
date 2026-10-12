@@ -589,6 +589,47 @@ func TestProtocolSelectCarriesProtocol(t *testing.T) {
 	}
 }
 
+// TestBootstrapSync proves the editor recomputes the bootstrap list when the
+// provider changes, and leaves it alone when the selection cannot be expanded.
+// This is the reported bug: the ControlD default 76.76.2.11:53 stuck in the box
+// whatever provider was selected, and was then saved onto the new profile.
+func TestBootstrapSync(t *testing.T) {
+	t.Run("provider change refreshes", func(t *testing.T) {
+		app := settingsApp()
+		app.draft = profileDraft{
+			name: "default", provider: providers.ControlD, variant: "p0",
+			protocol: "doh", bootstrap: "76.76.2.11:53",
+		}
+		app.seeded = true // keep the hand-built draft; do not reseed from the summary
+
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+
+		setDraftProvider([]string{providers.Cloudflare}, gogui.EventCtx{Window: w})
+
+		if app.draft.variant != "standard" {
+			t.Fatalf("variant = %q, want standard", app.draft.variant)
+		}
+		if want := "1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001"; app.draft.bootstrap != want {
+			t.Fatalf("bootstrap = %q, want %q", app.draft.bootstrap, want)
+		}
+	})
+
+	t.Run("unexpandable selection is left alone", func(t *testing.T) {
+		d := profileDraft{provider: providers.NextDNS, variant: "anycast", bootstrap: "9.9.9.9"}
+		syncBootstrap(&d)
+		if d.bootstrap != "9.9.9.9" {
+			t.Fatalf("nextdns (no id) bootstrap = %q, want untouched", d.bootstrap)
+		}
+
+		c := profileDraft{provider: providers.Custom, variant: "custom", bootstrap: "9.9.9.9"}
+		syncBootstrap(&c)
+		if c.bootstrap != "9.9.9.9" {
+			t.Fatalf("custom bootstrap = %q, want untouched", c.bootstrap)
+		}
+	})
+}
+
 // TestProtocolHiddenForCustom proves the Protocol control is not rendered for
 // the custom provider (its transport comes from the URL), while the custom URL
 // input is.

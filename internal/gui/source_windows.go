@@ -28,11 +28,11 @@ func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
 	}
 	if !installed {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			scmState: "not installed"}, nil
+			scmState: "not installed", summary: offlineSummary()}, nil
 	}
 	if !running {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			installed: true, scmState: state}, nil
+			installed: true, scmState: state, summary: offlineSummary()}, nil
 	}
 
 	conn, err := ipc.Dial(ctx, s.endpoint)

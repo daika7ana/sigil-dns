@@ -16,9 +16,12 @@ import (
 // list with its management verbs, and the per-profile editor.  Everything
 // renders from the GUI-local draft; edits are staged into an elevated request
 // by the apply seam.  Editing works while the service is stopped by falling
-// back to the cached last-good summary.
-func settingsPage(t gogui.Theme, app *App) gogui.View {
+// back to the cached last-good summary.  windowWidth sizes the dropdown popups
+// (see selectFloor).
+func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	app.ensureDraft()
+
+	floor := selectFloor(windowWidth)
 
 	content := []gogui.View{}
 	if !canEdit(app.snap) {
@@ -31,8 +34,8 @@ func settingsPage(t gogui.Theme, app *App) gogui.View {
 
 	content = append(content,
 		serviceCard(t, app),
-		profilesCard(t, app),
-		editorCard(t, app),
+		profilesCard(t, app, floor),
+		editorCard(t, app, floor),
 		versionCaption(t, app),
 	)
 
@@ -45,14 +48,14 @@ func settingsPage(t gogui.Theme, app *App) gogui.View {
 	})
 }
 
-// editingHint explains the offline-editing situation, or "" when the live
-// service is providing the config.
+// editingHint explains the offline-editing situation, or "" when the service is
+// providing the config.
 func editingHint(app *App) (hint string) {
-	if app.snap.summary != nil {
+	if app.snap.running {
 		return ""
 	}
-	if app.cached != nil {
-		return "The service is not running, so this form shows the last saved configuration. Saving sends an empty revision and does not start the service."
+	if app.summary() != nil {
+		return "The service is not running, so this form shows the saved configuration. Saving sends an empty revision and does not start the service."
 	}
 
 	return "No configuration file yet. Saving creates one from these defaults."
@@ -174,22 +177,59 @@ func versionCaption(t gogui.Theme, app *App) gogui.View {
 	})
 }
 
+// selectFloor is the shared width floor for every Settings dropdown.  The
+// pinned toolkit sizes an open popup from MinWidth/MaxWidth plus its own
+// content and has no "fill to the field" lever; MinWidth is also applied to the
+// closed field, but only as a floor, so a value below the field's own width
+// leaves the filling field untouched while lifting every popup close to it.
+//
+// The field width is the window minus fixed chrome (nav rail plus paddings),
+// so the floor tracks the window and the ratio/cap keep it just under the field
+// to avoid ever growing the field past its card.  Long-content lists (Provider,
+// Variant) may still exceed the floor — the toolkit gives no way to cap the
+// popup without also capping the field.
+func selectFloor(windowWidth int) float32 {
+	const (
+		chrome   float32 = 238 // nav rail + root/card padding, measured
+		ratio    float32 = 0.9
+		minFloor float32 = 200
+	)
+
+	floor := (float32(windowWidth) - chrome) * ratio
+	if floor < minFloor {
+		floor = minFloor
+	}
+
+	return floor
+}
+
+// formSelect builds a Select styled for the Settings form: it fills the card
+// column, and the open popup shares the common width floor so the dropdowns
+// read as consistent menus rather than content-sized boxes.  It is the one
+// place the Settings selects are constructed, so the styling cannot drift
+// between them.
+func formSelect(cfg gogui.SelectCfg, floor float32) gogui.View {
+	cfg.Sizing = gogui.FillFit
+	cfg.MinWidth = floor
+
+	return gogui.Select(cfg)
+}
+
 // profilesCard is the profile selector plus the Add / Rename / Delete verbs.
-func profilesCard(t gogui.Theme, app *App) gogui.View {
+func profilesCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	names := profilesFor(app)
 	selected := selectedProfile(app)
 	disabled := app.busy || !canEdit(app.snap)
 
 	return card(t, "gui:card:profiles", "Profiles", []gogui.View{
-		gogui.Select(gogui.SelectCfg{
+		formSelect(gogui.SelectCfg{
 			ID:       "gui:profile:select",
 			Label:    "Profile",
-			Sizing:   gogui.FillFit,
 			Items:    names,
 			Selected: one(selected),
 			Disabled: disabled || len(names) == 0,
 			OnSelect: func(vals []string, ctx gogui.EventCtx) { setSelectedProfile(ctx, vals) },
-		}),
+		}, floor),
 		gogui.Row(gogui.ContainerCfg{
 			Sizing:     gogui.FillFit,
 			Spacing:    gogui.SpacingSmall,
@@ -226,25 +266,28 @@ func profilesCard(t gogui.Theme, app *App) gogui.View {
 // editorCard is the per-profile editor for the selected profile.  It is
 // editable whenever there is a profile to edit — including the built-in default
 // seeded on a fresh install — and the identity check passes.
-func editorCard(t gogui.Theme, app *App) gogui.View {
+func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	d := app.draft
 	disabled := app.busy || !canEdit(app.snap) || d.name == ""
 
 	fields := []gogui.View{
-		gogui.Select(gogui.SelectCfg{
-			ID: "gui:edit:provider", Label: "Provider", Sizing: gogui.FillFit,
+		formSelect(gogui.SelectCfg{
+			ID: "gui:edit:provider", Label: "Provider",
 			Options: providerOptions(), Selected: one(d.provider),
 			Disabled: disabled, OnSelect: setDraftProvider,
-		}),
+		}, floor),
 		caption(t, providerDescription(d.provider)),
-		gogui.Select(gogui.SelectCfg{
-			ID: "gui:edit:variant", Label: "Variant", Sizing: gogui.FillFit,
+		formSelect(gogui.SelectCfg{
+			ID: "gui:edit:variant", Label: "Variant",
 			Options: variantOptions(d.provider), Selected: one(d.variant),
 			Disabled: disabled,
 			OnSelect: func(vals []string, ctx gogui.EventCtx) {
-				updateDraft(ctx, func(d *profileDraft) { d.variant = first(vals) })
+				updateDraft(ctx, func(d *profileDraft) {
+					d.variant = first(vals)
+					syncBootstrap(d)
+				})
 			},
-		}),
+		}, floor),
 	}
 
 	// The custom provider's transport is dictated by its URL, so there is no
@@ -252,7 +295,7 @@ func editorCard(t gogui.Theme, app *App) gogui.View {
 	if d.provider == providers.Custom {
 		fields = append(fields, caption(t, "Transport is taken from the custom URL."))
 	} else {
-		fields = append(fields, protocolSelect(d, disabled))
+		fields = append(fields, protocolSelect(d, disabled, floor))
 	}
 
 	// The resolver id is only meaningful for providers that use one; the
@@ -266,7 +309,10 @@ func editorCard(t gogui.Theme, app *App) gogui.View {
 		Text: d.id, IsPassword: true, Placeholder: "•••• leave blank to keep",
 		Disabled: disabled || !idNeeded,
 		OnTextChanged: func(text string, ctx gogui.EventCtx) {
-			updateDraft(ctx, func(d *profileDraft) { d.id = text })
+			updateDraft(ctx, func(d *profileDraft) {
+				d.id = text
+				syncBootstrap(d)
+			})
 		},
 	}))
 	if !idNeeded {
@@ -305,14 +351,14 @@ func editorCard(t gogui.Theme, app *App) gogui.View {
 				updateDraft(ctx, func(d *profileDraft) { d.filtering = !d.filtering })
 			},
 		}),
-		gogui.Select(gogui.SelectCfg{
-			ID: "gui:edit:block", Label: "Block response", Sizing: gogui.FillFit,
+		formSelect(gogui.SelectCfg{
+			ID: "gui:edit:block", Label: "Block response",
 			Options: blockResponseOptions(), Selected: one(d.blockResp),
 			Disabled: disabled || !d.filtering,
 			OnSelect: func(vals []string, ctx gogui.EventCtx) {
 				updateDraft(ctx, func(d *profileDraft) { d.blockResp = first(vals) })
 			},
-		}),
+		}, floor),
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:cache", Label: "Cache", Selected: d.cache,
 			Disabled: disabled,
@@ -404,6 +450,7 @@ func setDraftProvider(vals []string, ctx gogui.EventCtx) {
 	updateDraft(ctx, func(d *profileDraft) {
 		d.provider = name
 		d.variant = defaultVariant(name)
+		syncBootstrap(d)
 	})
 }
 
@@ -573,15 +620,18 @@ func protocolOptions() (opts []gogui.SelectOption) {
 // protocolSelect is the transport control.  It is rendered only for providers
 // whose transport is a real choice; the custom provider takes its transport
 // from the URL and shows a hint instead.
-func protocolSelect(d profileDraft, disabled bool) gogui.View {
-	return gogui.Select(gogui.SelectCfg{
-		ID: "gui:edit:protocol", Label: "Protocol", Sizing: gogui.FillFit,
+func protocolSelect(d profileDraft, disabled bool, floor float32) gogui.View {
+	return formSelect(gogui.SelectCfg{
+		ID: "gui:edit:protocol", Label: "Protocol",
 		Options: protocolOptions(), Selected: one(d.protocol),
 		Disabled: disabled,
 		OnSelect: func(vals []string, ctx gogui.EventCtx) {
-			updateDraft(ctx, func(d *profileDraft) { d.protocol = first(vals) })
+			updateDraft(ctx, func(d *profileDraft) {
+				d.protocol = first(vals)
+				syncBootstrap(d)
+			})
 		},
-	})
+	}, floor)
 }
 
 // blockResponseOptions lists the block-response choices.

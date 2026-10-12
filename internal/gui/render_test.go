@@ -14,9 +14,10 @@ import (
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
 )
 
-// A large enough window that the whole page fits without scrolling.
+// A wide window, distinct from the default, so the pages are also exercised
+// past their natural width.
 const (
-	wideWidth  = 1280
+	wideWidth  = 1600
 	wideHeight = 900
 )
 
@@ -365,6 +366,54 @@ func TestProfileButtonsAlign(t *testing.T) {
 		if absF(widths[i]-widths[0]) > 1 {
 			t.Errorf("button width %.1f differs from %.1f", widths[i], widths[0])
 		}
+	}
+}
+
+// TestDropdownPopupsWide proves the Settings dropdown popups share one width
+// at the default window — a short list (Profile, Block response) no longer
+// collapses to a tiny box — and that the shared floor does not push the closed
+// field past its card at the minimum window.
+func TestDropdownPopupsWide(t *testing.T) {
+	ids := []string{"gui:profile:select", "gui:edit:provider", "gui:edit:variant", "gui:edit:block"}
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: defaultHeight, State: settingsApp(),
+	})
+	w.SetView(view)
+	w.TestRender(nil)
+	for _, id := range ids {
+		if err := w.TestKey(id, gogui.KeyEnter, 0); err != nil {
+			t.Fatalf("open %s: %v", id, err)
+		}
+	}
+	root := w.TestRender(nil)
+
+	var first float32
+	for i, id := range ids {
+		ly := mustFindLayout(t, w, root, id+":dropdown")
+		if ly.Shape.Width <= 200 {
+			t.Errorf("%s popup width %.0f is still a tiny box", id, ly.Shape.Width)
+		}
+		if i == 0 {
+			first = ly.Shape.Width
+			continue
+		}
+		if absF(ly.Shape.Width-first) > 0.5 {
+			t.Errorf("%s popup width %.0f differs from %s popup %.0f",
+				id, ly.Shape.Width, ids[0], first)
+		}
+	}
+
+	// The floor is below the field width, so at the smallest window the field
+	// still fits inside the window rather than overflowing its card.
+	narrow := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: minWidth, Height: minHeight, State: settingsApp(),
+	})
+	narrow.SetView(view)
+	nroot := narrow.TestRender(nil)
+	field := mustFindLayout(t, narrow, nroot, "gui:edit:provider")
+	if right := field.Shape.X + field.Shape.Width; right > float32(minWidth) {
+		t.Errorf("field right %.0f overflows the min window width %d", right, minWidth)
 	}
 }
 

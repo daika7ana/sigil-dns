@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	_ "embed"
 	"time"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
@@ -12,12 +13,19 @@ import (
 	"github.com/daika7ana/dns-client/internal/ipc"
 )
 
-// Window defaults.  A saved geometry in gui.json wins.  The Status page is now
-// a banner, one power control, and three read-only cards, so the default is
-// shorter than it was; the taller Settings page scrolls.
+// appIconPNG is the window icon (title bar + taskbar), embedded so the run
+// time has it without a file beside the exe.  The toolkit otherwise paints its
+// own default icon on the window even though the exe resource carries ours.
+//
+//go:embed appicon.png
+var appIconPNG []byte
+
+// Window defaults.  A saved geometry in gui.json wins.  The window opens at
+// 1280x720 out of the box; the taller Settings page scrolls when its content
+// does not fit.
 const (
-	defaultWidth  = 720
-	defaultHeight = 600
+	defaultWidth  = 1280
+	defaultHeight = 720
 	minWidth      = 520
 	minHeight     = 480
 )
@@ -118,6 +126,7 @@ func Run(cfg Config) (err error) {
 
 	w := gogui.NewWindow(gogui.WindowCfg{
 		Title:     "dns-client",
+		IconPNG:   appIconPNG,
 		Width:     s.Width,
 		Height:    s.Height,
 		MinWidth:  minWidth,

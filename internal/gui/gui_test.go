@@ -366,6 +366,27 @@ func TestNoticeForOutcome(t *testing.T) {
 	}
 }
 
+// TestNoticePaletteOpaque proves the toast fill is composited onto an opaque
+// ground in both themes (the raw *Subtle colors are translucent, which let the
+// page show through), while the four severities stay visually distinct.
+func TestNoticePaletteOpaque(t *testing.T) {
+	severities := []noticeKind{noticeInfo, noticeSuccess, noticeWarning, noticeError}
+
+	for _, th := range []gogui.Theme{gogui.ThemeLight, gogui.ThemeDark} {
+		seen := make(map[gogui.Color]noticeKind, len(severities))
+		for _, k := range severities {
+			_, bg := noticePalette(th, k)
+			if bg.A != 255 {
+				t.Errorf("%s: %v toast fill is translucent (alpha=%d)", th.Name, k, bg.A)
+			}
+			if prev, dup := seen[bg]; dup {
+				t.Errorf("%s: severities %v and %v share fill %v", th.Name, prev, k, bg)
+			}
+			seen[bg] = k
+		}
+	}
+}
+
 // TestActionClickInvokesApply drives a click on the single power control
 // through real dispatch and asserts the injected apply func runs with the
 // Enable action, off the frame thread.
