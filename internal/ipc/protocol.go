@@ -146,6 +146,10 @@ var (
 	// ErrMalformed is returned for unparseable input.
 	ErrMalformed = errors.New("malformed request")
 
+	// ErrInternal is the generic, secret-free response for a recovered panic.
+	// It never carries the panic value or any request payload.
+	ErrInternal = errors.New("internal error")
+
 	// ErrNoAuthorizer is returned by Serve when no Authorizer is supplied.
 	ErrNoAuthorizer = errors.New("no authorizer supplied")
 

@@ -38,6 +38,13 @@ type snapshot struct {
 	trust   trustKind
 	running bool
 	err     string
+
+	// installed reports whether the dns-client service is registered with the
+	// SCM, and scmState is its state name ("running", "stopped",
+	// "not installed", "unsupported", ...).  Off Windows there is no SCM, so
+	// the state is "unsupported".
+	installed bool
+	scmState  string
 }
 
 // statusSource reads the sanitized status.  The real source speaks the status

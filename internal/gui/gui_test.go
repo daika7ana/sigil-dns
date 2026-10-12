@@ -22,15 +22,20 @@ type fakeSource struct{ snap snapshot }
 
 func (f fakeSource) Read(context.Context) (snapshot, error) { return f.snap, nil }
 
-// sampleSnapshot is a healthy, fully-populated read.
+// sampleSnapshot is a healthy, fully-populated read.  Dirty is deliberately
+// true: the lifecycle sets it for the duration of a normal enabled session, so
+// a realistic enabled snapshot carries it and must still render "Protected".
 func sampleSnapshot() snapshot {
 	return snapshot{
-		trust:   trustVerified,
-		running: true,
-		updated: time.Date(2026, 10, 12, 14, 3, 22, 0, time.UTC),
+		trust:     trustVerified,
+		running:   true,
+		installed: true,
+		scmState:  "running",
+		updated:   time.Date(2026, 10, 12, 14, 3, 22, 0, time.UTC),
 		status: &ipc.StatusDTO{
 			Mode:      "on",
 			Enabled:   true,
+			Dirty:     true,
 			Mechanism: "nrpt",
 			Health:    &ipc.HealthSummary{Ours: true, IPv4: true, IPv6: true},
 		},
@@ -61,23 +66,24 @@ func sampleSnapshot() snapshot {
 	}
 }
 
-// stateCase is one render-state case with the action buttons it must show.
+// stateCase is one render-state case: whether the Restore button is offered
+// and whether the power control is disabled.
 type stateCase struct {
-	mk         func() snapshot
-	show       []guiAction // action buttons expected present
-	unverified bool
+	mk            func() snapshot
+	restore       bool
+	powerDisabled bool
 }
 
 // TestWindowRendersEachState renders every UI state headlessly and asserts the
-// frame is a real image, shows the right actions, and has no widget-ID or event
-// findings.
+// frame is a real image, shows the single power control (and Restore only for
+// the crash-leftover state), and has no widget-ID or event findings.
 func TestWindowRendersEachState(t *testing.T) {
 	cases := map[string]stateCase{
 		"running": {
-			mk:   func() snapshot { return sampleSnapshot() },
-			show: []guiAction{actionDisable},
+			// Enabled and healthy, with the lifecycle's Dirty marker set.
+			mk: func() snapshot { return sampleSnapshot() },
 		},
-		"degraded": {
+		"degraded-config": {
 			mk: func() snapshot {
 				s := sampleSnapshot()
 				s.summary.ConfigValid = false
@@ -85,24 +91,43 @@ func TestWindowRendersEachState(t *testing.T) {
 
 				return s
 			},
-			show: []guiAction{actionRestore, actionDisable},
 		},
-		"dirty": {
+		"degraded-health": {
 			mk: func() snapshot {
 				s := sampleSnapshot()
-				s.status.Dirty = true
+				s.status.Health = &ipc.HealthSummary{Ours: true, IPv4: false, IPv6: false}
 
 				return s
 			},
-			show: []guiAction{actionRestore, actionDisable},
 		},
-		"stopped": {
-			mk:   func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
-			show: []guiAction{actionEnable},
+		"dirty-leftover": {
+			// Interception applied, but interception is off: the genuine
+			// crash-recovery case, the only one that offers Restore.
+			mk: func() snapshot {
+				s := sampleSnapshot()
+				s.status.Enabled = false
+				s.status.Mode = "off"
+
+				return s
+			},
+			restore: true,
+		},
+		"stopped-not-installed": {
+			mk:            func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
+			powerDisabled: true, // Enable would fail; install first
+		},
+		"stopped-installed": {
+			mk: func() snapshot {
+				s := sampleSnapshot()
+				s.running = false
+				s.status = nil
+
+				return s
+			},
 		},
 		"unverified": {
-			mk:         func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
-			unverified: true,
+			mk:            func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
+			powerDisabled: true,
 		},
 	}
 
@@ -137,19 +162,29 @@ func TestWindowRendersEachState(t *testing.T) {
 				t.Fatalf("render looks blank: %d distinct colors", n)
 			}
 
-			// The right action buttons are rendered; the others are not.
-			for _, a := range tc.show {
-				if len(w.ResolveID("gui:action:"+string(a))) == 0 {
-					t.Errorf("expected action button %q to be rendered", a)
+			root := w.TestRender(nil)
+
+			// Exactly one power control; no Enable/Disable buttons, and the
+			// Start/Stop and Install/Uninstall lifecycle controls are not on
+			// the Status page.
+			if n := len(w.ResolveID("gui:power")); n != 1 {
+				t.Errorf("expected exactly one power control, got %d", n)
+			}
+			for _, id := range []string{
+				"gui:action:enable", "gui:action:disable",
+				"gui:service:install", "gui:service:uninstall",
+				"gui:service:start", "gui:service:stop",
+			} {
+				if len(w.ResolveID(id)) != 0 {
+					t.Errorf("Status page must not render %q", id)
 				}
 			}
-			if tc.unverified {
-				for _, a := range []guiAction{actionEnable, actionDisable, actionRestore} {
-					if len(w.ResolveID("gui:action:"+string(a))) != 0 {
-						t.Errorf("unverified state must not render %q", a)
-					}
-				}
+
+			if tc.restore != (len(w.ResolveID("gui:action:restore")) > 0) {
+				t.Errorf("restore present = %v, want %v", !tc.restore, tc.restore)
 			}
+
+			assertDisabled(t, root, w, "gui:power", tc.powerDisabled)
 
 			// ID and event findings: duplicates, missing IDs, unknown focus,
 			// stamp drift, unconsumed events.
@@ -163,105 +198,184 @@ func TestWindowRendersEachState(t *testing.T) {
 	}
 }
 
-// TestActionPlan covers the state -> action matrix as data.
-func TestActionPlan(t *testing.T) {
+// TestStatusVisualPrecedence pins the state mapping, above all that an enabled
+// session is never labeled "Restore needed" just because Dirty is set.
+func TestStatusVisualPrecedence(t *testing.T) {
+	th := gogui.ThemeLight
+
+	tests := []struct {
+		name     string
+		snap     snapshot
+		kind     statusKind
+		headline string
+	}{
+		{"enabled-dirty-is-protected", sampleSnapshot(), kindRunning, "Protected"},
+		{"unverified", snapshot{trust: trustUnverified, running: true}, kindUnverified, "Unverified"},
+		{"not-installed", snapshot{trust: trustVerified}, kindStopped, "Not installed"},
+		{"installed-stopped", func() snapshot {
+			s := sampleSnapshot()
+			s.running = false
+			s.status = nil
+
+			return s
+		}(), kindStopped, "Stopped"},
+		{"dirty-leftover", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Enabled = false
+
+			return s
+		}(), kindDirty, "Restore needed"},
+		{"enabled-off", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Enabled = false
+			s.status.Dirty = false
+
+			return s
+		}(), kindStopped, "Interception off"},
+		{"enabled-invalid", func() snapshot {
+			s := sampleSnapshot()
+			s.summary.ConfigValid = false
+
+			return s
+		}(), kindDegraded, "Needs attention"},
+		{"enabled-unhealthy", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Health = &ipc.HealthSummary{Ours: false}
+
+			return s
+		}(), kindDegraded, "Needs attention"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := statusVisualFor(tt.snap, th)
+			if got.kind != tt.kind {
+				t.Errorf("kind = %v, want %v", got.kind, tt.kind)
+			}
+			if got.headline != tt.headline {
+				t.Errorf("headline = %q, want %q", got.headline, tt.headline)
+			}
+		})
+	}
+}
+
+// TestPlanPower covers the single power-control state matrix as data.
+func TestPlanPower(t *testing.T) {
 	tests := []struct {
 		name      string
 		kind      statusKind
-		primary   guiAction
-		secondary guiAction
-		blocked   bool
+		installed bool
+		running   bool
+		on        bool
+		busy      bool
+		trusted   bool
+		canToggle bool
+		restore   bool
+		wantNote  bool
 	}{
-		{"running", kindRunning, actionDisable, "", false},
-		{"stopped", kindStopped, actionEnable, "", false},
-		{"dirty", kindDirty, actionRestore, actionDisable, false},
-		{"degraded", kindDegraded, actionRestore, actionDisable, false},
-		{"unverified", kindUnverified, "", "", true},
+		{"running", kindRunning, true, true, true, false, true, true, false, false},
+		{"stopped-not-installed", kindStopped, false, false, false, false, true, false, false, true},
+		{"stopped-installed", kindStopped, true, false, false, false, true, true, false, true},
+		{"interception-off", kindStopped, true, true, false, false, true, true, false, true},
+		{"dirty-leftover", kindDirty, true, true, false, false, true, true, true, true},
+		{"degraded", kindDegraded, true, true, true, false, true, true, false, true},
+		{"unverified", kindUnverified, true, true, false, false, false, false, false, true},
+		{"busy", kindRunning, true, true, true, true, true, false, false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planActions(tt.kind)
-			if got.primary != tt.primary || got.secondary != tt.secondary || got.blocked != tt.blocked {
-				t.Fatalf("planActions(%v) = {primary:%q secondary:%q blocked:%v}, want {%q %q %v}",
-					tt.name, got.primary, got.secondary, got.blocked, tt.primary, tt.secondary, tt.blocked)
+			got := planPower(tt.kind, tt.installed, tt.running, tt.on, tt.busy, tt.trusted)
+			if got.on != tt.on {
+				t.Errorf("on = %v, want %v", got.on, tt.on)
 			}
-			if tt.blocked && got.reason == "" {
-				t.Fatal("blocked plan must carry a reason")
+			if got.canToggle != tt.canToggle {
+				t.Errorf("canToggle = %v, want %v", got.canToggle, tt.canToggle)
+			}
+			if got.restore != tt.restore {
+				t.Errorf("restore = %v, want %v", got.restore, tt.restore)
+			}
+			if tt.wantNote != (got.note != "") {
+				t.Errorf("note = %q, wantNote = %v", got.note, tt.wantNote)
+			}
+			// Restore must never be offered while protection is on.
+			if tt.on && got.restore {
+				t.Fatal("on state must never offer Restore")
 			}
 		})
 	}
 }
 
-// TestToastForOutcome covers success, helper failure, UAC cancel (both as a
+// TestNoticeForOutcome covers success, helper failure, UAC cancel (both as a
 // returned error and as a helper result), and unsupported.
-func TestToastForOutcome(t *testing.T) {
+func TestNoticeForOutcome(t *testing.T) {
 	tests := []struct {
-		name     string
-		action   guiAction
-		res      applyResult
-		err      error
-		severity gogui.ToastSeverity
-		title    string
-		bodyHas  string
+		name    string
+		action  guiAction
+		res     applyResult
+		err     error
+		kind    noticeKind
+		title   string
+		bodyHas string
 	}{
 		{
 			name: "success", action: actionEnable,
-			res:      applyResult{ok: true, message: "Resolver enabled."},
-			severity: gogui.ToastSuccess, title: "Enabled", bodyHas: "Resolver enabled.",
+			res:  applyResult{ok: true, message: "Resolver enabled."},
+			kind: noticeSuccess, title: "Enabled", bodyHas: "Resolver enabled.",
 		},
 		{
 			name: "failure", action: actionEnable,
-			res:      applyResult{ok: false, errText: "bind 127.0.0.1:53: access denied"},
-			severity: gogui.ToastError, title: "Could not enable", bodyHas: "access denied",
+			res:  applyResult{ok: false, errText: "bind 127.0.0.1:53: access denied"},
+			kind: noticeError, title: "Could not enable", bodyHas: "access denied",
 		},
 		{
 			name: "cancel-as-error", action: actionDisable,
-			err:      errors.New("UAC declined"),
-			severity: gogui.ToastWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
+			err:  errors.New("UAC declined"),
+			kind: noticeWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
 		},
 		{
 			name: "cancel-as-result", action: actionRestore,
-			res:      applyResult{ok: false, errText: "user cancelled"},
-			severity: gogui.ToastWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
+			res:  applyResult{ok: false, errText: "user cancelled"},
+			kind: noticeWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
 		},
 		{
 			name: "unsupported", action: actionEnable,
-			err:      errUnsupported,
-			severity: gogui.ToastWarning, title: "Not supported", bodyHas: "not available on this platform",
+			err:  errUnsupported,
+			kind: noticeWarning, title: "Not supported", bodyHas: "not available on this platform",
 		},
 		{
 			name: "revision-conflict", action: actionEnable,
-			err:      errRevision,
-			severity: gogui.ToastWarning, title: "Configuration changed", bodyHas: "Refresh and try again",
+			err:  errRevision,
+			kind: noticeWarning, title: "Configuration changed", bodyHas: "Refresh and try again",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := toastFor(tt.action, tt.res, tt.err)
-			if got.Severity != tt.severity {
-				t.Errorf("severity = %v, want %v", got.Severity, tt.severity)
+			got := noticeFor(tt.action, tt.res, tt.err)
+			if got.kind != tt.kind {
+				t.Errorf("kind = %v, want %v", got.kind, tt.kind)
 			}
-			if got.Title != tt.title {
-				t.Errorf("title = %q, want %q", got.Title, tt.title)
+			if got.title != tt.title {
+				t.Errorf("title = %q, want %q", got.title, tt.title)
 			}
-			if !strings.Contains(got.Body, tt.bodyHas) {
-				t.Errorf("body = %q, want substring %q", got.Body, tt.bodyHas)
+			if !strings.Contains(got.body, tt.bodyHas) {
+				t.Errorf("body = %q, want substring %q", got.body, tt.bodyHas)
 			}
 		})
 	}
 }
 
-// TestActionClickInvokesApply drives a click through real dispatch and asserts
-// the injected apply func runs with the planned action, off the frame thread.
+// TestActionClickInvokesApply drives a click on the single power control
+// through real dispatch and asserts the injected apply func runs with the
+// Enable action, off the frame thread.
 func TestActionClickInvokesApply(t *testing.T) {
 	got := make(chan guiAction, 1)
 
 	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
-	app.snap = snapshot{trust: trustVerified, updated: time.Now()} // stopped -> Enable
-	app.apply = func(_ context.Context, action guiAction, _ string) (applyResult, error) {
-		got <- action
+	app.snap = snapshot{trust: trustVerified, installed: true, updated: time.Now()} // installed+stopped, protection off
+	app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
+		got <- req.action
 
 		return applyResult{ok: true, message: "Resolver enabled."}, nil
 	}
@@ -272,8 +386,8 @@ func TestActionClickInvokesApply(t *testing.T) {
 	w.SetView(view)
 	w.TestRender(nil)
 
-	if err := w.TestClick("gui:action:enable"); err != nil {
-		t.Fatalf("click enable: %v", err)
+	if err := w.TestClick("gui:power"); err != nil {
+		t.Fatalf("click power: %v", err)
 	}
 
 	select {
@@ -292,7 +406,8 @@ func TestActionClickInvokesApply(t *testing.T) {
 
 // waitIdle drives frames until the in-flight action finishes.  FrameFn flushes
 // the command queue (TestRender does not), so the queued completion callback --
-// which clears busy, shows the toast and requests a re-poll -- actually runs.
+// which clears busy, sets the inline notice and requests a re-poll -- actually
+// runs.
 func waitIdle(t *testing.T, w *gogui.Window, app *App) {
 	t.Helper()
 

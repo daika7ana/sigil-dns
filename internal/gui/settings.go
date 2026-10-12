@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/daika7ana/dns-client/internal/ipc"
 )
 
 // Theme preference values stored in gui.json.
@@ -15,12 +17,17 @@ const (
 	themeDark   = "dark"
 )
 
-// settings is the user-scope gui.json.  It holds window geometry and theme
-// preference only — never secrets, never an authorization input (SPEC §15.2).
+// settings is the user-scope gui.json.  It holds window geometry, theme
+// preference, and the last sanitized config summary so the editor still works
+// while the service is stopped.  A ConfigSummary carries only labels, flags,
+// counts, hosts and IP literals — never an id or a credential-bearing URL
+// (SPEC §15.2) — so caching it here is safe.  It is never an authorization
+// input.
 type settings struct {
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
-	Theme  string `json:"theme,omitempty"`
+	Width   int                `json:"width,omitempty"`
+	Height  int                `json:"height,omitempty"`
+	Theme   string             `json:"theme,omitempty"`
+	Summary *ipc.ConfigSummary `json:"summary,omitempty"`
 }
 
 // defaultGuiPath returns %LOCALAPPDATA%\dns-client\gui.json, falling back to

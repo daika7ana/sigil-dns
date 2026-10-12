@@ -12,19 +12,24 @@ The release zip is `dns-client_<version>_windows_amd64.zip` and contains:
 
 - `dns-client.exe` — the console-subsystem binary: CLI, service host, and the
   headless `--apply` elevation helper.
-- `dns-client-gui.exe` — the GUI-subsystem status window, built `-tags gui
-  -ldflags "-H windowsgui"`.
+- `dns-client-gui.exe` — the GUI-subsystem configuration client (Status +
+  Settings), built `-tags gui -ldflags "-H windowsgui"`.
 - `config.example.yaml`, `README.md`, `LICENSE`.
 - `installer/install.ps1`, `installer/uninstall.ps1`.
 
 Release builds use the `gui` tag (never `-tags tray`); the **tray UI is deferred
 to v1.1**.
 
+Both binaries embed `cmd/dns-client/dns-client.manifest`, which requests
+`requireAdministrator`: Windows shows a UAC prompt on every launch and the
+process runs elevated for its lifetime (a deliberate deviation from SPEC
+§15.3.8).
+
 The two binaries come from the same Go module. A single Windows exe cannot
 cleanly be both console and GUI subsystem: a console-subsystem GUI leaves a
 stray console window, and a `windowsgui` CLI loses stdout (breaking
 `dns-client status`). The console binary keeps stdout; the GUI binary opens the
-status window when launched with no arguments.
+window when launched with no arguments.
 
 ## Cutting a release
 

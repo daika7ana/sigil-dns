@@ -9,7 +9,6 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/version"
 )
 
 // statusKind is the one state the window presents at a time.
@@ -21,6 +20,14 @@ const (
 	kindDirty
 	kindStopped
 	kindUnverified
+)
+
+// pageKind is the visible screen behind the left navigation.
+type pageKind int
+
+const (
+	pageStatus pageKind = iota
+	pageSettings
 )
 
 // statusVisual is the resolved banner for a state: a headline, one calm
@@ -40,194 +47,394 @@ type statusVisual struct {
 func view(w *gogui.Window) gogui.View {
 	app := gogui.State[App](w)
 	t := gogui.CurrentTheme()
-	v := statusVisualFor(app.snap, t)
+
+	content := []gogui.View{
+		header(t, app),
+		gogui.Row(gogui.ContainerCfg{
+			ID:      "gui:body",
+			Sizing:  gogui.FillFill,
+			Spacing: gogui.SpacingMedium,
+			Content: []gogui.View{
+				navRail(t, app),
+				pageContent(t, app),
+			},
+		}),
+	}
+	// The toast is a floating layer, not an in-flow card: it is lifted out of
+	// the tree and painted bottom-right over the page.
+	if app.toast != nil {
+		content = append(content, toastOverlay(t, app))
+	}
 
 	return gogui.Column(gogui.ContainerCfg{
-		Sizing:  gogui.FillFill,
-		Color:   t.ColorBackground,
-		Padding: t.PaddingLarge,
-		Spacing: gogui.SpacingLarge,
+		Sizing: gogui.FillFill,
+		Color:  t.ColorBackground,
+		// No bottom padding: the page ends flush with the content's last block,
+		// so there is no reserved blank band under the page.
+		Padding: gogui.NewPadding(t.PaddingMedium.Top, t.PaddingMedium.Right, 0, t.PaddingMedium.Left),
+		Spacing: gogui.SpacingMedium,
+		Content: content,
+	})
+}
+
+// pageContent is the body of the selected page.
+func pageContent(t gogui.Theme, app *App) gogui.View {
+	if app.page == pageSettings {
+		return settingsPage(t, app)
+	}
+
+	return statusPage(t, app)
+}
+
+// navRail is the left navigation: one button per page, the current one filled.
+// It has no padding of its own so its width is exactly the button width.
+func navRail(t gogui.Theme, app *App) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         "gui:nav",
+		Sizing:     gogui.FixedFit,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Spacing:    gogui.SpacingSmall,
 		Content: []gogui.View{
-			header(t, app),
-			banner(t, v),
-			actionBar(t, app, v),
-			gogui.Column(gogui.ContainerCfg{
-				ID:         "gui:content",
-				Sizing:     gogui.FillFill,
-				Spacing:    gogui.SpacingLarge,
-				Scrollable: true,
-				Content:    sections(app.snap, v, t),
-			}),
-			footer(t, app),
+			navButton(t, pageStatus, "Status", app.page),
+			navButton(t, pageSettings, "Settings", app.page),
 		},
 	})
 }
 
-// header is the app title, a subtitle, and the window controls.
+// navButton builds one navigation button.  The selected page keeps a filled
+// (secondary) face so the current screen reads at a glance; the others stay
+// ghost so they recede.  The rail hugs this fixed width, so there is no dead
+// space beside the buttons.
+func navButton(t gogui.Theme, p pageKind, label string, current pageKind) gogui.View {
+	variant := gogui.ButtonGhost
+	if p == current {
+		variant = gogui.ButtonSecondary
+	}
+
+	return gogui.Button(gogui.ButtonCfg{
+		ID:      "gui:nav:" + pageName(p),
+		Variant: variant,
+		Label:   label,
+		Width:   navRailWidth,
+		Sizing:  gogui.FixedFit,
+		OnClick: func(ctx gogui.EventCtx) { setPage(ctx, p) },
+	})
+}
+
+// navRailWidth is the fixed width of the navigation buttons and the rail.
+const navRailWidth = 104
+
+// pageName is the stable suffix for a page's widget ID.
+func pageName(p pageKind) (name string) {
+	if p == pageSettings {
+		return "settings"
+	}
+
+	return "status"
+}
+
+// statusPage is the status screen: a banner and the read-only card stack, all
+// in ONE scrollable column.  Keeping the banner in the same column as the
+// cards means they share the scroll region's inset, so the banner is exactly as
+// wide as the cards below it.  The power control lives in the header.
+func statusPage(t gogui.Theme, app *App) gogui.View {
+	v := statusVisualFor(app.snap, t)
+
+	content := []gogui.View{banner(t, v)}
+	content = append(content, sections(app, t)...)
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         "gui:content",
+		Sizing:     gogui.FillFill,
+		Spacing:    gogui.SpacingMedium,
+		Scrollable: true,
+		Content:    content,
+	})
+}
+
+// header is a single compact row: the app title, a status caption, and the
+// window controls.  The single Protection button lives here (labelled Enable
+// when interception is off, Disable when on); Restore appears only for the
+// crash-leftover state.
 func header(t gogui.Theme, app *App) gogui.View {
+	ps := powerStateFor(t, app)
+
+	// The Protection button runs the existing enable/disable path.
+	power := actionEnable
+	if ps.on {
+		power = actionDisable
+	}
+
+	caption := updatedText(app)
+	switch {
+	case app.busy:
+		caption = app.busyNote
+	case ps.note != "":
+		caption = ps.note
+	}
+
+	controls := []gogui.View{
+		gogui.Text(gogui.TextCfg{
+			Text:      caption,
+			TextStyle: t.TextStyleCaption,
+			Sizing:    gogui.FillFit,
+			Mode:      gogui.TextModeWrap,
+		}),
+		gogui.SegmentedControl(gogui.SegmentedControlCfg{
+			ID:      "gui:theme",
+			Value:   app.themePref,
+			Sizing:  gogui.FitFit,
+			Options: themeOptions(),
+			OnSelect: func(v string, ctx gogui.EventCtx) {
+				setThemePref(ctx, v)
+			},
+		}),
+	}
+	if ps.restore {
+		controls = append(controls, gogui.Button(gogui.ButtonCfg{
+			ID:       "gui:action:restore",
+			Variant:  gogui.ButtonPrimary,
+			Label:    "Restore now",
+			Disabled: app.busy,
+			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionRestore) },
+		}))
+	}
+
+	// The power control is the right-most action: green to enable, red to
+	// disable, so the button reads the state, not just its label.
+	powerCfg := gogui.ButtonCfg{
+		ID:       "gui:power",
+		Variant:  gogui.ButtonPrimary,
+		Colors:   successButtonColors(t),
+		Label:    actionLabel(power),
+		Disabled: !ps.canToggle,
+		OnClick:  togglePower,
+	}
+	if ps.on {
+		powerCfg.Variant = gogui.ButtonDanger
+		powerCfg.Colors = gogui.ColorSet{} // the danger variant's own error fill
+	}
+
+	controls = append(controls,
+		gogui.Button(gogui.ButtonCfg{
+			ID:      "gui:refresh",
+			Variant: gogui.ButtonSecondary,
+			Label:   "Refresh",
+			OnClick: requestRefresh,
+		}),
+		gogui.Button(powerCfg),
+	)
+
 	return gogui.Row(gogui.ContainerCfg{
+		ID:      "gui:header",
 		Sizing:  gogui.FillFit,
 		Spacing: gogui.SpacingMedium,
 		VAlign:  gogui.VAlignMiddle,
+		Content: append([]gogui.View{gogui.Text(gogui.TextCfg{
+			Text:      "dns-client",
+			TextStyle: t.TextStyleTitle,
+		})}, controls...),
+	})
+}
+
+// powerStateFor resolves the single power control for the current snapshot.
+func powerStateFor(t gogui.Theme, app *App) powerState {
+	return planPower(statusVisualFor(app.snap, t).kind,
+		app.snap.installed, app.snap.running, enabled(app.snap), app.busy, canEdit(app.snap))
+}
+
+// successButtonColors paints a button in the theme's success tone.  The toolkit
+// has no success variant, so every slot is stated: a Primary button would pair
+// the green fill with the accent border and hover.
+func successButtonColors(t gogui.Theme) gogui.ColorSet {
+	g := t.Cfg.ColorSuccess
+
+	return gogui.ColorSet{Base: g, Hover: g, Click: g, Focus: g, Border: g}
+}
+
+// updatedText is the last-poll timestamp, folded into the header so it never
+// occupies a footer band.
+func updatedText(app *App) (s string) {
+	if app.snap.updated.IsZero() {
+		return "Not updated yet"
+	}
+
+	return "Updated " + app.snap.updated.Format("15:04:05")
+}
+
+// toast width and page-edge margin for the floating toast.
+const (
+	toastWidth  float32 = 300
+	toastMargin float32 = 16
+)
+
+// toastOverlay is our own floating action-result toast.  We build it (rather
+// than the toolkit toast) because the toolkit pins its close button to the
+// corner with no padding and no ToastCfg lever; a Float container gives us a
+// bottom-right overlay whose close button is padded and vertically centred on
+// the title row.  It auto-dismisses (see showToast) and closes by hand.
+func toastOverlay(t gogui.Theme, app *App) gogui.View {
+	n := *app.toast
+	title, bg := noticePalette(t, n.kind)
+
+	return gogui.Column(gogui.ContainerCfg{
+		ID:           "gui:toast",
+		Sizing:       gogui.FixedFit,
+		Width:        toastWidth,
+		Float:        true,
+		FloatAnchor:  gogui.FloatBottomRight,
+		FloatTieOff:  gogui.FloatBottomRight,
+		FloatOffsetX: -toastMargin,
+		FloatOffsetY: -toastMargin,
+		FloatZIndex:  1000,
+		Color:        bg,
+		ColorBorder:  t.ColorBorder,
+		SizeBorder:   gogui.BorderPx(1),
+		Radius:       gogui.RadiusMedium,
+		Padding:      t.PaddingMedium,
+		Spacing:      gogui.SpacingTight,
 		Content: []gogui.View{
-			gogui.Column(gogui.ContainerCfg{
-				Sizing:  gogui.FillFit,
-				Spacing: gogui.SpacingTight,
+			gogui.Row(gogui.ContainerCfg{
+				ID:         "gui:toast:title",
+				Sizing:     gogui.FillFit,
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+				Spacing:    gogui.SpacingMedium,
+				VAlign:     gogui.VAlignMiddle,
 				Content: []gogui.View{
 					gogui.Text(gogui.TextCfg{
-						Text:      "dns-client",
-						TextStyle: t.TextStyleTitle,
+						Text:      n.title,
+						TextStyle: title,
+						Sizing:    gogui.FillFit,
 					}),
-					gogui.Text(gogui.TextCfg{
-						Text:      "Loopback encrypted DNS status",
-						TextStyle: t.TextStyleSecondary,
+					gogui.Button(gogui.ButtonCfg{
+						ID:      "gui:toast:dismiss",
+						Variant: gogui.ButtonGhost,
+						Label:   "\u00d7",
+						OnClick: dismissToast,
 					}),
 				},
 			}),
-			gogui.Row(gogui.ContainerCfg{
-				Sizing:  gogui.FixedFit,
-				Spacing: gogui.SpacingSmall,
-				VAlign:  gogui.VAlignMiddle,
-				Content: []gogui.View{
-					gogui.Button(gogui.ButtonCfg{
-						ID:      "gui:theme",
-						Variant: gogui.ButtonGhost,
-						Label:   themeLabel(app.themePref),
-						OnClick: cycleTheme,
-					}),
-					gogui.Button(gogui.ButtonCfg{
-						ID:      "gui:refresh",
-						Variant: gogui.ButtonSecondary,
-						Label:   "Refresh",
-						OnClick: requestRefresh,
-					}),
-				},
+			gogui.Text(gogui.TextCfg{
+				Text:      n.body,
+				TextStyle: t.TextStyleSecondary,
+				Mode:      gogui.TextModeWrap,
+				Sizing:    gogui.FillFit,
 			}),
 		},
 	})
 }
 
-// banner is the state headline: a colored dot, a headline, and one sentence.
+// noticePalette maps a notice severity onto its title style and wash.
+func noticePalette(t gogui.Theme, k noticeKind) (title gogui.TextStyle, bg gogui.Color) {
+	switch k {
+	case noticeSuccess:
+		return t.TextStyleSuccess, t.ColorSuccessSubtle
+	case noticeWarning:
+		return t.TextStyleWarning, t.ColorWarningSubtle
+	case noticeError:
+		return t.TextStyleError, t.ColorErrorSubtle
+	default:
+		return t.TextStyleBody, t.ColorPanel
+	}
+}
+
+// banner is the state headline.  The indicator sits in a row with the headline
+// so it is vertically centred on the title line, not the block; the sentence
+// sits below.  The indicator is a ring, filled and glowing only when protected.
 func banner(t gogui.Theme, v statusVisual) gogui.View {
-	return gogui.Row(gogui.ContainerCfg{
+	return gogui.Column(gogui.ContainerCfg{
+		ID:      "gui:banner",
 		Sizing:  gogui.FillFit,
 		Color:   v.bg,
 		Radius:  gogui.RadiusMedium,
 		Padding: t.PaddingMedium,
-		Spacing: gogui.SpacingMedium,
-		VAlign:  gogui.VAlignTop,
+		Spacing: gogui.SpacingTight,
 		Content: []gogui.View{
-			gogui.Circle(gogui.ContainerCfg{
-				Width:      10,
-				Height:     10,
-				Sizing:     gogui.FixedFixed,
-				Color:      v.accent,
+			gogui.Row(gogui.ContainerCfg{
+				ID:         "gui:banner:title",
+				Sizing:     gogui.FillFit,
 				Padding:    gogui.PaddingNone,
 				SizeBorder: gogui.NoBorder,
-			}),
-			gogui.Column(gogui.ContainerCfg{
-				Sizing:  gogui.FillFit,
-				Spacing: gogui.SpacingTight,
+				Spacing:    gogui.SpacingMedium,
+				VAlign:     gogui.VAlignMiddle,
 				Content: []gogui.View{
-					gogui.Text(gogui.TextCfg{Text: v.headline, TextStyle: v.headlineStyle}),
+					statusIndicator(v),
 					gogui.Text(gogui.TextCfg{
-						Text:      v.detail,
-						TextStyle: t.TextStyleSecondary,
-						Mode:      gogui.TextModeWrap,
+						Text:      v.headline,
+						TextStyle: v.headlineStyle,
+						Sizing:    gogui.FillFit,
 					}),
 				},
 			}),
-		},
-	})
-}
-
-// actionBar is the state's action row: the primary next step (and an optional
-// secondary) on the right, an in-flight note or a blocking explanation on the
-// left.  It sits under the banner so the state and its action read together,
-// and outside the scroll area so a recovery action like "Restore now" is never
-// buried.
-func actionBar(t gogui.Theme, app *App, v statusVisual) gogui.View {
-	plan := planActions(v.kind)
-
-	var actions []gogui.View
-	if !plan.blocked {
-		if plan.secondary != "" {
-			actions = append(actions, actionButton(plan.secondary, app.busy))
-		}
-		if plan.primary != "" {
-			actions = append(actions, actionButton(plan.primary, app.busy))
-		}
-	}
-
-	lead := ""
-	switch {
-	case plan.blocked:
-		lead = plan.reason
-	case app.busy:
-		lead = app.busyNote
-	}
-
-	return gogui.Row(gogui.ContainerCfg{
-		Sizing:  gogui.FillFit,
-		Spacing: gogui.SpacingMedium,
-		VAlign:  gogui.VAlignMiddle,
-		Content: []gogui.View{
 			gogui.Text(gogui.TextCfg{
-				Text:      lead,
+				Text:      v.detail,
 				TextStyle: t.TextStyleSecondary,
-				Sizing:    gogui.FillFit,
 				Mode:      gogui.TextModeWrap,
-			}),
-			gogui.Row(gogui.ContainerCfg{
-				Sizing:  gogui.FixedFit,
-				Spacing: gogui.SpacingSmall,
-				VAlign:  gogui.VAlignMiddle,
-				Content: actions,
+				Sizing:    gogui.FillFit,
 			}),
 		},
 	})
 }
 
-// actionButton builds one action button, disabled while an action is in flight.
-func actionButton(action guiAction, busy bool) gogui.View {
-	return gogui.Button(gogui.ButtonCfg{
-		ID:       "gui:action:" + string(action),
-		Variant:  actionVariant(action),
-		Label:    actionLabel(action),
-		Disabled: busy,
-		OnClick: func(ctx gogui.EventCtx) {
-			runAction(ctx, action)
-		},
+// statusIndicator is the state dot: a ring in the state colour, filled with a
+// soft glow when protection is on, a hollow ring otherwise.
+func statusIndicator(v statusVisual) gogui.View {
+	fill := gogui.ColorTransparent
+	var glow *gogui.BoxShadow
+	if v.kind == kindRunning {
+		fill = v.accent
+		glow = &gogui.BoxShadow{Color: v.accent, BlurRadius: 6, Spread: 1}
+	}
+
+	return gogui.Circle(gogui.ContainerCfg{
+		ID:          "gui:banner:dot",
+		Width:       12,
+		Height:      12,
+		Sizing:      gogui.FixedFixed,
+		Color:       fill,
+		ColorBorder: v.accent,
+		SizeBorder:  gogui.BorderPx(2),
+		Padding:     gogui.PaddingNone,
+		Shadow:      glow,
 	})
 }
 
-// sections returns the body groups for the current state.  Stopped and
-// unverified states show no service data, only the client's own build info; a
-// degraded (unloadable) config drops the config-dependent groups, leaving the
-// runtime state and the build info.
-func sections(s snapshot, v statusVisual, t gogui.Theme) []gogui.View {
-	switch {
-	case v.kind == kindStopped || v.kind == kindUnverified:
-		return []gogui.View{aboutSection(s, t)}
-	case v.kind == kindDegraded && s.summary != nil && !s.summary.ConfigValid:
-		return []gogui.View{serviceSection(s, t), aboutSection(s, t)}
-	default:
-		return []gogui.View{
-			profileSection(s, t),
-			filteringSection(s, t),
-			cacheSection(s, t),
-			serviceSection(s, t),
-			aboutSection(s, t),
-		}
+// togglePower flips protection through the existing enable/disable actions:
+// turning on runs Enable (which starts the service and applies interception),
+// turning off runs Disable (which removes interception; the service stays
+// installed).  The header button calls it.
+func togglePower(ctx gogui.EventCtx) {
+	app := gogui.State[App](ctx.Window)
+	if enabled(app.snap) {
+		runAction(ctx, actionDisable)
+	} else {
+		runAction(ctx, actionEnable)
+	}
+}
+
+// sections is the Status page's read-only card stack, built from the effective
+// config summary (the live one, or the cached last-good one while the service
+// is stopped).  An unverified source shows no config data at all.
+func sections(app *App, t gogui.Theme) []gogui.View {
+	if !canEdit(app.snap) {
+		return nil
+	}
+
+	sum := app.summary()
+
+	return []gogui.View{
+		profileSection(sum, t),
+		filteringSection(sum, t),
+		cacheSection(sum, t),
 	}
 }
 
 // profileSection renders the active profile's display-only labels and a masked
 // resolver id (SPEC §15.2: never the id itself).
-func profileSection(s snapshot, t gogui.Theme) gogui.View {
-	sum := s.summary
+func profileSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 	rows := []gogui.View{}
-
 	if sum == nil {
 		rows = append(rows, kv(t, "Profile", "—"))
 	} else {
@@ -240,14 +447,12 @@ func profileSection(s snapshot, t gogui.Theme) gogui.View {
 		)
 	}
 
-	return card(t, "Profile", rows)
+	return card(t, "gui:card:profile", "Profile", rows)
 }
 
 // filteringSection renders filtering settings, list hosts, and rule counts.
-func filteringSection(s snapshot, t gogui.Theme) gogui.View {
-	sum := s.summary
+func filteringSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 	rows := []gogui.View{}
-
 	if sum == nil {
 		rows = append(rows, kv(t, "Status", "—"))
 	} else {
@@ -263,14 +468,12 @@ func filteringSection(s snapshot, t gogui.Theme) gogui.View {
 		}
 	}
 
-	return card(t, "Filtering", rows)
+	return card(t, "gui:card:filtering", "Filtering", rows)
 }
 
 // cacheSection renders cache and bootstrap settings.
-func cacheSection(s snapshot, t gogui.Theme) gogui.View {
-	sum := s.summary
+func cacheSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 	rows := []gogui.View{}
-
 	if sum == nil {
 		rows = append(rows, kv(t, "Status", "—"))
 	} else {
@@ -281,84 +484,45 @@ func cacheSection(s snapshot, t gogui.Theme) gogui.View {
 		)
 	}
 
-	return card(t, "Cache & bootstrap", rows)
+	return card(t, "gui:card:cache", "Cache & bootstrap", rows)
 }
 
-// serviceSection renders the runtime state from the status DTO.
-func serviceSection(s snapshot, t gogui.Theme) gogui.View {
-	st := s.status
-	rows := []gogui.View{}
+// card is a bordered panel with a bold heading and label/value rows.  It uses
+// a plain filled/outlined Column with an in-flow heading Text rather than the
+// toolkit's group-box Title: the group-box legend is drawn outside the
+// scrollable clip, so scrolled cards painted their legend at the scroll origin
+// and overlapped the banner, and its TitleBG struck a line through the text.
+func card(t gogui.Theme, id, title string, rows []gogui.View) gogui.View {
+	content := make([]gogui.View, 0, len(rows)+1)
+	content = append(content, gogui.Text(gogui.TextCfg{
+		Text:      title,
+		TextStyle: t.TextStyleTitleSmall,
+		Sizing:    gogui.FillFit,
+	}))
+	content = append(content, rows...)
 
-	if st == nil {
-		rows = append(rows, kv(t, "State", "—"))
-	} else {
-		rows = append(rows,
-			kv(t, "Enabled", yesNo(st.Enabled)),
-			kv(t, "Mode", fallback(st.Mode, "—")),
-			kv(t, "Mechanism", fallback(st.Mechanism, "—")),
-			kv(t, "Dirty marker", yesNo(st.Dirty)),
-			kv(t, "Last health", healthValue(st.Health)),
-		)
-	}
-
-	return card(t, "Service", rows)
-}
-
-// aboutSection renders the client and service versions and capabilities.
-func aboutSection(s snapshot, t gogui.Theme) gogui.View {
-	serviceVersion := "—"
-	proto := "—"
-	caps := "—"
-
-	if s.info != nil {
-		serviceVersion = fallback(s.info.AppVersion, version.Version)
-		proto = fmt.Sprintf("%d", s.info.ProtocolVersion)
-		caps = capabilities(s.info.Capabilities)
-	}
-
-	return card(t, "About", []gogui.View{
-		kv(t, "Client version", version.Version),
-		kv(t, "Service version", serviceVersion),
-		kv(t, "Protocol", proto),
-		kv(t, "Capabilities", caps),
-	})
-}
-
-// footer carries the last-updated timestamp.
-func footer(t gogui.Theme, app *App) gogui.View {
-	updated := "Updated never"
-	if !app.snap.updated.IsZero() {
-		updated = "Updated " + app.snap.updated.Format("15:04:05")
-	}
-
-	return gogui.Row(gogui.ContainerCfg{
-		Sizing: gogui.FillFit,
-		Content: []gogui.View{
-			gogui.Text(gogui.TextCfg{
-				Text:      updated,
-				TextStyle: t.TextStyleCaption,
-				Sizing:    gogui.FillFit,
-			}),
-		},
-	})
-}
-
-// card is a titled group-box holding label/value rows.
-func card(t gogui.Theme, title string, rows []gogui.View) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
-		Title:   title,
-		TitleBG: t.ColorBackground,
-		Sizing:  gogui.FillFit,
-		Spacing: gogui.SpacingSmall,
-		Content: rows,
+		ID:          id,
+		Sizing:      gogui.FillFit,
+		Color:       t.ColorPanel,
+		ColorBorder: t.ColorBorder,
+		SizeBorder:  gogui.BorderPx(1),
+		Radius:      gogui.RadiusMedium,
+		Padding:     t.PaddingMedium,
+		Spacing:     gogui.SpacingTight,
+		Content:     content,
 	})
 }
 
-// kv is one label/value row with a fixed label column.
+// kv is one label/value row with a fixed label column.  PaddingNone keeps the
+// rows compact: without it every row pays the container's default padding,
+// which made the cards read as half-empty.
 func kv(t gogui.Theme, label, value string) gogui.View {
 	return gogui.Row(gogui.ContainerCfg{
-		Sizing:  gogui.FillFit,
-		Spacing: gogui.SpacingMedium,
+		Sizing:     gogui.FillFit,
+		Spacing:    gogui.SpacingMedium,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
 			gogui.Text(gogui.TextCfg{
 				Text:      label,
@@ -376,8 +540,11 @@ func kv(t gogui.Theme, label, value string) gogui.View {
 	})
 }
 
-// statusVisualFor maps a snapshot onto the state the viewer sees.  Order
-// matters: trust and reachability gate everything below them.
+// statusVisualFor maps a snapshot onto the state the viewer sees.  Order is
+// the whole point: trust gates everything, reachability next, then the enabled
+// flag.  Dirty is a marker the lifecycle sets for the duration of an enabled
+// session, so it must NEVER override an enabled state — it only means "Restore
+// needed" when interception is NOT enabled (a genuine crash leftover).
 func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 	switch {
 	case s.trust == trustUnverified:
@@ -390,13 +557,54 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 			accent:        t.TextStyleError.Color,
 		}
 	case !s.running:
+		if s.installed {
+			return statusVisual{
+				kind:          kindStopped,
+				headline:      "Stopped",
+				detail:        "The dns-client service is installed but not running.",
+				headlineStyle: t.TextStyleTitleSmall,
+				bg:            t.ColorPanel,
+				accent:        t.TextStyleSecondary.Color,
+			}
+		}
+
 		return statusVisual{
 			kind:          kindStopped,
-			headline:      "Not running",
-			detail:        "The dns-client service is not installed or not running.",
+			headline:      "Not installed",
+			detail:        "The dns-client service is not installed yet.",
 			headlineStyle: t.TextStyleTitleSmall,
 			bg:            t.ColorPanel,
 			accent:        t.TextStyleSecondary.Color,
+		}
+	case enabled(s):
+		if s.summary != nil && !s.summary.ConfigValid {
+			return statusVisual{
+				kind:          kindDegraded,
+				headline:      "Needs attention",
+				detail:        configErrorDetail(s.summary),
+				headlineStyle: t.TextStyleWarning,
+				bg:            t.ColorWarningSubtle,
+				accent:        t.TextStyleWarning.Color,
+			}
+		}
+		if !healthOK(s.status.Health) {
+			return statusVisual{
+				kind:          kindDegraded,
+				headline:      "Needs attention",
+				detail:        "The resolver is enabled but its last health check did not pass.",
+				headlineStyle: t.TextStyleWarning,
+				bg:            t.ColorWarningSubtle,
+				accent:        t.TextStyleWarning.Color,
+			}
+		}
+
+		return statusVisual{
+			kind:          kindRunning,
+			headline:      "Protected",
+			detail:        "DNS queries are handled by the dns-client loopback resolver.",
+			headlineStyle: t.TextStyleSuccess,
+			bg:            t.ColorSuccessSubtle,
+			accent:        t.TextStyleSuccess.Color,
 		}
 	case s.status != nil && s.status.Dirty:
 		return statusVisual{
@@ -407,34 +615,22 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 			bg:            t.ColorWarningSubtle,
 			accent:        t.TextStyleWarning.Color,
 		}
-	case s.summary != nil && !s.summary.ConfigValid:
-		return statusVisual{
-			kind:          kindDegraded,
-			headline:      "Needs attention",
-			detail:        configErrorDetail(s.summary),
-			headlineStyle: t.TextStyleWarning,
-			bg:            t.ColorWarningSubtle,
-			accent:        t.TextStyleWarning.Color,
-		}
-	case s.status != nil && s.status.Enabled && !healthOK(s.status.Health):
-		return statusVisual{
-			kind:          kindDegraded,
-			headline:      "Needs attention",
-			detail:        "The resolver is enabled but its last health check did not pass.",
-			headlineStyle: t.TextStyleWarning,
-			bg:            t.ColorWarningSubtle,
-			accent:        t.TextStyleWarning.Color,
-		}
 	default:
 		return statusVisual{
-			kind:          kindRunning,
-			headline:      "Protected",
-			detail:        "DNS queries are handled by the dns-client loopback resolver.",
-			headlineStyle: t.TextStyleSuccess,
-			bg:            t.ColorSuccessSubtle,
-			accent:        t.TextStyleSuccess.Color,
+			kind:          kindStopped,
+			headline:      "Interception off",
+			detail:        "The service is running but DNS interception is turned off.",
+			headlineStyle: t.TextStyleTitleSmall,
+			bg:            t.ColorPanel,
+			accent:        t.TextStyleSecondary.Color,
 		}
 	}
+}
+
+// enabled reports whether the status DTO says interception is on.  A nil
+// status (service not running) is not enabled.
+func enabled(s snapshot) bool {
+	return s.status != nil && s.status.Enabled
 }
 
 // configErrorDetail renders the secret-free config error as one sentence.
@@ -478,25 +674,6 @@ func healthValue(h *ipc.HealthSummary) (s string) {
 	}
 
 	return "ok (" + strings.Join(parts, ", ") + ")"
-}
-
-// capabilities names the info capability bits.
-func capabilities(bits uint64) (s string) {
-	var names []string
-	if bits&ipc.CapInfo != 0 {
-		names = append(names, "info")
-	}
-	if bits&ipc.CapConfigSummary != 0 {
-		names = append(names, "config")
-	}
-	if bits&ipc.CapReload != 0 {
-		names = append(names, "reload")
-	}
-	if len(names) == 0 {
-		return "none"
-	}
-
-	return strings.Join(names, ", ")
 }
 
 // resolverID masks the resolver id: set or unset, never the value (SPEC §15.2).

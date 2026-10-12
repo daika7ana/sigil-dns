@@ -8,14 +8,18 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend"
+
+	"github.com/daika7ana/dns-client/internal/ipc"
 )
 
-// Window defaults.  A saved geometry in gui.json wins.
+// Window defaults.  A saved geometry in gui.json wins.  The Status page is now
+// a banner, one power control, and three read-only cards, so the default is
+// shorter than it was; the taller Settings page scrolls.
 const (
-	defaultWidth  = 560
-	defaultHeight = 700
-	minWidth      = 420
-	minHeight     = 460
+	defaultWidth  = 720
+	defaultHeight = 600
+	minWidth      = 520
+	minHeight     = 480
 )
 
 // pollInterval is the status refresh cadence (SPEC §15.4, phase 2: ~2 s).
@@ -30,18 +34,66 @@ type App struct {
 	guiPath   string
 	themePref string
 
+	// page is the visible screen.
+	page pageKind
+
+	// summaries is the sanitized per-profile list from the last poll, and
+	// profiles its name list (the selector's items).  active is the active
+	// profile name, selected is the profile the editor is focused on, and
+	// draft is the editor buffer for the selected profile.
+	summaries []ipc.ProfileSummary
+	profiles  []string
+	active    string
+	selected  string
+	draft     profileDraft
+	seeded    bool
+
+	// cached is the last sanitized summary, persisted to gui.json so the
+	// editor still works while the service is stopped.  cachedRev is the
+	// revision token that produced it (compared to avoid rewriting the file
+	// every poll).  It never holds an id or upstream URL — a ConfigSummary
+	// has none (SPEC §15.2).
+	cached    *ipc.ConfigSummary
+	cachedRev string
+
+	// settings is the loaded gui.json, kept so a cached-summary write
+	// preserves geometry and theme.
+	settings settings
+
 	// busy is true while an elevated action is in flight; busyNote explains
-	// what it is waiting on.
+	// what it is waiting on.  toast is the last action result, shown as a
+	// transient floating toast; toastSeq guards its auto-dismiss timer, and
+	// toastTTL overrides the default lifetime (tests shorten it).
 	busy     bool
 	busyNote string
+	toast    *noticeMessage
+	toastSeq uint64
+	toastTTL time.Duration
 }
 
-// Run opens the read-only status window and blocks until it is closed.
+// Run opens the client window and blocks until it is closed.
 func Run(cfg Config) (err error) {
+	// Detach from the inherited console first: the binary is console-subsystem,
+	// so a double-click would otherwise leave a blank cmd window open for the
+	// whole GUI session.  GUI path only; the CLI commands never do this.
+	detachConsole()
+
 	path := cfg.GuiPath
 	if path == "" {
 		path = defaultGuiPath()
 	}
+
+	// Single instance: a second launch must not open a second window.  The
+	// lock is user-scope (beside gui.json) and taken before the window exists;
+	// a conflict exits quietly.  GUI path only.
+	lock, lockErr := acquireInstance(path)
+	if lockErr != nil {
+		return lockErr
+	}
+	if lock == nil {
+		return nil // another instance is already open
+	}
+	defer func() { _ = lock.Release() }()
 
 	s := loadSettings(path)
 	if s.Width <= 0 {
@@ -59,6 +111,8 @@ func Run(cfg Config) (err error) {
 		themePref: s.Theme,
 		refresh:   make(chan struct{}, 1),
 		apply:     elevateApply,
+		settings:  s,
+		cached:    s.Summary,
 	}
 	src := newSource(cfg.Endpoint)
 
@@ -85,6 +139,7 @@ func Run(cfg Config) (err error) {
 		s.Width, s.Height = ww, wh
 	}
 	s.Theme = app.themePref
+	s.Summary = app.cached
 	_ = saveSettings(path, s)
 
 	return nil
@@ -102,7 +157,10 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}) {
 		for {
 			snap := readOnce(ctx, src)
 			w.QueueCommand(func(win *gogui.Window) {
-				gogui.State[App](win).snap = snap
+				a := gogui.State[App](win)
+				a.snap = snap
+				a.seed(snap)
+				a.cacheSummary(snap)
 				win.InvalidateLayout()
 			})
 
@@ -146,23 +204,23 @@ func applyTheme(w *gogui.Window, pref string) {
 	}
 }
 
-// cycleTheme advances the theme preference and applies it.  Runs on the main
-// thread from the button callback.
-func cycleTheme(ctx gogui.EventCtx) {
-	w := ctx.Window
-	app := gogui.State[App](w)
+// setThemePref applies a theme choice from the header control and remembers it.
+func setThemePref(ctx gogui.EventCtx, pref string) {
+	app := gogui.State[App](ctx.Window)
+	app.themePref = pref
+	app.settings.Theme = pref
 
-	switch app.themePref {
-	case themeSystem:
-		app.themePref = themeLight
-	case themeLight:
-		app.themePref = themeDark
-	default:
-		app.themePref = themeSystem
+	applyTheme(ctx.Window, pref)
+	ctx.Window.InvalidateLayout()
+}
+
+// themeOptions lists the theme choices for the header segmented control.
+func themeOptions() (opts []gogui.SegmentOption) {
+	return []gogui.SegmentOption{
+		gogui.NewSegmentOption("Auto", themeSystem),
+		gogui.NewSegmentOption("Light", themeLight),
+		gogui.NewSegmentOption("Dark", themeDark),
 	}
-
-	applyTheme(w, app.themePref)
-	w.InvalidateLayout()
 }
 
 // requestRefresh asks the poller for an immediate read without blocking.
@@ -175,14 +233,33 @@ func requestRefresh(ctx gogui.EventCtx) {
 	}
 }
 
-// themeLabel names the current theme preference for the toggle button.
-func themeLabel(pref string) (label string) {
-	switch pref {
-	case themeLight:
-		return "Theme: Light"
-	case themeDark:
-		return "Theme: Dark"
-	default:
-		return "Theme: Auto"
+// cacheSummary remembers the last sanitized summary so the editor works while
+// the service is stopped, persisting it to gui.json only when the config
+// revision changes.  The revision token is stripped before caching: a cached
+// summary has no live revision, so a save staged from it sends an empty
+// ExpectedRevision.
+func (a *App) cacheSummary(s snapshot) {
+	if s.summary == nil || s.summary.Revision == a.cachedRev {
+		return
 	}
+	a.cachedRev = s.summary.Revision
+
+	sum := *s.summary
+	sum.Revision = ""
+	a.cached = &sum
+
+	a.settings.Summary = a.cached
+	if a.guiPath != "" {
+		_ = saveSettings(a.guiPath, a.settings)
+	}
+}
+
+// summary is the config summary the editor reads: the live one while the
+// service is running, else the cached last-good one.
+func (a *App) summary() *ipc.ConfigSummary {
+	if a.snap.summary != nil {
+		return a.snap.summary
+	}
+
+	return a.cached
 }

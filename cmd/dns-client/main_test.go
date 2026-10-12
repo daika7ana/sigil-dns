@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
@@ -178,5 +180,43 @@ func TestReloadBuildErrorKeepsCurrent(t *testing.T) {
 	}
 	if lc.inner != svcDaemon(old) {
 		t.Fatal("inner should be unchanged")
+	}
+}
+
+// TestServiceConfigSanitizesErrors asserts a raw YAML/validation error that
+// quotes a config value (possibly an id) never escapes serviceConfig.
+func TestServiceConfigSanitizesErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// A validation error quotes the offending value verbatim.
+	bad := "schema_version: 1\nmode: SECRETMODE\nprofile: default\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum, _, err := serviceConfig(path, "", "", "")
+	if err == nil {
+		t.Fatal("expected a config error")
+	}
+	if strings.Contains(err.Error(), "SECRETMODE") {
+		t.Fatalf("error leaked a config value: %v", err)
+	}
+	if sum.ConfigValid || sum.ConfigError == "" {
+		t.Fatalf("summary = %+v", sum)
+	}
+
+	// A resolve error is replaced by a static string too.
+	good := "schema_version: 1\nmode: off\nprofile: default\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
+	if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum, _, err = serviceConfig(path, "ghost", "", "")
+	if err == nil || strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("resolve error = %v, want a static error", err)
+	}
+	if sum.ConfigValid || sum.ConfigError != "config could not be resolved" {
+		t.Fatalf("summary = %+v", sum)
 	}
 }

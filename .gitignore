@@ -4,6 +4,8 @@
 *.exe
 *.dll
 *.syso
+# ...except the committed Windows manifest resource (admin/UAC).
+!cmd/dns-client/rsrc_windows_amd64.syso
 *.test
 *.out
 

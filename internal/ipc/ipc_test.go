@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -194,6 +196,104 @@ func TestServeConnGarbage(t *testing.T) {
 	}
 	if resp.OK || !strings.Contains(resp.Error, ErrMalformed.Error()) {
 		t.Fatalf("garbage response = %+v", resp)
+	}
+}
+
+// panicLifecycle panics in Enable to exercise the per-request recover.
+type panicLifecycle struct {
+	fakeLifecycle
+}
+
+func (p *panicLifecycle) Enable(context.Context) error { panic("boom") }
+
+// TestServeConnRecoversPanicAndStaysUsable proves a panicking handler yields a
+// generic error Response (not a dropped connection/EOF) and the connection
+// keeps serving afterwards.
+func TestServeConnRecoversPanicAndStaysUsable(t *testing.T) {
+	srv := NewServer(&panicLifecycle{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	go srv.serveConn(context.Background(), server, Caller{Admin: true})
+
+	enc := json.NewEncoder(client)
+	dec := json.NewDecoder(client)
+
+	// 1. The panicking method returns the generic error, not EOF.
+	_ = client.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := enc.Encode(Request{Version: ProtocolVersion, Method: MethodEnable}); err != nil {
+		t.Fatalf("encode enable: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp Response
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode panic response (connection died?): %v", err)
+	}
+	if resp.OK || resp.Error != ErrInternal.Error() {
+		t.Fatalf("panic response = %+v, want generic %q", resp, ErrInternal)
+	}
+
+	// 2. The same connection still serves a subsequent good request.
+	_ = client.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := enc.Encode(Request{Version: ProtocolVersion, Method: MethodStatus}); err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp2 Response
+	if err := dec.Decode(&resp2); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if !resp2.OK {
+		t.Fatalf("status response = %+v, want ok", resp2)
+	}
+}
+
+// slowLifecycle sleeps in Status to simulate a long-running handler (such as
+// reload's restore + re-enable + health check) that exceeds requestTimeout.
+type slowLifecycle struct {
+	fakeLifecycle
+	delay time.Duration
+}
+
+func (s *slowLifecycle) Status() (*state.State, error) {
+	time.Sleep(s.delay)
+
+	return s.fakeLifecycle.Status()
+}
+
+// TestServeConnSlowHandlerNotEOF is the regression guard: the write deadline
+// must bound only the response WRITE, not the whole handler, or a slow but
+// successful method (e.g. reload) is cut off and the client sees EOF.  The
+// write deadline is still armed immediately before Encode, so a genuinely
+// blocked/unwritable peer is still bounded.
+func TestServeConnSlowHandlerNotEOF(t *testing.T) {
+	srv := NewServer(&slowLifecycle{delay: 400 * time.Millisecond},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.requestTimeout = 100 * time.Millisecond
+
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	go srv.serveConn(context.Background(), server, Caller{Admin: true})
+
+	enc := json.NewEncoder(client)
+	dec := json.NewDecoder(client)
+
+	_ = client.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := enc.Encode(Request{Version: ProtocolVersion, Method: MethodStatus}); err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp Response
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode slow response (EOF = write deadline armed too early): %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("slow response = %+v, want ok", resp)
 	}
 }
 

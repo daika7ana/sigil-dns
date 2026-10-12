@@ -203,6 +203,27 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 	}
 }
 
+// safeHandle runs Handle and converts a panic into a generic error Response so
+// one bad method cannot kill the per-connection loop or the service process.
+// This is defense-in-depth: a panic is still a bug to fix at its source, the
+// recover only preserves service availability.  The log is sanitized: it
+// records the method and the panic's Go type, never request params, payloads,
+// or the panic value.
+func (s *Server) safeHandle(ctx context.Context, caller Caller, req Request) (resp Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			if s.logger != nil {
+				s.logger.ErrorContext(ctx, "recovered panic in ipc handler",
+					"method", string(req.Method), "panic_type", fmt.Sprintf("%T", r))
+			}
+
+			resp = errorResponse(ErrInternal)
+		}
+	}()
+
+	return s.Handle(ctx, caller, req)
+}
+
 // handleStatus returns the full or sanitized status.
 func (s *Server) handleStatus() (resp Response) {
 	st, err := s.lc.Status()
@@ -386,8 +407,13 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn, caller Caller) {
 			return
 		}
 
+		// Run the handler before arming the write deadline: a long method
+		// (reload = restore + re-enable + health check) legitimately exceeds
+		// requestTimeout, and bounding the WRITE only is the intent.  Arming it
+		// here would abort a slow-but-successful handler with EOF.
+		resp := s.safeHandle(ctx, caller, req)
 		_ = conn.SetWriteDeadline(time.Now().Add(s.requestTimeout))
-		if err := enc.Encode(s.Handle(ctx, caller, req)); err != nil {
+		if err := enc.Encode(resp); err != nil {
 			return
 		}
 	}

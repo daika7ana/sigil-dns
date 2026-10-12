@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/daika7ana/dns-client/internal/providers"
 )
 
 func TestDefault(t *testing.T) {
@@ -272,6 +275,187 @@ func TestInitIdempotence(t *testing.T) {
 	// The existing file must be left untouched.
 	if _, err := Load(path); err != nil {
 		t.Fatalf("Load after Init: %v", err)
+	}
+}
+
+// TestProfileOps covers the structural profile operations and every reject
+// case.
+func TestProfileOps(t *testing.T) {
+	t.Run("add trims and stores", func(t *testing.T) {
+		c := Default()
+		if err := c.AddProfile("  work  "); err != nil {
+			t.Fatalf("AddProfile: %v", err)
+		}
+		if _, ok := c.Profiles["work"]; !ok {
+			t.Fatalf("profile not added: %v", c.Profiles)
+		}
+	})
+
+	t.Run("add rejects existing/empty/long/control", func(t *testing.T) {
+		c := Default()
+		if err := c.AddProfile("default"); err == nil {
+			t.Error("duplicate name accepted")
+		}
+		if err := c.AddProfile("   "); err == nil {
+			t.Error("empty name accepted")
+		}
+		if err := c.AddProfile(strings.Repeat("a", 65)); err == nil {
+			t.Error("over-long name accepted")
+		}
+		if err := c.AddProfile("bad\x00name"); err == nil {
+			t.Error("control character accepted")
+		}
+	})
+
+	t.Run("set active unknown rejected", func(t *testing.T) {
+		c := Default()
+		if err := c.SetActiveProfile("ghost"); err == nil {
+			t.Error("unknown active profile accepted")
+		}
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		c := Default()
+		if err := c.AddProfile("work"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RenameProfile("ghost", "x"); err == nil {
+			t.Error("unknown from accepted")
+		}
+		if err := c.RenameProfile("work", "default"); err == nil {
+			t.Error("collision accepted")
+		}
+		if err := c.RenameProfile("work", "work"); err == nil {
+			t.Error("from==to accepted")
+		}
+
+		// Renaming the active profile moves the active selection.
+		if err := c.RenameProfile("default", "main"); err != nil {
+			t.Fatalf("rename active: %v", err)
+		}
+		if c.Profile != "main" {
+			t.Fatalf("active profile = %q, want main", c.Profile)
+		}
+		if _, ok := c.Profiles["main"]; !ok {
+			t.Fatal("renamed profile missing")
+		}
+		if _, ok := c.Profiles["default"]; ok {
+			t.Fatal("old profile name still present")
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		c := Default()
+		if err := c.DeleteProfile("ghost"); err == nil {
+			t.Error("unknown delete accepted")
+		}
+		if err := c.DeleteProfile("default"); err == nil {
+			t.Error("active delete accepted")
+		}
+		if err := c.AddProfile("work"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.DeleteProfile("work"); err != nil {
+			t.Fatalf("delete inactive: %v", err)
+		}
+
+		// Deleting the last profile is refused.
+		last := Default()
+		if err := last.DeleteProfile(DefaultProfileName); err == nil {
+			t.Error("deleting the only profile accepted")
+		}
+	})
+}
+
+// TestCloneProfileIsDeep guards the aliasing hazard a value copy would have.
+func TestCloneProfileIsDeep(t *testing.T) {
+	original := Profile{
+		Upstreams: []string{"https://a", "https://b"},
+		Bootstrap: []string{"1.1.1.1"},
+		Cache:     &Cache{Enabled: true, SizeBytes: 1024},
+		PerDomain: []PerDomain{{Domains: []string{"corp.example"}, Upstream: "tls://10.0.0.1"}},
+		Filtering: Filtering{Lists: []FilterList{{URL: "https://list.example/x", Enabled: true}}},
+	}
+
+	clone := cloneProfile(original)
+
+	clone.Upstreams[0] = "https://changed"
+	clone.Bootstrap[0] = "2.2.2.2"
+	clone.Cache.SizeBytes = 999
+	clone.PerDomain[0].Domains[0] = "changed.example"
+	clone.Filtering.Lists[0].URL = "https://changed"
+
+	if original.Upstreams[0] != "https://a" {
+		t.Error("Upstreams aliased")
+	}
+	if original.Bootstrap[0] != "1.1.1.1" {
+		t.Error("Bootstrap aliased")
+	}
+	if original.Cache.SizeBytes != 1024 {
+		t.Error("Cache pointer aliased")
+	}
+	if original.PerDomain[0].Domains[0] != "corp.example" {
+		t.Error("PerDomain inner slice aliased")
+	}
+	if original.Filtering.Lists[0].URL != "https://list.example/x" {
+		t.Error("Filtering lists aliased")
+	}
+}
+
+// TestApplySelection checks Expand results plus the display-only metadata.
+func TestApplySelection(t *testing.T) {
+	t.Run("nextdns", func(t *testing.T) {
+		p := Profile{}
+		sel := providers.Selection{Provider: providers.NextDNS, ID: "abc", Protocol: providers.DoT}
+		if err := p.ApplySelection(sel); err != nil {
+			t.Fatalf("ApplySelection: %v", err)
+		}
+		if !slices.Equal(p.Upstreams, []string{"tls://abc.dns.nextdns.io:853"}) {
+			t.Errorf("upstreams = %v", p.Upstreams)
+		}
+		if p.Provider != "nextdns" || p.Variant != "ultralow" || p.Protocol != "dot" {
+			t.Errorf("metadata = %q/%q/%q", p.Provider, p.Variant, p.Protocol)
+		}
+	})
+
+	t.Run("controld defaults protocol", func(t *testing.T) {
+		p := Profile{}
+		if err := p.ApplySelection(providers.Selection{Provider: providers.ControlD, ID: "xyz"}); err != nil {
+			t.Fatalf("ApplySelection: %v", err)
+		}
+		if !slices.Equal(p.Upstreams, []string{"https://dns.controld.com/xyz"}) {
+			t.Errorf("upstreams = %v", p.Upstreams)
+		}
+		if p.Protocol != "doh" || p.Variant != "custom" {
+			t.Errorf("metadata = %q/%q/%q", p.Provider, p.Variant, p.Protocol)
+		}
+	})
+
+	t.Run("invalid selection leaves profile unchanged", func(t *testing.T) {
+		p := Profile{Upstreams: []string{"https://keep"}}
+		err := p.ApplySelection(providers.Selection{Provider: providers.Quad9, Variant: "bogus"})
+		if err == nil {
+			t.Fatal("bogus variant accepted")
+		}
+		if !slices.Equal(p.Upstreams, []string{"https://keep"}) {
+			t.Errorf("profile mutated on error: %v", p.Upstreams)
+		}
+	})
+}
+
+func TestValidBootstrap(t *testing.T) {
+	valid := []string{"9.9.9.9", "1.1.1.1:53", "2620:fe::fe", "[2620:fe::fe]:53", " 9.9.9.9 "}
+	for _, s := range valid {
+		if !ValidBootstrap(s) {
+			t.Errorf("ValidBootstrap(%q) = false, want true", s)
+		}
+	}
+
+	invalid := []string{"", "   ", "example.com", "9.9.9.999", "1.1.1.1:abc", "1.1.1.1:99999"}
+	for _, s := range invalid {
+		if ValidBootstrap(s) {
+			t.Errorf("ValidBootstrap(%q) = true, want false", s)
+		}
 	}
 }
 

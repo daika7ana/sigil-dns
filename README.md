@@ -14,7 +14,7 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 
 ## Features
 
-- **Providers** — Quad9, NextDNS, ControlD, or any custom DoH/DoT/DoQ URL.
+- **Providers** — Quad9, Cloudflare, NextDNS, ControlD, or any custom DoH/DoT/DoQ URL.
 - **Encrypted upstreams** — DoH, DoT, and DoQ (`quic://host:853`).
 - **Per-domain routing** — dnsmasq-style rules: send `corp.example` to an
   internal resolver while everything else uses your provider.
@@ -27,8 +27,10 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 - **Crash recovery** — a dirty marker forces a restore on the next start, so a
   killed service can never leave the machine pointing at a dead resolver.
 - **Service + CLI** — a single binary runs as the CLI or the Windows service.
-- **GUI status window** — shows the live state and one-click Enable / Disable /
-  Restore, with a single UAC prompt per action and no standing elevated process.
+- **GUI config client** — a full-parity Status + Settings window: one-click
+  Enable / Disable / Restore, service install / remove, and profile / filtering
+  / cache editing. The shipped binary requests admin via an embedded manifest, so
+  it prompts UAC once at **launch** and runs elevated until you close it.
 
 ## Requirements
 
@@ -46,7 +48,7 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 ```
 
 The installer also places a **Start Menu shortcut** named `dns-client` that
-launches the GUI status window; run it from there any time after install.
+launches the GUI; run it from there any time after install.
 
 **Manual** (from an elevated PowerShell, after building or downloading the
 binary):
@@ -85,7 +87,7 @@ dns-client providers show controld/p1/doh
 dns-client service install
 dns-client service start
 
-# 4. Verify (no elevation needed to read)
+# 4. Verify (the binary always requests admin, so this elevates too)
 dns-client status
 ```
 
@@ -101,10 +103,17 @@ dns-client run --upstream https://dns.quad9.net/dns-query
 
 ## GUI
 
-`dns-client-gui.exe` is a small read-only status window. It shows the service
-state (Protected / Not running / Restore needed / Needs attention / Unverified)
-and offers Enable / Disable / Restore, each of which raises exactly one UAC
-prompt — there is no persistent elevated process. Launch it from the Start Menu
+`dns-client-gui.exe` is the full configuration client. It has two pages:
+**Status** — a banner, a single power control (Enable / Disable, plus Restore for
+a crash-leftover state), and profile / filtering / cache cards; and **Settings**
+— service install / remove and state, a profile list with add / rename / delete
+/ set-active, and a per-profile editor (provider / variant / protocol, a masked
+resolver id, custom URL, bootstrap, filtering + block response, cache and size).
+Enable starts the service and applies interception; Disable removes it. The
+binary requests admin via an embedded manifest, so Windows shows **one UAC prompt
+when you launch it** and the window runs elevated until you close it (this
+applies to every `dns-client.exe` invocation, not just the GUI). A `gui.lock`
+next to `gui.json` keeps a single instance. Launch it from the Start Menu
 shortcut, or run `dns-client-gui.exe` with no arguments (the GUI binary opens the
 window; `--gui` opens it explicitly). See [docs/GUI.md](docs/GUI.md).
 
@@ -130,7 +139,7 @@ dns-client <command> [flags]
 | `service start` | Start the Windows service. |
 | `service stop` | Stop the Windows service. |
 | `--service` | Run the service host (invoked by the SCM, not by hand). |
-| `--gui` | Run the status window. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
+| `--gui` | Run the GUI. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
 | `--tray` | Run the tray UI. Requires a `-tags tray` build. Deferred to v1.1. |
 | `help`, `-h`, `--help` | Print usage. |
 
@@ -159,11 +168,13 @@ Run `dns-client providers list` for the live catalog.
 | Provider | Variants | Notes |
 |---|---|---|
 | `quad9` | `secure` (default), `noblock`, `secure-ecs`, `noblock-ecs` | `*-ecs` variants send EDNS Client Subnet and leak a network prefix. |
+| `cloudflare` | `standard` (default), `security`, `family` | 1.1.1.1 / 1.1.1.2 (malware) / 1.1.1.3 (malware + adult). No id. `security`/`family` configure IPv4 bootstrap only. |
 | `nextdns` | `ultralow` (default), `anycast` | Requires `--id`. `ultralow` uses no bootstrap (best routing); `anycast` pins anycast IPs. |
 | `controld` | `custom` (default), `p0`–`p3`, `x-oisd`, `x-stevenblack`, `x-adguard`, `family`, `uncensored`, `x-hagezi`, `free` | `custom`, `x-hagezi`, and `free` require `--id`. Free presets share bootstrap IPs. |
 | `custom` | `custom` | Raw user-entered `--upstream` URL + optional `--bootstrap`. |
 
-All presets are dual-stack (IPv4 + IPv6) and all support DoH, DoT, and DoQ.
+All presets support DoH, DoT, and DoQ. Quad9, NextDNS, and ControlD configure
+both IPv4 and IPv6; Cloudflare `security`/`family` configure IPv4 bootstrap only.
 
 ## Configuration
 
@@ -226,7 +237,8 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H wi
 Cross-compiling to Windows is pure Go. Release builds produce **two binaries**
 from the one module: `dns-client.exe` (console subsystem — CLI, service host,
 and the `--apply` helper) and `dns-client-gui.exe` (GUI subsystem, `-tags gui
--ldflags "-H windowsgui"` — the status window, still `--apply`-capable). A single
+-ldflags "-H windowsgui"` — the full Status + Settings client, still
+`--apply`-capable). A single
 exe cannot cleanly be both: a console-subsystem GUI leaves a stray console
 window, and a `windowsgui` CLI loses stdout (breaking `dns-client status`). The
 plain console build stays `dns-client.exe` with no gui tag.
@@ -243,7 +255,8 @@ dev/go build -tags tray ./...
 ## Architecture note
 
 The service runs elevated and owns the resolver, config, interception, and
-state. The unelevated CLI/tray talks to it over two SDDL-locked named pipes:
+state. The CLI binary itself also runs elevated (admin manifest), and talks to
+the service over two SDDL-locked named pipes:
 
 | Pipe | Purpose | Access |
 |---|---|---|

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/providers"
 	"github.com/daika7ana/dns-client/internal/redact"
 )
 
@@ -30,6 +32,44 @@ type ListSummary struct {
 
 	// Enabled reports whether the list is enabled.
 	Enabled bool `json:"enabled"`
+}
+
+// ProfileSummary is the sanitized per-profile view.  It never contains resolver
+// ids, upstream URLs, or full list URLs; IDSet is a boolean only.
+type ProfileSummary struct {
+	// Name is the profile name and Active marks the selected profile.
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+
+	// Provider, Variant, Protocol are the profile's display-only labels.
+	Provider string `json:"provider,omitempty"`
+	Variant  string `json:"variant,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+
+	// IDSet reports whether a resolver id appears to be configured.  The id
+	// itself is never exposed.
+	IDSet bool `json:"id_set"`
+
+	// FilteringEnabled reports whether filtering is enabled.
+	FilteringEnabled bool `json:"filtering_enabled"`
+
+	// CacheEnabled reports whether the cache is enabled.
+	CacheEnabled bool `json:"cache_enabled"`
+
+	// CacheSizeBytes is the configured cache size.
+	CacheSizeBytes int `json:"cache_size_bytes"`
+
+	// BlockResponse is the configured block response (e.g. "0.0.0.0").
+	BlockResponse string `json:"block_response,omitempty"`
+
+	// ListCount is the number of filter lists.
+	ListCount int `json:"list_count"`
+
+	// PerDomainCount is the number of per-domain routing rules.
+	PerDomainCount int `json:"per_domain_count"`
+
+	// Bootstrap is the list of bootstrap IP literals.
+	Bootstrap []string `json:"bootstrap,omitempty"`
 }
 
 // ConfigSummary is the sanitized configuration view (SPEC §15.1).  It never
@@ -83,6 +123,9 @@ type ConfigSummary struct {
 
 	// FilteringEnabled reports whether filtering is enabled.
 	FilteringEnabled bool `json:"filtering_enabled"`
+
+	// Profiles is the sanitized per-profile list, sorted by name.
+	Profiles []ProfileSummary `json:"profiles,omitempty"`
 }
 
 // Summarize builds a sanitized summary from a valid config.  It is shared by the
@@ -94,6 +137,7 @@ func Summarize(cfg *config.Config) (sum ConfigSummary) {
 	}
 
 	sum.Profile = cfg.Profile
+	sum.Profiles = summarizeProfiles(cfg)
 
 	p, ok := cfg.Profiles[cfg.Profile]
 	if !ok {
@@ -131,6 +175,67 @@ func Summarize(cfg *config.Config) (sum ConfigSummary) {
 	sum.IDSet = anyIDSet(p.Upstreams)
 
 	return sum
+}
+
+// summarizeProfiles builds the sanitized per-profile list, sorted by name so
+// the output is deterministic.
+func summarizeProfiles(cfg *config.Config) (out []ProfileSummary) {
+	out = make([]ProfileSummary, 0, len(cfg.Profiles))
+	for name, p := range cfg.Profiles {
+		out = append(out, summarizeProfile(name, name == cfg.Profile, p))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
+	return out
+}
+
+// summarizeProfile reduces one profile to its non-secret fields.
+func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSummary) {
+	s = ProfileSummary{
+		Name:             name,
+		Active:           active,
+		Provider:         p.Provider,
+		Variant:          p.Variant,
+		Protocol:         p.Protocol,
+		FilteringEnabled: p.Filtering.Enabled,
+		BlockResponse:    p.Filtering.BlockResponse,
+		ListCount:        len(p.Filtering.Lists),
+		PerDomainCount:   len(p.PerDomain),
+	}
+
+	if p.Cache != nil {
+		s.CacheEnabled = p.Cache.Enabled
+		s.CacheSizeBytes = p.Cache.SizeBytes
+	}
+
+	for _, b := range p.Bootstrap {
+		if b = strings.TrimSpace(b); b != "" {
+			s.Bootstrap = append(s.Bootstrap, redact.Upstream(b))
+		}
+	}
+
+	s.IDSet = profileIDSet(p)
+
+	return s
+}
+
+// profileIDSet is the provider-aware id detector: when provider metadata is
+// present it trusts providers.ExtractID (so a ControlD free preset, whose path
+// is a shared name, is not mistaken for a private id); otherwise it falls back
+// to the path heuristic.  It never returns or logs the id.
+func profileIDSet(p config.Profile) (ok bool) {
+	if strings.TrimSpace(p.Provider) == "" {
+		return anyIDSet(p.Upstreams)
+	}
+
+	proto := providers.DoH
+	if pr := strings.TrimSpace(p.Protocol); pr != "" {
+		proto = providers.Protocol(pr)
+	}
+
+	_, err := providers.ExtractID(p.Provider, proto, p.Upstreams)
+
+	return err == nil
 }
 
 // anyIDSet reports whether any upstream looks like it carries a resolver id (a

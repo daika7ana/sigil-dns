@@ -10,8 +10,10 @@
 | NRPT rule | Display name `dns-client`, namespace `.` |
 
 Find the resolved config path with `dns-client config path`. The state file is
-owned by the service (SYSTEM + Administrators); reading it needs no elevation
-for `status`, but editing it by hand is not supported.
+owned by the service (SYSTEM + Administrators). `dns-client status` reads it
+through the service/binary, which requests admin at launch, so the command
+prompts UAC like every other invocation; editing the file by hand is not
+supported.
 
 ## Reading `status`
 

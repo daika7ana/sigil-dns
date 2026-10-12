@@ -10,7 +10,7 @@ Developed on Linux, cross-built, released/signed on a Windows runner.
 ## 1. Goal
 
 A Windows app giving the user system-wide encrypted DNS (DoH/DoT) to a chosen provider
-(ControlD, Quad9, NextDNS, custom), with per-domain routing rules and blocklists — the practical
+(ControlD, Quad9, Cloudflare, NextDNS, custom), with per-domain routing rules and blocklists — the practical
 feature set of YogaDNS, without a kernel driver.
 
 ### Non-goals (v1)
@@ -52,7 +52,7 @@ feature set of YogaDNS, without a kernel driver.
           ▲  named pipes (SDDL-locked) — versioned request/response
           │  control (admin) + status (read-only)
    ┌──────┴──────┐
-   │  Tray GUI   │  unelevated; reads status over the read-only pipe
+   │  GUI window │  elevated at launch (§15.1); reads status over the read-only pipe
    └─────────────┘
 ```
 
@@ -63,9 +63,10 @@ feature set of YogaDNS, without a kernel driver.
   and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) and
   adapter DNS writes require. Least privilege remains a future hardening goal
   (service SID + explicit grants) once those operations can be delegated.
-- **GUI**: unelevated user process; reads sanitized status over the read-only status pipe;
-  state-changing ops go through a one-shot elevated `--apply` helper. Built with **go-gui** — see
-  §15. (Supersedes the earlier "tray" idea; the `--tray` hook is retired.)
+- **GUI**: reads sanitized status over the read-only status pipe; state-changing ops go through the
+  elevated `--apply` helper. On shipped builds the process is itself elevated at launch (manifest,
+  §15.1), but the GUI code still never reads `config.yaml` directly. Built with **go-gui** — see §15.
+  (Supersedes the earlier "tray" idea; the `--tray` hook is retired.)
 - One Go module; one binary with `--service` / `--cli` / `--gui` (build-tagged) / `--apply` modes.
 
 ---
@@ -162,12 +163,21 @@ traffic). Therefore:
 - Per-method authorization is enforced in the server as defence in depth, in
   addition to the pipe SDDL. There is no implicit authorizer: every listener
   names one explicitly.
-- Tray needs no UAC to read status (read-only pipe); toggling prompts **UAC**.
+- Status reads are read-only on the pipe and need no extra consent; the shipped GUI binary prompts
+  **UAC** once at **launch** (manifest, §15.1), not per action.
 - **Service account**: v1 runs as **LocalSystem**, not the least-privilege
   virtual account `NT SERVICE\dns-client` (see §2 for why).
 - State file **and its directory** are ACLed to SYSTEM + Administrators via
   `SetSecurityInfo` (well-known SIDs, locale-independent). ACL failures are
   returned, not swallowed.
+- **Path hardening**: on Windows the service, the elevated helper and the CLI resolve the
+  machine-wide paths from the `ProgramData` **KnownFolder API** (`config.SystemPath` /
+  `SystemStatePath`), never the `%ProgramData%` environment variable, and never fall back to a
+  user-writable directory. An env override cannot redirect the ACL'd config/state to a weaker ACL,
+  and the helper and service always agree on the same path.
+- **Server robustness**: each request is handled under a panic recovery (`safeHandle` returns a generic
+  `ErrInternal` rather than killing the service), and the connection write deadline is armed *after*
+  the handler runs — a slow-but-successful `reload` is no longer misread as `EOF` by the client.
 
 ### 4.8 WSL
 WSL2 (NAT) may bypass loopback DNS. Document (`dnsTunneling`/`.wslconfig`). Not automated in v1.
@@ -233,7 +243,19 @@ Presets are **dual-stack** (IPv4 + IPv6) and each exposes: filtering variant, pr
   label clearly, never default to them. `dns9` is a legacy alias — skip.
 - ⚠️ Confirm `2620:fe::9` (current docs) vs the 2018-blog `2620:fe::fe:9` at release.
 
-### 7.2 NextDNS — Ultralow vs Anycast (a real architectural tradeoff)
+### 7.2 Cloudflare — 3 variants (id-less)
+| Variant | Filtering | DoH / DoQ host | DoT host | Bootstrap |
+|---|---|---|---|---|
+| Standard (default) | none (1.1.1.1) | `cloudflare-dns.com` | `1dot1dot1dot1.cloudflare-dns.com` | v4 `1.1.1.1`, `1.0.0.1`; v6 `2606:4700:4700::1111`, `2606:4700:4700::1001` |
+| Security | malware block (1.1.1.2) | `security.cloudflare-dns.com` | `security.cloudflare-dns.com` | v4 `1.1.1.2`, `1.0.0.2` |
+| Family | malware + adult (1.1.1.3) | `family.cloudflare-dns.com` | `family.cloudflare-dns.com` | v4 `1.1.1.3`, `1.0.0.3` |
+
+- **No resolver id** (public preset): unlike NextDNS/ControlD, nothing is passed in the URL.
+- DoH, DoT and DoQ all supported; DoQ reuses the DoH host.
+- ⚠️ `security`/`family` currently configure **IPv4 bootstrap only** (no v6 bootstrap) — a gap against
+  the §7.5 dual-stack rule; revisit at preset-release time.
+
+### 7.3 NextDNS — Ultralow vs Anycast (a real architectural tradeoff)
 `<id>` = profile id; optional device name (DoH path `/<id>/<device>`).
 
 - **Ultralow (default, preferred):** `https://dns.nextdns.io/<id>`, DoT `<id>.dns.nextdns.io:853`.
@@ -251,7 +273,7 @@ Presets are **dual-stack** (IPv4 + IPv6) and each exposes: filtering variant, pr
 - ⚠️ `dns1.nextdns.io/<id>` and `ultralow.*`/`anycast.*` hostnames are forum-reported, not
   provider-documented; only `https://dns.nextdns.io/<id>` is published.
 
-### 7.3 ControlD — custom + free presets
+### 7.4 ControlD — custom + free presets
 - **Custom:** DoH `https://dns.controld.com/<id>` (DoH-by-IP works), DoT `<id>.dns.controld.com`;
   v4 `76.76.2.22`/`76.76.10.22`, v6 `2606:1a40::22`/`2606:1a40:1::22`. Client name: `/<id>/<name>`.
 - **Free:** `https://freedns.controld.com/p0…p3` (p0 unfiltered, p1 malware, p2 ads/tracking, p3
@@ -261,13 +283,14 @@ Presets are **dual-stack** (IPv4 + IPv6) and each exposes: filtering variant, pr
   `uncensored`, …) share the p0 bootstrap IPs — expose as presets. **Never ship a shared/preset id as
   the user's own.** ⚠️ custom DoQ hostname is inferred (`<id>.dns.controld.com`), not documented.
 
-### 7.4 Dual-stack requirement (all presets)
+### 7.5 Dual-stack requirement (all presets)
 - Resolver listens on `127.0.0.1:53` **and** `[::1]:53`.
 - Every preset configured with **both** IPv4 and IPv6 endpoints and **both** bootstrap families.
+  (Current exception: Cloudflare `security`/`family` have IPv4 bootstrap only — see §7.2.)
 - Health check runs **per family** (§9); IPv6-disabled host must not abort enable (skip v6, warn).
 - `EnableEDNSClientSubnet` **off** by default (only the explicit `*ECS` Quad9 variants enable it).
 
-### 7.5 Custom
+### 7.6 Custom
 User-entered DoH/DoT URL + optional bootstrap (v4/v6). Raw upstream escape hatch for power users.
 
 ---
@@ -276,7 +299,7 @@ User-entered DoH/DoT URL + optional bootstrap (v4/v6). Raw upstream escape hatch
 
 ```yaml
 mode: on              # on | off
-profile: default      # single active profile in v1
+profile: default      # active profile (many stored, one active at a time)
 profiles:
   default:
     upstreams: ["https://dns.quad9.net/dns-query"]
@@ -313,6 +336,10 @@ snapshot, dirty marker, active profile, last health result.
 - **Crash/kill**: dirty marker forces restore on next start. Add SCM failure actions (restart) plus
   a startup recovery task (belt-and-suspenders: dead service + loopbacked adapters = total outage).
 - **Exit**: always restore; flush.
+- **Uninstall is ordered and fail-closed** (`uninstallPlan`/`uninstallSequence`): restore interception
+  → stop the service → **verify** interception is actually down (a positive NRPT probe, with one
+  local config-independent restore retry) → only then delete. It never deletes while interception is
+  unproven down, so an uninstall can never strand a loopbacked machine pointing at a dead resolver.
 
 ---
 
@@ -339,11 +366,13 @@ snapshot, dirty marker, active profile, last health result.
 4. **Service + IPC + drift** — service wrapper, SDDL-locked dual pipes, drift watcher + reconcile
    loop. *(Tray UI deferred to v1.1 — the `--tray` hook and read-only status pipe are in place.)*
 5. **Packaging + signing** — installer, GH Actions release, docs.
-6. **GUI (Phase 6)** — go-gui client (§15): sanitized reads + one-shot elevated apply, profile /
-   rules / lists editing, enable/disable UX, packaging. *Supersedes the earlier "tray" idea.*
+6. **GUI** — go-gui config client (§15): sanitized reads + elevated-helper apply, full profile /
+   filtering / cache editing, service management, enable/disable UX, packaging. *Rules/lists editing
+   still pending (§15.4). Supersedes the earlier "tray" idea.*
 
 ### Cut from v1 (YAGNI — add on demand)
-optimistic cache · multi-profile system · scheduled list updates · ARM64 · log-viewer UI ·
+optimistic cache · concurrent multi-profile resolution (many profiles are stored, one active at a
+time) · scheduled list updates · ARM64 · log-viewer UI ·
 rule-editor UI beyond the GUI forms · `$dnsrewrite` UX.
 
 ---
@@ -373,9 +402,9 @@ tests only. Set this up first.
 - **NRPT on 24H2** — verify in phase 1; per-adapter is the fallback.
 - **`dnsproxy` API is version-sensitive** — pin a tag; verify `Config`/handler fields against
   source, not docs.
-- **NextDNS Ultralow vs Anycast** (§7.2) — ultralow (better routing) needs a system-resolver
+- **NextDNS Ultralow vs Anycast** (§7.3) — ultralow (better routing) needs a system-resolver
   bootstrap lookup; anycast is bootstrap-pinned but worse routing. Make it a user-visible choice.
-- **NextDNS forced edge** (§7.2) — unsupported by the provider; document as an unsupported escape
+- **NextDNS forced edge** (§7.3) — unsupported by the provider; document as an unsupported escape
   hatch, do not build first-class.
 - **Quad9 ECS variants / captive portals** — ECS leaks a prefix (opt-in only); captive-portal
   back-off must ship (else user can't reach the login page).
@@ -391,7 +420,7 @@ switching and clean restore** — integration they don't ship. We reuse the hard
 
 ---
 
-## 15. GUI (Phase 6) — go-gui
+## 15. GUI — go-gui
 
 **Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.86.0`.** Chosen over Wails and verified
 by a hello-world spike cross-built on Linux and run on Win11 24H2.
@@ -405,29 +434,62 @@ by a hello-world spike cross-built on Linux and run on Win11 24H2.
 
 ### 15.1 Client model
 The GUI is a **client of the service** and contains no DNS logic; it links the existing `internal/*`
-packages.
-- **Reads** — the status pipe (`AU`, read-only) grows *sanitized* methods: `info` (protocol/app
-  version, capability bits) and `config_summary` (provider/variant/protocol **labels**, `id_set`
-  bool, profile name, bootstrap IP literals, rule/list **counts** and list **hosts**, filtering +
-  cache settings, `config_valid` with a secret-free error, and a revision token). The provider
-  catalog is rendered **locally** from `internal/providers` (no IPC, no secrets).
+packages. It is a **full-parity configuration client**, not a status viewer.
+- **Reads** — the status pipe (`AU`, read-only) carries *sanitized* methods: `info` (protocol/app
+  version, capability bits) and `config_summary` (active provider/variant/protocol **labels**, `id_set`
+  bool, active profile name, bootstrap IP literals, rule/list **counts** and list **hosts**, filtering
+  + cache settings, `config_valid` with a secret-free error, a revision token, and a `profiles` list —
+  one sanitized `ProfileSummary` per profile: name, active flag, provider/variant/protocol labels,
+  `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals; never ids or upstream
+  URLs). `id_set` is provider-aware (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only
+  the DoH-path heuristic. The provider catalog is rendered **locally** from `internal/providers` (no
+  IPC, no secrets).
 - **Writes** — a **one-shot elevated helper**: the GUI re-launches the *same signed binary*
   `--apply <staging>` via `ShellExecuteW "runas"`. The helper re-loads and validates the staged patch
   with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
-  existing admin control pipe (`reload` / `enable` / `disable`). **One UAC prompt per explicit user
-  action**; no persistent broker, no second privileged surface.
+  existing admin control pipe (`reload` / `enable` / `disable`). The allowlist is the **whole config
+  surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches (provider /
+  variant / protocol / id / custom URL / bootstrap / filtering / cache), the structural `AddProfile` /
+  `RenameProfile` / `DeleteProfile`, and the service actions `service_install` / `service_uninstall` /
+  `service_start` / `service_stop`. Every field is validated (bootstrap as IP literals, provider /
+  variant / protocol against the registry, id charset + length, explicit-zero rejection); ids travel
+  only inside the DPAPI-sealed staging body, and a blank id means *keep* (replace-only). **No new IPC
+  methods**: the §15.3 privilege table is unchanged. No persistent broker and no second privileged
+  surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
+  so a write no longer raises its own UAC prompt — consent is per **launch**, not per action — but the
+  helper remains the sole writer and the only path that touches staged input.
+- **Surface** — two pages. **Status**: a banner plus a single header power control (Enable / Disable,
+  and Restore only for a crash-leftover dirty state) and profile / filtering / cache cards.
+  **Settings**: a service card (install / remove + state), a profile list with add / rename / delete /
+  set-active, and a per-profile editor (provider / variant / protocol, masked id, custom URL,
+  bootstrap, filtering + block response, cache + size). Enable starts the service and applies
+  interception; Disable removes it. A `gui.lock` beside `gui.json` enforces a single GUI instance.
 - **Identity** — before trusting reads or sending writes, verify the pipe server *is* the service:
   `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
   untrusted and refuse writes (kills pipe-squatting without a nonce).
 - **Config is single-writer**: only the elevated helper writes `config.yaml`; the service never does.
   `reload` = disable (restore) → enable with last-known-good rollback; no manual restart required.
 
+**Manifest elevation (deviation from §15.3.8).** The shipped Windows binary embeds an application
+manifest (`cmd/dns-client/dns-client.manifest`) with
+`<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>`. Windows therefore shows a
+UAC prompt on **every** launch and the process runs elevated for its lifetime. This is a deliberate
+**user decision** that overrides the "no persistent elevated process" clause of §15.3.8; the rest of
+the security model is unchanged — the one-shot `--apply` helper still works (its `isElevated` check
+now trivially passes), the status pipe stays read-only/sanitized, the control pipe stays
+SYSTEM+Administrators only, service identity is still verified, and no silent/auto elevation (no
+scheduled task or COM broker) is introduced. Because there is a single binary, **all** invocations
+(`status`, `providers list`, `--gui`, …) now prompt UAC, not just the GUI. In effect the per-write
+consent gate is replaced by per-launch consent: the GUI holds an admin token for its whole lifetime,
+while the helper's re-validation, field allowlist, and ACL-enforced atomic write are unchanged.
+
 ### 15.2 Sensitive data
 - Resolver ids live **only** in `%ProgramData%\dns-client\config.yaml` (SYSTEM+Administrators).
 - Never on the status pipe, **never logged**, never on argv/environment (argv is cross-process
-  readable). Full-fidelity reads happen only inside the elevated helper.
-- Editing is **replace-only** (empty id field = keep); display is masked (`••••`); no reveal on the AU
-  pipe.
+  readable). The GUI *code* never reads `config.yaml` directly — full-fidelity reads happen only inside
+  the elevated helper, regardless of whether the GUI process itself is elevated.
+- Editing is **replace-only** (empty id field, or an empty custom-upstream URL field, = keep); display is
+  masked (`••••`); no reveal on the AU pipe.
 - `--apply` staging: `%LOCALAPPDATA%\dns-client\staging\<uuid>.bin`, **DPAPI** user-scope, deleted
   after read.
 - `%LOCALAPPDATA%\dns-client\gui.json` (user scope) holds window geometry, theme, last selection
@@ -447,7 +509,9 @@ packages.
 7. The elevated helper never trusts staged input: re-load, re-validate, allowlist fields, fixed
    config path, atomic + ACL write; ACL failure is a hard error.
 8. **No silent elevation** (no scheduled task / COM broker / "highest privileges" shortcut, no
-   persistent elevated process, no auto-apply).
+   persistent elevated process, no auto-apply). *Exception (user decision, see §15.1): the shipped exe
+   embeds a `requireAdministrator` manifest, so it is elevated for its lifetime; the manifest still
+   prompts UAC on every launch — elevation stays explicit, never silent.*
 9. `config.yaml` and `state.json` remain SYSTEM+Administrators; user-scope files never hold secrets.
 10. Never log secrets (see the Phase-0 redaction fix); audit new log sites.
 11. All config writes go through `internal/config`; `restore` stays config-independent so a corrupt
@@ -455,18 +519,24 @@ packages.
 12. Verify service identity before trusting reads or sending actions.
 
 ### 15.4 Phases
-0. **Preconditions** (no GUI) — ACL `config.yaml` (+ dir); redact upstreams from logs; optional
-   non-secret profile metadata (`provider`/`variant`/`protocol`).
-1. **IPC extension** — `info` + `config_summary` (status pipe), `reload` (control pipe), privilege
-   table + tests.
-2. **go-gui shell** — window, ~2 s status polling, identity check, degraded/stopped/unverified
-   states, `gui.json`.
-3. **Profile view + draft editing** (no elevation) — local catalog, masked id, local validation.
-4. **Elevation + Apply** — DPAPI staging, `--apply` helper, single-UAC UX, revision conflict abort.
-5. **Rules/lists editing + `refresh_lists`**.
-6. **Enable/disable/degrade UX** — toggle, service start via helper, dirty/"Restore now" banner.
-7. **Packaging** — build the go-gui binary (no cgo), installer ships the GUI + shortcut, signing,
-   version-mismatch warning via `info`.
+Status: **phases 0–4 and 6–7 are implemented; phase 5 is not.**
+0. **Preconditions** — DONE: ACL `config.yaml` (+ dir); upstreams redacted from logs; non-secret
+   profile metadata (`provider`/`variant`/`protocol`).
+1. **IPC extension** — DONE: `info` + `config_summary` (status pipe, now with the `profiles` list),
+   `reload` (control pipe), privilege table + tests.
+2. **go-gui shell** — DONE: window, ~2 s status polling, identity check, degraded/stopped/unverified
+   states, `gui.json`, and the `gui.lock` single-instance guard.
+3. **Profile view + draft editing** — DONE: local catalog, masked id, local validation — and the
+   editor now writes through the elevated helper (superseding the original "no elevation" scope).
+4. **Elevation + Apply** — DONE: the allowlist is the full config surface plus the service actions,
+   with DPAPI staging, the `--apply` helper, per-launch UAC UX, and revision-conflict abort.
+5. **Rules/lists editing + `refresh_lists`** — **REMAINING**: the editor covers provider / filtering /
+   cache fields, but per-list rule editing (beyond list toggles) and `refresh_lists` are not built.
+6. **Enable/disable/degrade UX** — DONE: a single header power control, service management via the
+   helper, and the dirty/"Restore now" banner.
+7. **Packaging** — DONE: go-gui binary (no cgo), installer ships the GUI + Start-Menu shortcut, and a
+   protocol-version mismatch is surfaced from `info` (`source.go`). Code signing stays optional, gated
+   on the repository secrets.
 
 Build: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build` (no cgo anywhere). The GUI lives behind a
 `gui` build tag (like `tray`) so the Linux `go build ./...` stays lean; the `--apply` helper mode is
@@ -474,6 +544,10 @@ always present and headless.
 
 ### 15.5 Verification (per phase, Windows VM/CI gated)
 Planted id never appears in `config_summary` JSON or any log; a non-admin cannot connect to the
-control pipe; `reload` swaps live resolution (dig via loopback); UAC-cancel changes nothing; a
-tampered staging file is rejected with no write; a user process cannot read `config.yaml`; a squatted
-`status` pipe is detected as unverified; `disable` works with a corrupt config.
+control pipe; `reload` swaps live resolution (dig via loopback); declining the launch-time UAC prompt
+starts nothing; a tampered staging file is rejected with no write; a non-admin process cannot read
+`config.yaml` (the manifest-elevated GUI still never reads it directly — writes go through the helper);
+a squatted `status` pipe is detected as unverified; `disable` works with a corrupt config. The
+`profiles` summary carries no ids or URLs (test); the helper rejects an out-of-registry
+provider/variant/protocol, a non-IP bootstrap, a bad id charset, and explicit-zero cache/TTL; uninstall
+never deletes while interception is unproven down (ordered restore → stop → verify → delete, unit-tested).

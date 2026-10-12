@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,9 +137,76 @@ func TestConfigSummaryNeverLeaksSecrets(t *testing.T) {
 	}
 }
 
+// TestConfigSummaryProfiles asserts the per-profile list is present, sorted,
+// active-marked, provider-aware for id_set, and never leaks a resolver id.
+func TestConfigSummaryProfiles(t *testing.T) {
+	const planted = "SECRETPLANT"
+	body := `schema_version: 1
+mode: on
+profile: beta
+profiles:
+  zebra:
+    provider: nextdns
+    variant: ultralow
+    protocol: doh
+    upstreams: [https://dns.nextdns.io/` + planted + `]
+    cache: { enabled: true, size_bytes: 1048576 }
+  alpha:
+    provider: quad9
+    variant: secure
+    protocol: doh
+    upstreams: [https://dns.quad9.net/dns-query]
+    cache: { enabled: true, size_bytes: 1048576 }
+  beta:
+    upstreams: [https://freedns.controld.com/p0]
+    cache: { enabled: true, size_bytes: 1048576 }
+`
+	path := writeConfigFile(t, body)
+
+	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)
+	resp := srv.Handle(context.Background(), Caller{Admin: false},
+		Request{Version: ProtocolVersion, Method: MethodConfigSummary})
+	if !resp.OK {
+		t.Fatalf("config_summary: %+v", resp)
+	}
+
+	raw := string(resp.Data)
+	if strings.Contains(raw, planted) || strings.Contains(raw, "dns.nextdns.io") {
+		t.Fatalf("summary leaked an id or upstream: %s", raw)
+	}
+
+	var sum ConfigSummary
+	if err := json.Unmarshal(resp.Data, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Profiles) != 3 {
+		t.Fatalf("Profiles = %+v, want 3", sum.Profiles)
+	}
+
+	names := []string{sum.Profiles[0].Name, sum.Profiles[1].Name, sum.Profiles[2].Name}
+	if !slices.Equal(names, []string{"alpha", "beta", "zebra"}) {
+		t.Fatalf("Profiles not sorted: %v", names)
+	}
+	if sum.Profiles[0].Active || !sum.Profiles[1].Active || sum.Profiles[2].Active {
+		t.Fatalf("active flags wrong: %+v", sum.Profiles)
+	}
+
+	alpha := sum.Profiles[0]
+	if alpha.Provider != "quad9" || alpha.Variant != "secure" || alpha.Protocol != "doh" {
+		t.Errorf("alpha metadata = %+v", alpha)
+	}
+	if alpha.IDSet {
+		t.Error("alpha (quad9) id_set should be false")
+	}
+
+	zebra := sum.Profiles[2]
+	if !zebra.IDSet {
+		t.Error("zebra (nextdns) id_set should be true")
+	}
+}
+
 func TestConfigSummaryBrokenConfig(t *testing.T) {
 	path := writeConfigFile(t, "mode: [not,a,scalar]\n")
-
 	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)
 	resp := srv.Handle(context.Background(), Caller{Admin: false},
 		Request{Version: ProtocolVersion, Method: MethodConfigSummary})

@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -44,6 +43,13 @@ const (
 	defaultBootstrap = resolver.DefaultBootstrap
 )
 
+// The Windows binary embeds an application manifest requesting
+// requireAdministrator, so every launch elevates (UAC). The generated .syso is
+// committed; regenerate from the repo root with:
+//
+//	./dev/go generate ./cmd/dns-client
+//
+//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest dns-client.manifest -arch amd64 -o rsrc_windows_amd64.syso
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "dns-client:", err)
@@ -121,7 +127,7 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 	fs.StringVar(&o.bootstrap, "bootstrap", "", "bootstrap resolver address (default "+defaultBootstrap+")")
 	fs.StringVar(&o.listen, "listen", "", "comma-separated loopback listen addresses")
 	fs.StringVar(&o.statePath, "state", "", "state file path")
-	fs.StringVar(&o.configPath, "config", "", "config file path (default "+config.DefaultPath()+")")
+	fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
 	fs.StringVar(&o.profile, "profile", "", "config profile name (default the config's active profile)")
 	fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
 
@@ -133,7 +139,7 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 		o.statePath = defaultStatePath()
 	}
 	if o.configPath == "" {
-		o.configPath = config.DefaultPath()
+		o.configPath = defaultConfigPath()
 	}
 
 	return o, nil
@@ -503,6 +509,44 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	return sum, nil
 }
 
+// serviceConfig loads and resolves the service's config, returning a sanitized
+// summary and a secret-free error.  A raw YAML error can quote a config value
+// (possibly a resolver id) and this error can reach the unelevated helper's
+// Result.Err, so it must never be returned verbatim.
+func serviceConfig(configPath, profile, upstream, bootstrap string) (sum ipc.ConfigSummary, resolved config.Resolved, err error) {
+	cfg, lErr := config.Load(configPath)
+	if lErr != nil && !errors.Is(lErr, config.ErrNoConfig) {
+		return ipc.ConfigSummary{
+			ConfigValid: false,
+			ConfigError: ipc.SanitizedConfigError(lErr),
+			Revision:    ipc.Revision(configPath),
+		}, config.Resolved{}, errors.New(ipc.SanitizedConfigError(lErr))
+	}
+
+	resolved, rErr := config.Resolve(cfg, config.Overrides{
+		Profile:   profile,
+		Upstream:  upstream,
+		Bootstrap: bootstrap,
+	})
+	if rErr != nil {
+		return ipc.ConfigSummary{
+			ConfigValid: false,
+			ConfigError: "config could not be resolved",
+			Revision:    ipc.Revision(configPath),
+		}, config.Resolved{}, errors.New("config could not be resolved")
+	}
+
+	effCfg := cfg
+	if effCfg == nil {
+		effCfg = config.Default()
+	}
+	sum = ipc.Summarize(effCfg)
+	sum.ConfigValid = true
+	sum.Revision = ipc.Revision(configPath)
+
+	return sum, resolved, nil
+}
+
 // cmdServiceHost runs the service host.  It is invoked by the SCM (via the
 // registered "--service" argument), not directly.
 func cmdServiceHost(args []string) (err error) {
@@ -513,35 +557,10 @@ func cmdServiceHost(args []string) (err error) {
 
 	// build loads the config and constructs a lifecycle + sanitized summary.
 	build := func() (lc svcDaemon, sum ipc.ConfigSummary, err error) {
-		cfg, lErr := config.Load(o.configPath)
-		if lErr != nil && !errors.Is(lErr, config.ErrNoConfig) {
-			return nil, ipc.ConfigSummary{
-				ConfigValid: false,
-				ConfigError: ipc.SanitizedConfigError(lErr),
-				Revision:    ipc.Revision(o.configPath),
-			}, lErr
+		sum, resolved, cfgErr := serviceConfig(o.configPath, o.profile, o.upstream, o.bootstrap)
+		if cfgErr != nil {
+			return nil, sum, cfgErr
 		}
-
-		resolved, rErr := config.Resolve(cfg, config.Overrides{
-			Profile:   o.profile,
-			Upstream:  o.upstream,
-			Bootstrap: o.bootstrap,
-		})
-		if rErr != nil {
-			return nil, ipc.ConfigSummary{
-				ConfigValid: false,
-				ConfigError: "config could not be resolved",
-				Revision:    ipc.Revision(o.configPath),
-			}, rErr
-		}
-
-		effCfg := cfg
-		if effCfg == nil {
-			effCfg = config.Default()
-		}
-		sum = ipc.Summarize(effCfg)
-		sum.ConfigValid = true
-		sum.Revision = ipc.Revision(o.configPath)
 
 		return o.lifecycleFor(resolved), sum, nil
 	}
@@ -553,7 +572,7 @@ func cmdServiceHost(args []string) (err error) {
 
 	inner, _, bErr := build()
 	if bErr != nil {
-		logger().Error("config unavailable; service starts degraded", "err", bErr)
+		logger().Error("config unavailable; service starts degraded", "err", ipc.SanitizedConfigError(bErr))
 
 		slc.inner = o.lifecycleForState()
 		slc.enableErr = fmt.Errorf("configuration unavailable: %w", bErr)
@@ -755,22 +774,22 @@ func signalContext() (ctx context.Context, stop context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-// defaultStatePath returns the platform-appropriate state file path.
-func defaultStatePath() (p string) {
-	if dir := os.Getenv("ProgramData"); dir != "" {
-		return filepath.Join(dir, "dns-client", "state.json")
+// defaultConfigPath returns the hardened, machine-wide config path when it can
+// be resolved, else the platform default.  On Windows this is the same
+// ProgramData-KnownFolder path the elevated helper uses, so the config the
+// service reads and the helper writes never diverge.
+func defaultConfigPath() (p string) {
+	if p = config.SystemPath(); p != "" {
+		return p
 	}
 
-	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "dns-client", "state.json")
-	}
-
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "state", "dns-client", "state.json")
-	}
-
-	return filepath.Join(os.TempDir(), "dns-client", "state.json")
+	return config.DefaultPath()
 }
+
+// defaultStatePath returns the platform-appropriate state file path.  On
+// Windows config.SystemStatePath is the ProgramData-KnownFolder path matching
+// the elevated helper's, preserving the state-lock exclusion.
+func defaultStatePath() (p string) { return config.SystemStatePath() }
 
 // usage prints CLI help.
 func usage() {

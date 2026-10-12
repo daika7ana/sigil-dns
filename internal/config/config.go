@@ -8,10 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/daika7ana/dns-client/internal/providers"
 	"github.com/daika7ana/dns-client/internal/resolver"
 	"github.com/daika7ana/dns-client/internal/winacl"
 
@@ -335,6 +340,188 @@ func (p Profile) validate(name string) (err error) {
 	}
 
 	return nil
+}
+
+// maxProfileName is the maximum profile name length in characters.
+const maxProfileName = 64
+
+// normalizeProfileName trims and validates a profile name.
+func normalizeProfileName(name string) (n string, err error) {
+	n = strings.TrimSpace(name)
+	if n == "" {
+		return "", errors.New("profile name must not be empty")
+	}
+	if utf8.RuneCountInString(n) > maxProfileName {
+		return "", fmt.Errorf("profile name must be at most %d characters", maxProfileName)
+	}
+	for _, r := range n {
+		if unicode.IsControl(r) {
+			return "", errors.New("profile name must not contain control characters")
+		}
+	}
+
+	return n, nil
+}
+
+// SetActiveProfile makes name the active profile.
+func (c *Config) SetActiveProfile(name string) (err error) {
+	n, err := normalizeProfileName(name)
+	if err != nil {
+		return err
+	}
+	if _, ok := c.Profiles[n]; !ok {
+		return fmt.Errorf("profile %q not found", n)
+	}
+
+	c.Profile = n
+
+	return nil
+}
+
+// AddProfile adds a fresh default profile under name.  The new profile is
+// deep-copied so it never aliases the default's slices or cache pointer.
+func (c *Config) AddProfile(name string) (err error) {
+	n, err := normalizeProfileName(name)
+	if err != nil {
+		return err
+	}
+	if _, ok := c.Profiles[n]; ok {
+		return fmt.Errorf("profile %q already exists", n)
+	}
+	if c.Profiles == nil {
+		c.Profiles = map[string]Profile{}
+	}
+
+	c.Profiles[n] = cloneProfile(Default().Profiles[DefaultProfileName])
+
+	return nil
+}
+
+// RenameProfile renames from to to.  If from is the active profile the active
+// selection follows the rename.
+func (c *Config) RenameProfile(from, to string) (err error) {
+	f, err := normalizeProfileName(from)
+	if err != nil {
+		return err
+	}
+	t, err := normalizeProfileName(to)
+	if err != nil {
+		return err
+	}
+	if f == t {
+		return errors.New("profile name is unchanged")
+	}
+
+	p, ok := c.Profiles[f]
+	if !ok {
+		return fmt.Errorf("profile %q not found", f)
+	}
+	if _, ok := c.Profiles[t]; ok {
+		return fmt.Errorf("profile %q already exists", t)
+	}
+
+	delete(c.Profiles, f)
+	c.Profiles[t] = p
+
+	if c.Profile == f {
+		c.Profile = t
+	}
+
+	return nil
+}
+
+// DeleteProfile removes name.  The active profile must be switched first, and
+// the last remaining profile can never be deleted.
+func (c *Config) DeleteProfile(name string) (err error) {
+	n, err := normalizeProfileName(name)
+	if err != nil {
+		return err
+	}
+	if _, ok := c.Profiles[n]; !ok {
+		return fmt.Errorf("profile %q not found", n)
+	}
+	if c.Profile == n {
+		return errors.New("cannot delete the active profile; switch profiles first")
+	}
+	if len(c.Profiles) <= 1 {
+		return errors.New("cannot delete the only profile")
+	}
+
+	delete(c.Profiles, n)
+
+	return nil
+}
+
+// ApplySelection expands sel and stores the resulting upstreams, bootstrap, and
+// display-only metadata on the profile.  Expand validates the selection; the
+// metadata uses the same defaults Expand applies (empty variant -> provider
+// default, empty protocol -> DoH).
+func (p *Profile) ApplySelection(sel providers.Selection) (err error) {
+	ep, err := providers.Expand(sel)
+	if err != nil {
+		return err
+	}
+
+	p.Upstreams = ep.Upstreams
+	p.Bootstrap = ep.Bootstrap
+
+	provider := strings.TrimSpace(sel.Provider)
+	variant := strings.TrimSpace(sel.Variant)
+	if variant == "" {
+		if pr, ok := providers.Lookup(provider); ok {
+			variant = pr.DefaultVariant
+		}
+	}
+
+	proto := sel.Protocol
+	if proto == "" {
+		proto = providers.DoH
+	}
+
+	p.Provider = provider
+	p.Variant = variant
+	p.Protocol = string(proto)
+
+	return nil
+}
+
+// ValidBootstrap reports whether s is a bare IP literal or an IP:port literal.
+func ValidBootstrap(s string) (ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return true
+	}
+	if _, err := netip.ParseAddrPort(s); err == nil {
+		return true
+	}
+
+	return false
+}
+
+// cloneProfile deep-copies p so mutations never alias the original's slices or
+// cache pointer.
+func cloneProfile(p Profile) (q Profile) {
+	q = p
+	if p.Cache != nil {
+		cache := *p.Cache
+		q.Cache = &cache
+	}
+	q.Upstreams = slices.Clone(p.Upstreams)
+	q.Bootstrap = slices.Clone(p.Bootstrap)
+	q.Filtering.Lists = slices.Clone(p.Filtering.Lists)
+
+	if p.PerDomain != nil {
+		q.PerDomain = make([]PerDomain, len(p.PerDomain))
+		for i, pd := range p.PerDomain {
+			q.PerDomain[i] = pd
+			q.PerDomain[i].Domains = slices.Clone(pd.Domains)
+		}
+	}
+
+	return q
 }
 
 // Overrides are explicit CLI values that take precedence over the config file.

@@ -19,8 +19,11 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/intercept"
 	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/service"
+	"github.com/daika7ana/dns-client/internal/state"
 )
 
 // Bounded waits (SPEC §15.2): the helper must never hang the UI or the SCM.
@@ -39,13 +42,30 @@ const (
 
 	// dialTimeout bounds a single control-pipe dial.
 	dialTimeout = 2 * time.Second
+
+	// restorePipeTimeout bounds a single control-pipe restore (its own
+	// waitControlServer deadline is 15s; the client's reload deadline is 2m, so
+	// this caps the whole attempt).
+	restorePipeTimeout = 45 * time.Second
+
+	// localRestoreTimeout bounds the config-independent local restore fallback.
+	localRestoreTimeout = 60 * time.Second
 )
+
+// helperTimeout bounds the ctx-aware work in the elevated helper.  The
+// ctx-aware uninstall steps worst case is restore (restorePipeTimeout 45s +
+// localRestoreTimeout 60s) plus the post-stop verification (localRestoreTimeout
+// 60s) = 165s.  It is NOT a hard upper bound on the whole run: the SCM calls
+// (mgr.Connect/Config/Start/Delete) and service.Stop's internal wait are not
+// context-bound, so a wedged SCM can outlive this budget.  The helper is a
+// bounded, deliberate, one-shot admin process; the parent Apply still bounds
+// its wait for the helper's exit independently.
 
 // ShellExecuteExW flags and show command.
 const (
 	seeMaskNoCloseProcess = 0x00000040 // SEE_MASK_NOCLOSEPROCESS
 	seeMaskNoAsync        = 0x00000100 // SEE_MASK_NOASYNC
-	swShowNormal          = 1
+	swHide                = 0          // SW_HIDE: the headless helper must not flash a console
 )
 
 // shellExecuteInfo mirrors SHELLEXECUTEINFOW.  Field order and alignment must
@@ -80,11 +100,12 @@ func Apply(ctx context.Context, req Request) (res Result, err error) {
 		return Result{}, err
 	}
 
-	// Best-effort revision check before prompting UAC; the helper enforces it
-	// for real.  If the unelevated process cannot stat the (ACL'd) config the
-	// revision is empty, so this stays a no-op rather than a false positive.
+	// Best-effort revision check before prompting UAC.  This runs in the
+	// (unelevated) caller, which may be unable to READ the ACL'd config, so the
+	// revision is often empty and this stays a no-op rather than a false
+	// positive.  The elevated helper enforces the revision for real.
 	if req.ExpectedRevision != "" {
-		if actual := ipc.Revision(config.DefaultPath()); actual != "" && actual != req.ExpectedRevision {
+		if actual := ipc.Revision(config.SystemPath()); actual != "" && actual != req.ExpectedRevision {
 			return Result{Err: ErrRevision.Error()}, ErrRevision
 		}
 	}
@@ -202,13 +223,26 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	case ActionDisable:
 		off := config.ModeOff
 		req.Patch = Patch{Mode: &off}
+	case ActionServiceInstall:
+		return installService()
+	case ActionServiceUninstall:
+		return uninstallService(ctx)
+	case ActionServiceStart:
+		return startService()
+	case ActionServiceStop:
+		return stopService()
 	case ActionApply, ActionRestore:
 	}
 
 	changed := false
 
 	if req.Action != ActionRestore {
-		path := config.DefaultPath()
+		// Resolve the config path from the ProgramData KnownFolder inside the
+		// elevated helper: never trust %ProgramData% from the caller's env.
+		path := config.SystemPath()
+		if path == "" {
+			return Result{Err: "system configuration directory is unavailable"}
+		}
 
 		var before []byte
 		if raw, rErr := os.ReadFile(path); rErr == nil {
@@ -228,6 +262,12 @@ func runAction(ctx context.Context, req Request) (res Result) {
 			return Result{Err: err.Error()}
 		}
 
+		// Re-stat immediately before saving to close the check->save TOCTOU
+		// window: a write that landed during apply must abort, not be clobbered.
+		if err = checkRevision(req.ExpectedRevision, ipc.Revision(path)); err != nil {
+			return Result{Err: err.Error()}
+		}
+
 		// Save validates and ACLs the file.
 		if err = cfg.Save(path); err != nil {
 			return Result{Err: "config could not be saved"}
@@ -237,17 +277,336 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		changed = rErr == nil && !bytes.Equal(before, after)
 	}
 
-	pid, err := ensureService(ctx)
-	if err != nil {
-		return Result{Err: "service is not available: " + err.Error()}
+	// Enable/disable/restore always require a running service (enable starts
+	// it).  Apply is handled separately below so a pure config edit never
+	// starts the service or reports failure for a write that did happen.
+	if req.Action != ActionApply {
+		pid, err := ensureService(ctx)
+		if err != nil {
+			return Result{Err: "service is not available: " + err.Error()}
+		}
+
+		msg, err := driveControl(ctx, req, pid, changed)
+		if err != nil {
+			return Result{Err: err.Error()}
+		}
+
+		return Result{OK: true, Message: msg}
 	}
 
-	msg, err := driveControl(ctx, req, pid, changed)
+	msg, err := applyConfigChanged(ctx, changed)
 	if err != nil {
 		return Result{Err: err.Error()}
 	}
 
 	return Result{OK: true, Message: msg}
+}
+
+// applyConfigChanged reloads a running service after a config-only apply.  It
+// never starts the service: if it is stopped or not installed the saved config
+// simply takes effect on the next enable.
+func applyConfigChanged(ctx context.Context, changed bool) (msg string, err error) {
+	st, pid, qErr := queryService()
+	running := qErr == nil && st == svc.Running && pid != 0
+
+	if !applyShouldReload(running, changed) {
+		if !changed {
+			return "config unchanged", nil
+		}
+
+		return "config saved", nil
+	}
+
+	if err = waitControlServer(ctx, pid); err != nil {
+		return "", err
+	}
+	if _, err = ipc.NewClient(ipc.PipeName).Reload(ctx); err != nil {
+		return "", err
+	}
+
+	return "config applied", nil
+}
+
+// installService registers the service against the canonical service binary
+// (the non-GUI sibling when running as the GUI exe), not the current process
+// image.  It does not load the config or touch interception.
+func installService() (res Result) {
+	exe, err := serviceExecutable()
+	if err != nil {
+		return Result{Err: "could not resolve the service executable"}
+	}
+
+	m, err := mgr.Connect()
+	if err != nil {
+		return Result{Err: "could not contact the service manager"}
+	}
+	defer func() { _ = m.Disconnect() }()
+
+	s, err := m.CreateService(service.Name, exe, mgr.Config{
+		DisplayName:      service.DisplayName,
+		Description:      service.Description,
+		StartType:        mgr.StartAutomatic,
+		ServiceStartName: service.Account,
+	}, "--service")
+	if err != nil {
+		return Result{Err: "service could not be installed"}
+	}
+	defer func() { _ = s.Close() }()
+
+	// Restart on failure (SPEC §9: never leave a loopbacked system with a dead
+	// service).
+	_ = s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+	}, 86400)
+	_ = s.SetRecoveryActionsOnNonCrashFailures(true)
+
+	return Result{OK: true, Message: "service installed"}
+}
+
+// serviceExecutable returns the canonical service binary to register and compare
+// against, resolving the two-binary layout (dns-client.exe + dns-client-gui.exe)
+// so the helper launched from the GUI still matches the registered non-GUI exe.
+func serviceExecutable() (exe string, err error) {
+	cur, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+
+	return canonicalServiceExe(cur, func(p string) bool {
+		_, statErr := os.Stat(p)
+
+		return statErr == nil
+	}), nil
+}
+
+// stopService stops the service and waits for it to reach the stopped state.
+func stopService() (res Result) {
+	if err := service.Stop(); err != nil {
+		return Result{Err: "service could not be stopped"}
+	}
+
+	return Result{OK: true, Message: "service stopped"}
+}
+
+// startService verifies the registration still points at this binary before
+// starting it, and treats an already-running service as success.
+func startService() (res Result) {
+	if err := startRegisteredService(); err != nil {
+		return Result{Err: err.Error()}
+	}
+
+	return Result{OK: true, Message: "service started"}
+}
+
+// startRegisteredService performs the anti-hijack registration check and starts
+// the service.  All errors are static and path-free.
+func startRegisteredService() (err error) {
+	exe, err := serviceExecutable()
+	if err != nil {
+		return errors.New("could not resolve the service executable")
+	}
+
+	m, err := mgr.Connect()
+	if err != nil {
+		return errors.New("could not contact the service manager")
+	}
+	defer func() { _ = m.Disconnect() }()
+
+	s, err := m.OpenService(service.Name)
+	if err != nil {
+		return errors.New("service is not installed")
+	}
+	defer func() { _ = s.Close() }()
+
+	cfg, err := s.Config()
+	if err != nil {
+		return errors.New("could not read the service registration")
+	}
+	if !serviceBinaryMatches(cfg.BinaryPathName, exe) {
+		return errors.New("the registered service does not point at this binary")
+	}
+
+	if err = s.Start("--service"); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return errors.New("service could not be started")
+	}
+
+	return nil
+}
+
+// restoreViaControl restores interception over the verified control pipe.
+// waitControlServer verifies the server identity on one connection, then the
+// restore opens a fresh connection; the re-dial window is accepted because
+// owning \\.\pipe\dns-client requires SYSTEM+Administrators.
+func restoreViaControl(ctx context.Context, pid uint32) (err error) {
+	if err = waitControlServer(ctx, pid); err != nil {
+		return err
+	}
+
+	return ipc.NewClient(ipc.PipeName).Restore(ctx)
+}
+
+// serviceRunning reports whether the service is running and its pid.
+func serviceRunning() (running bool, pid uint32) {
+	if st, p, err := queryService(); err == nil && st == svc.Running {
+		return true, p
+	}
+
+	return false, 0
+}
+
+// loadPersistedState loads the persisted state config-independently.  ok is
+// false when the state file is missing or unreadable: that is deliberately NOT
+// treated as a "clean" negative witness.
+func loadPersistedState() (enabled, dirty, ok bool) {
+	path := config.SystemStatePath()
+	if path == "" {
+		return false, false, false
+	}
+
+	pst, err := state.NewStore(path).Load()
+	if err != nil || pst == nil {
+		return false, false, false
+	}
+
+	return pst.Mode == state.ModeOn, pst.Dirty, true
+}
+
+// probeNRPTActive positively probes for our NRPT rule.  It fails closed: if the
+// probe cannot be run it reports active so callers never delete while
+// interception cannot be shown down.
+func probeNRPTActive(ctx context.Context) (active bool) {
+	nrpt, err := intercept.ProbeNRPT(ctx)
+	if err != nil {
+		return true
+	}
+
+	return nrpt.Ours
+}
+
+// localRestore performs a config-independent restore inside the elevated
+// helper, the same state-only path crash recovery uses: it reads the persisted
+// state and removes interception.  It is the fallback when the control pipe is
+// unavailable or fails.
+func localRestore(ctx context.Context) (err error) {
+	path := config.SystemStatePath()
+	if path == "" {
+		return errors.New("system state directory is unavailable")
+	}
+
+	lc := lifecycle.New(lifecycle.Config{StatePath: path})
+	if err = lc.Restore(ctx); err != nil {
+		return errors.New("local restore failed")
+	}
+
+	return nil
+}
+
+// restoreInterception clears interception for uninstall: the verified control
+// pipe first (when a service pid is known), then a local, config-independent
+// restore as a fallback.  It reports failure only when neither path can clear
+// interception.
+func restoreInterception(ctx context.Context, pid uint32) (err error) {
+	pipe := func() error {
+		rctx, cancel := context.WithTimeout(ctx, restorePipeTimeout)
+		defer cancel()
+
+		return restoreViaControl(rctx, pid)
+	}
+
+	local := func() error {
+		lctx, cancel := context.WithTimeout(ctx, localRestoreTimeout)
+		defer cancel()
+
+		return localRestore(lctx)
+	}
+
+	return restoreInterceptionWith(pid, pipe, local)
+}
+
+// verifyInterceptionDown proves no dns-client NRPT rule remains.  It fails
+// closed: when the probe cannot be run, or a live rule survives one more local
+// restore, it returns a static error so the caller aborts before deleting.
+func verifyInterceptionDown(ctx context.Context) (err error) {
+	if !probeNRPTActive(ctx) {
+		return nil
+	}
+
+	lctx, cancel := context.WithTimeout(ctx, localRestoreTimeout)
+	defer cancel()
+
+	if lErr := localRestore(lctx); lErr != nil {
+		return errors.New("interception is still active; uninstall aborted")
+	}
+	if probeNRPTActive(ctx) {
+		return errors.New("interception is still active; uninstall aborted")
+	}
+
+	return nil
+}
+
+// uninstallService is compound and abort-on-failure.  It clears live
+// interception first -- via the verified control pipe when the service is
+// running, otherwise through a local config-independent restore -- stops and
+// confirms the service, proves interception is down, and only then deletes the
+// registration.
+func uninstallService(ctx context.Context) (res Result) {
+	running, pid := serviceRunning()
+	enabled, dirty, active := uninstallStateFrom(running, pid, loadPersistedState, func() bool {
+		return probeNRPTActive(ctx)
+	})
+	restore, reason := uninstallPlan(running, enabled, dirty, active)
+
+	err := uninstallSequence(restore,
+		func() error {
+			if rErr := restoreInterception(ctx, pid); rErr != nil {
+				return errors.New("could not restore interception before uninstall")
+			}
+
+			return nil
+		},
+		func() error {
+			if sErr := service.Stop(); sErr != nil && !errors.Is(sErr, windows.ERROR_SERVICE_NOT_ACTIVE) {
+				return errors.New("could not stop the service before uninstall")
+			}
+
+			return nil
+		},
+		func() error {
+			return verifyInterceptionDown(ctx)
+		},
+		func() error {
+			if dErr := deleteService(); dErr != nil {
+				return errors.New("could not remove the service registration")
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return Result{Err: err.Error()}
+	}
+
+	return Result{OK: true, Message: "service uninstalled (" + reason + ")"}
+}
+
+// deleteService opens the service and deletes its registration, without the
+// loose service.Uninstall stop-ignoring wrapper.
+func deleteService() (err error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connecting to SCM: %w", err)
+	}
+	defer func() { _ = m.Disconnect() }()
+
+	s, err := m.OpenService(service.Name)
+	if err != nil {
+		return fmt.Errorf("opening service: %w", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	return s.Delete()
 }
 
 // driveControl verifies the control-pipe server identity, then issues the IPC
@@ -418,7 +777,7 @@ func shellExecuteRunas(file, params string) (h windows.Handle, err error) {
 		lpVerb:       verb,
 		lpFile:       filePtr,
 		lpParameters: paramPtr,
-		nShow:        swShowNormal,
+		nShow:        swHide,
 	}
 	sei.cbSize = uint32(unsafe.Sizeof(sei))
 

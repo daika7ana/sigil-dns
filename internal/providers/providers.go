@@ -8,6 +8,7 @@ package providers
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -36,10 +37,11 @@ func (p Protocol) Valid() bool {
 
 // Provider names.
 const (
-	Quad9    = "quad9"
-	NextDNS  = "nextdns"
-	ControlD = "controld"
-	Custom   = "custom"
+	Quad9      = "quad9"
+	Cloudflare = "cloudflare"
+	NextDNS    = "nextdns"
+	ControlD   = "controld"
+	Custom     = "custom"
 )
 
 // Variant describes one provider variant.
@@ -84,6 +86,13 @@ var (
 	ErrURLRequired     = errors.New("custom provider requires a URL")
 )
 
+// Errors returned by ExtractID.  Neither error string ever includes the id or
+// the upstream URL.
+var (
+	ErrNoID        = errors.New("no resolver id in the configured upstream")
+	ErrAmbiguousID = errors.New("ambiguous resolver id")
+)
+
 // controlDFreePresets are the documented ControlD free preset names.  The
 // x-hagezi-* family is open-ended and handled separately.
 var controlDFreePresets = []Variant{
@@ -123,6 +132,18 @@ func Registry() (ps []Provider) {
 		})
 	}
 
+	cloudflare := Provider{
+		Name:           Cloudflare,
+		Description:    "Cloudflare 1.1.1.1 (unfiltered, security, family)",
+		DefaultVariant: "standard",
+		Protocols:      Protocols(),
+		Variants: []Variant{
+			{Name: "standard", Description: "unfiltered 1.1.1.1"},
+			{Name: "security", Description: "malware blocking (1.1.1.2)"},
+			{Name: "family", Description: "malware + adult blocking (1.1.1.3)"},
+		},
+	}
+
 	nextdns := Provider{
 		Name:           NextDNS,
 		Description:    "NextDNS (requires --id)",
@@ -157,7 +178,7 @@ func Registry() (ps []Provider) {
 		Variants:       []Variant{{Name: "custom", Description: "raw DoH/DoT/DoQ URL"}},
 	}
 
-	return []Provider{quad9, nextdns, controld, custom}
+	return []Provider{quad9, cloudflare, nextdns, controld, custom}
 }
 
 // Lookup finds a provider by name.
@@ -193,6 +214,8 @@ func Expand(sel Selection) (ep Endpoints, err error) {
 	switch sel.Provider {
 	case Quad9:
 		return expandQuad9(sel.Variant, proto)
+	case Cloudflare:
+		return expandCloudflare(sel.Variant, proto)
 	case NextDNS:
 		return expandNextDNS(sel.Variant, proto, sel.ID)
 	case ControlD:
@@ -252,6 +275,54 @@ func expandQuad9(variant string, proto Protocol) (ep Endpoints, err error) {
 		ep.Upstreams = []string{hostURL(proto, m.host)}
 	}
 	ep.Bootstrap = append(append([]string{}, m.v4...), m.v6...)
+
+	return ep, nil
+}
+
+// expandCloudflare implements the Cloudflare 1.1.1.1 matrix.  Every variant is
+// id-less; standard uses a dedicated DoT host while its DoH/DoQ host is shared.
+func expandCloudflare(variant string, proto Protocol) (ep Endpoints, err error) {
+	type cloudflareVariant struct {
+		dohHost   string // also the DoQ host
+		dotHost   string
+		bootstrap []string
+	}
+
+	matrix := map[string]cloudflareVariant{
+		"standard": {
+			dohHost:   "cloudflare-dns.com",
+			dotHost:   "1dot1dot1dot1.cloudflare-dns.com",
+			bootstrap: []string{"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"},
+		},
+		"security": {
+			dohHost:   "security.cloudflare-dns.com",
+			dotHost:   "security.cloudflare-dns.com",
+			bootstrap: []string{"1.1.1.2", "1.0.0.2"},
+		},
+		"family": {
+			dohHost:   "family.cloudflare-dns.com",
+			dotHost:   "family.cloudflare-dns.com",
+			bootstrap: []string{"1.1.1.3", "1.0.0.3"},
+		},
+	}
+	if variant == "" {
+		variant = "standard"
+	}
+
+	m, ok := matrix[variant]
+	if !ok {
+		return Endpoints{}, fmt.Errorf("%w: cloudflare/%s", ErrUnknownVariant, variant)
+	}
+
+	switch proto {
+	case DoT:
+		ep.Upstreams = []string{hostURL(DoT, m.dotHost)}
+	case DoQ:
+		ep.Upstreams = []string{hostURL(DoQ, m.dohHost)}
+	default:
+		ep.Upstreams = []string{dohURL(m.dohHost)}
+	}
+	ep.Bootstrap = append([]string{}, m.bootstrap...)
 
 	return ep, nil
 }
@@ -363,4 +434,118 @@ func controlDURL(proto Protocol, base, id string) (u string) {
 	default:
 		return "https://" + base + "/" + id
 	}
+}
+
+// ExtractID recovers the resolver id embedded in a provider's generated
+// upstream URLs for the given protocol.  It returns ErrNoID when none is
+// recoverable (including ControlD's shared free presets) and ErrAmbiguousID
+// when the upstreams disagree.  The returned error never contains the id or the
+// URL; callers must not add them either.
+func ExtractID(provider string, proto Protocol, upstreams []string) (id string, err error) {
+	if proto == "" {
+		proto = DoH
+	}
+
+	ids := map[string]struct{}{}
+	misses := 0
+
+	for _, u := range upstreams {
+		got, ok := extractOne(provider, proto, u)
+		if !ok {
+			misses++
+
+			continue
+		}
+
+		ids[got] = struct{}{}
+	}
+
+	switch {
+	case len(ids) == 0:
+		return "", ErrNoID
+	case len(ids) > 1 || misses > 0:
+		return "", ErrAmbiguousID
+	default:
+		for got := range ids {
+			return got, nil
+		}
+	}
+
+	return "", ErrNoID
+}
+
+// extractOne recovers the id from a single upstream URL, or ok=false when the
+// provider/protocol/host combination carries none.
+func extractOne(provider string, proto Protocol, upstream string) (id string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(upstream))
+	if err != nil {
+		return "", false
+	}
+
+	host := strings.ToLower(u.Hostname())
+
+	switch provider {
+	case NextDNS:
+		if proto == DoH {
+			if host != "dns.nextdns.io" {
+				return "", false
+			}
+
+			return decodePathID(u.Path)
+		}
+
+		return firstHostLabel(host, "dns.nextdns.io")
+	case ControlD:
+		// freedns.controld.com/<preset> is a shared public name, never a
+		// user's private id.
+		if host == "freedns.controld.com" || strings.HasSuffix(host, ".freedns.controld.com") {
+			return "", false
+		}
+		if proto == DoH {
+			if host != "dns.controld.com" {
+				return "", false
+			}
+
+			return decodePathID(u.Path)
+		}
+
+		return firstHostLabel(host, "dns.controld.com")
+	case Cloudflare:
+		// Cloudflare is a public, id-less provider: an id is neither required
+		// nor extractable (mirrors Quad9).
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// decodePathID URL-decodes a DoH path into an id.  An empty path means no id.
+func decodePathID(path string) (id string, ok bool) {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "", false
+	}
+
+	decoded, err := url.PathUnescape(path)
+	if err != nil || decoded == "" {
+		return "", false
+	}
+
+	return decoded, true
+}
+
+// firstHostLabel returns the single label preceding suffix in host (e.g.
+// "abc.dns.nextdns.io" with suffix "dns.nextdns.io" yields "abc").  It rejects
+// a bare suffix and multi-label prefixes.
+func firstHostLabel(host, suffix string) (label string, ok bool) {
+	if !strings.HasSuffix(host, "."+suffix) {
+		return "", false
+	}
+
+	label = strings.TrimSuffix(host, "."+suffix)
+	if label == "" || strings.Contains(label, ".") {
+		return "", false
+	}
+
+	return label, true
 }

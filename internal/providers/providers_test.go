@@ -3,6 +3,7 @@ package providers
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,65 @@ func TestExpandQuad9(t *testing.T) {
 
 	if _, err := Expand(Selection{Provider: Quad9, Variant: "bogus"}); !errors.Is(err, ErrUnknownVariant) {
 		t.Errorf("unknown quad9 variant: got %v, want ErrUnknownVariant", err)
+	}
+}
+
+func TestExpandCloudflare(t *testing.T) {
+	standardBoot := []string{"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"}
+	securityBoot := []string{"1.1.1.2", "1.0.0.2"}
+	familyBoot := []string{"1.1.1.3", "1.0.0.3"}
+
+	cases := []struct {
+		name      string
+		variant   string
+		proto     Protocol
+		upstreams []string
+		bootstrap []string
+	}{
+		{"standard_doh", "standard", DoH, []string{"https://cloudflare-dns.com/dns-query"}, standardBoot},
+		{"standard_dot", "standard", DoT, []string{"tls://1dot1dot1dot1.cloudflare-dns.com:853"}, standardBoot},
+		{"standard_doq", "standard", DoQ, []string{"quic://cloudflare-dns.com:853"}, standardBoot},
+		{"security_doh", "security", DoH, []string{"https://security.cloudflare-dns.com/dns-query"}, securityBoot},
+		{"security_dot", "security", DoT, []string{"tls://security.cloudflare-dns.com:853"}, securityBoot},
+		{"security_doq", "security", DoQ, []string{"quic://security.cloudflare-dns.com:853"}, securityBoot},
+		{"family_doh", "family", DoH, []string{"https://family.cloudflare-dns.com/dns-query"}, familyBoot},
+		{"family_dot", "family", DoT, []string{"tls://family.cloudflare-dns.com:853"}, familyBoot},
+		{"family_doq", "family", DoQ, []string{"quic://family.cloudflare-dns.com:853"}, familyBoot},
+		{"empty_variant_defaults_standard", "", DoH, []string{"https://cloudflare-dns.com/dns-query"}, standardBoot},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// No id is required or accepted for any Cloudflare selection.
+			ep, err := Expand(Selection{Provider: Cloudflare, Variant: tc.variant, Protocol: tc.proto})
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if !slices.Equal(ep.Upstreams, tc.upstreams) {
+				t.Errorf("upstreams = %v, want %v", ep.Upstreams, tc.upstreams)
+			}
+			if !slices.Equal(ep.Bootstrap, tc.bootstrap) {
+				t.Errorf("bootstrap = %v, want %v", ep.Bootstrap, tc.bootstrap)
+			}
+		})
+	}
+
+	if _, err := Expand(Selection{Provider: Cloudflare, Variant: "bogus"}); !errors.Is(err, ErrUnknownVariant) {
+		t.Errorf("unknown cloudflare variant: got %v, want ErrUnknownVariant", err)
+	}
+
+	// Registry metadata: standard default and no variant needs an id.
+	p, ok := Lookup(Cloudflare)
+	if !ok {
+		t.Fatal("cloudflare missing from registry")
+	}
+	if p.DefaultVariant != "standard" {
+		t.Errorf("DefaultVariant = %q, want standard", p.DefaultVariant)
+	}
+	for _, v := range p.Variants {
+		if v.NeedsID {
+			t.Errorf("variant %q requires an id, want none", v.Name)
+		}
 	}
 }
 
@@ -255,6 +315,64 @@ func TestExpandCustomAndErrors(t *testing.T) {
 	}
 	if _, err = Expand(Selection{Provider: Quad9, Protocol: "bogus"}); !errors.Is(err, ErrUnknownProtocol) {
 		t.Errorf("unknown protocol: got %v, want ErrUnknownProtocol", err)
+	}
+}
+
+// TestExtractID covers NextDNS/ControlD across all protocols plus the error
+// cases, and asserts no error string ever carries the id or the URL.
+func TestExtractID(t *testing.T) {
+	cases := []struct {
+		name      string
+		provider  string
+		proto     Protocol
+		upstreams []string
+		want      string
+		wantErr   error
+	}{
+		{"nextdns_doh", NextDNS, DoH, []string{"https://dns.nextdns.io/abc123"}, "abc123", nil},
+		{"nextdns_dot", NextDNS, DoT, []string{"tls://abc123.dns.nextdns.io:853"}, "abc123", nil},
+		{"nextdns_doq", NextDNS, DoQ, []string{"quic://abc123.dns.nextdns.io:853"}, "abc123", nil},
+		{"nextdns_doh_urlencoded", NextDNS, DoH, []string{"https://dns.nextdns.io/ab%63"}, "abc", nil},
+		{"controld_doh", ControlD, DoH, []string{"https://dns.controld.com/xyz789"}, "xyz789", nil},
+		{"controld_dot", ControlD, DoT, []string{"tls://xyz789.dns.controld.com:853"}, "xyz789", nil},
+		{"controld_doq", ControlD, DoQ, []string{"quic://xyz789.dns.controld.com:853"}, "xyz789", nil},
+		{"nextdns_ambiguous", NextDNS, DoH, []string{
+			"https://dns.nextdns.io/aaa",
+			"https://dns.nextdns.io/bbb",
+		}, "", ErrAmbiguousID},
+		{"controld_ambiguous", ControlD, DoT, []string{
+			"tls://aaa.dns.controld.com:853",
+			"tls://bbb.dns.controld.com:853",
+		}, "", ErrAmbiguousID},
+		{"controld_freedns_doh", ControlD, DoH, []string{"https://freedns.controld.com/p0"}, "", ErrNoID},
+		{"controld_freedns_dot", ControlD, DoT, []string{"tls://p1.freedns.controld.com:853"}, "", ErrNoID},
+		{"quad9", Quad9, DoH, []string{"https://dns.quad9.net/dns-query"}, "", ErrNoID},
+		{"cloudflare_doh", Cloudflare, DoH, []string{"https://cloudflare-dns.com/dns-query"}, "", ErrNoID},
+		{"cloudflare_dot", Cloudflare, DoT, []string{"tls://1dot1dot1dot1.cloudflare-dns.com:853"}, "", ErrNoID},
+		{"cloudflare_doq", Cloudflare, DoQ, []string{"quic://cloudflare-dns.com:853"}, "", ErrNoID},
+		{"cloudflare_security", Cloudflare, DoH, []string{"https://security.cloudflare-dns.com/dns-query"}, "", ErrNoID},
+		{"empty", NextDNS, DoH, nil, "", ErrNoID},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExtractID(tc.provider, tc.proto, tc.upstreams)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ExtractID error = %v, want %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("ExtractID = %q, want %q", got, tc.want)
+			}
+
+			// No error may echo the id or an upstream URL.
+			if err != nil {
+				for _, secret := range append([]string{tc.want}, tc.upstreams...) {
+					if secret != "" && strings.Contains(err.Error(), secret) {
+						t.Fatalf("error leaks %q: %v", secret, err)
+					}
+				}
+			}
+		})
 	}
 }
 
