@@ -42,6 +42,10 @@ func TestWindowsPipeRoundTrip(t *testing.T) {
 		t.Fatalf("Status = %+v", st)
 	}
 
+	// Disconnect before shutting down: Serve drains in-flight connections
+	// (defer wg.Wait), so an open client keeps it from returning until the
+	// server-side read deadline expires.
+	_ = conn.Close()
 	cancel()
 	_ = ln.Close()
 
@@ -90,6 +94,10 @@ func TestWindowsStatusPipeRoundTrip(t *testing.T) {
 		t.Fatal("Enable on status pipe should be forbidden")
 	}
 
+	// Disconnect before shutting down: Serve drains in-flight connections
+	// (defer wg.Wait), so an open client keeps it from returning until the
+	// server-side read deadline expires.
+	_ = conn.Close()
 	cancel()
 	_ = ln.Close()
 
