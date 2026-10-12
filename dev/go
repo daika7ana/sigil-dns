@@ -10,7 +10,7 @@ set -eu
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-args=(--rm -v "$root":/w -w /w -v go-mod-cache:/go)
+args=(--rm -v "$root":/w -w /w -v go-mod-cache:/go -v go-build-cache:/root/.cache/go-build)
 [[ -n "${GOOS:-}"      ]] && args+=(-e GOOS)
 [[ -n "${GOARCH:-}"    ]] && args+=(-e GOARCH)
 [[ -n "${CGO_ENABLED:-}" ]] && args+=(-e CGO_ENABLED)

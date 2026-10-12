@@ -362,6 +362,16 @@ func Serve(ctx context.Context, ln net.Listener, srv *Server, auth Authorizer) (
 
 		fails = 0
 
+		// A connection that arrives as the caller shuts down is dropped: the
+		// listener is being closed.  This is also how a wake-dial (see
+		// CloseListener) unblocks an Accept stuck in ConnectNamedPipe so the
+		// listener can be closed without the go-winio CancelIoEx hang.
+		if ctx.Err() != nil {
+			_ = conn.Close()
+
+			return nil
+		}
+
 		select {
 		case sem <- struct{}{}:
 		default:
@@ -383,6 +393,32 @@ func Serve(ctx context.Context, ln net.Listener, srv *Server, auth Authorizer) (
 
 			srv.serveConn(ctx, c, id)
 		}(conn, caller)
+	}
+}
+
+// CloseListener closes ln without ever blocking indefinitely.  The close runs
+// in its own goroutine and is abandoned after timeout.  On Windows this guards
+// against a go-winio named-pipe listener Close that can hang forever: closing
+// while an overlapped ConnectNamedPipe is outstanding relies on CancelIoEx to
+// abort the IO, and that abort is not guaranteed to complete
+// (microsoft/go-winio#357, golang/go#64482), which wedged shutdown.  The caller
+// first wakes the blocked Accept with a throwaway dial (see wakeListener in
+// internal/service) so the close normally returns at once; this bound is the
+// safety net when it does not.  On Unix Close returns immediately.
+func CloseListener(ln net.Listener, timeout time.Duration) {
+	if ln == nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = ln.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
 	}
 }
 

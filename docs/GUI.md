@@ -2,8 +2,9 @@
 
 `dns-client-gui.exe` is the full configuration client for the service. It has a
 **Status** page (banner + a single power control + profile / filtering / cache
-cards) and a **Settings** page (service install / remove, profile management,
-and a per-profile editor), without a console. The binary embeds an application
+cards), a **Settings** page (service install / remove, profile management,
+and a per-profile editor), and an **About** page (version, IPC protocol, author,
+repository, license), without a console. The binary embeds an application
 manifest that requests **administrator**, so Windows shows one UAC prompt at
 **launch** and the window runs elevated until you close it.
 
@@ -24,22 +25,35 @@ running.
 
 ## Pages
 
-**Status** polls the service about every 2 seconds and shows:
+The left nav rail switches between **Status**, **Settings**, and **About**.
+**Status** polls the service about every 1 second and shows:
 
 - A banner for the overall state.
 - A single header power control — **Enable** / **Disable** (and **Restore** only
   for a crash-leftover dirty state).
 - Cards for the active profile, filtering, and cache. Provider, variant, and
   protocol appear as **labels** (`cloudflare / security / doh`); the resolver id
-  is **masked** — `•••• (set)` or `not set`, never the value.
+  is **masked** — `•••• (set)` or `Not set`, never the value.
 
 **Settings** shows:
 
-- A **Service** card: installed state + install / remove.
+- A **Service** card: installed state — `Running`, `Stopped`, or `Not installed`
+  — plus install / remove.
 - A **Profiles** list: select the active profile, and add / rename / delete.
 - A **profile editor**: provider / variant / protocol, the resolver id (masked;
   leaving it blank keeps the existing one), a custom URL, bootstrap IPs,
   filtering + block response, and cache + size.
+
+**About** shows:
+
+- App name `dns-client`.
+- Version — the `internal/version` `Version` value (`dev` unless stamped at
+  build time).
+- IPC protocol version — currently `1`.
+- Author `daika7ana`.
+- Repository — <https://github.com/daika7ana/dns-client>.
+- License GPLv3 (the project statically links `AdguardTeam/urlfilter`, which is
+  GPL-3.0).
 
 ## States
 
@@ -60,8 +74,10 @@ running.
 | **Install / Uninstall service** | Settings | Register or remove the Windows service. |
 | **Add / Rename / Delete profile** | Settings | Manage profiles (delete is refused for the active profile). |
 | **Save** | Settings, draft dirty | Apply the profile editor via the elevated helper. |
-| **Refresh** | always | Re-read status immediately. |
 | **Theme** | always | Toggle Auto / Light / Dark. |
+
+The Status page polls the service about every 1 second; there is no manual
+**Refresh** button.
 
 Because the window already runs elevated (one UAC prompt at launch, not per
 action), pressing an action does **not** raise a second UAC prompt: the write goes
@@ -91,6 +107,8 @@ These are the SPEC §15 rules as the window enforces them:
 
 ## Window state
 
+The window defaults to 1280 × 720 and cannot be resized below 980 × 620. The
+left navigation rail (Status / Settings / About) is intentionally narrow.
 Window geometry and the theme preference live in
 `%LOCALAPPDATA%\dns-client\gui.json` (user scope, never secrets). Delete that
 file to reset the window size and theme to defaults.

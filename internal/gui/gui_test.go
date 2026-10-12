@@ -14,6 +14,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/dns-client/internal/version"
 )
 
 // fakeSource is a statusSource that returns a fixed snapshot, so the window can
@@ -346,7 +347,7 @@ func TestNoticeForOutcome(t *testing.T) {
 		{
 			name: "revision-conflict", action: actionEnable,
 			err:  errRevision,
-			kind: noticeWarning, title: "Configuration changed", bodyHas: "Refresh and try again",
+			kind: noticeWarning, title: "Configuration changed", bodyHas: "Try again",
 		},
 	}
 
@@ -443,9 +444,10 @@ func waitIdle(t *testing.T, w *gogui.Window, app *App) {
 	t.Fatal("action did not settle")
 }
 
-// TestRefreshActionFires checks the Refresh button is reachable and requests a
-// poll without blocking.
-func TestRefreshActionFires(t *testing.T) {
+// TestRefreshNudgeStillPolls proves the header no longer offers a manual
+// Refresh button, but the refresh nudge still queues a poll (the post-apply path
+// uses the same channel).
+func TestRefreshNudgeStillPolls(t *testing.T) {
 	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
 	app.snap = sampleSnapshot()
 
@@ -455,14 +457,192 @@ func TestRefreshActionFires(t *testing.T) {
 	w.SetView(view)
 	w.TestRender(nil)
 
-	if err := w.TestClick("gui:refresh"); err != nil {
-		t.Fatalf("click refresh: %v", err)
+	if n := len(w.ResolveID("gui:refresh")); n != 0 {
+		t.Fatalf("header still renders the removed Refresh button (%d)", n)
 	}
+
+	requestRefresh(gogui.EventCtx{Window: w})
 	select {
 	case <-app.refresh:
 	default:
-		t.Fatal("refresh click did not request a poll")
+		t.Fatal("refresh nudge did not request a poll")
 	}
+}
+
+// TestAboutPageRenders proves the About page renders its card with the real
+// identity values, and no widget findings.
+func TestAboutPageRenders(t *testing.T) {
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.snap = sampleSnapshot()
+	app.page = pageAbout
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: defaultHeight, State: app,
+	})
+	w.SetView(view)
+	root := w.TestRender(nil)
+
+	if n := len(w.ResolveID("gui:nav:about")); n != 1 {
+		t.Fatalf("About nav button = %d, want 1", n)
+	}
+	mustFindLayout(t, w, root, "gui:card:about")
+
+	for _, id := range []string{"gui:about:author", "gui:about:repo"} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	texts := textSet(root)
+	for _, want := range []string{
+		appName, version.Version, appAuthor, appRepoURL, appLicense,
+	} {
+		if !texts[want] {
+			t.Errorf("About page does not show %q", want)
+		}
+	}
+
+	assertNoFindings(t, w)
+}
+
+// TestAboutLinksOpen proves the About Author and Repository controls are
+// clickable and each opens its URL through the openURL seam.
+func TestAboutLinksOpen(t *testing.T) {
+	var got []string
+	orig := openURL
+	openURL = func(u string) error {
+		got = append(got, u)
+
+		return nil
+	}
+	defer func() { openURL = orig }()
+
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.snap = sampleSnapshot()
+	app.page = pageAbout
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: defaultHeight, State: app,
+	})
+	w.SetView(view)
+	w.TestRender(nil)
+
+	for _, id := range []string{"gui:about:author", "gui:about:repo"} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Fatalf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	if err := w.TestClick("gui:about:author"); err != nil {
+		t.Fatalf("click author link: %v", err)
+	}
+	if err := w.TestClick("gui:about:repo"); err != nil {
+		t.Fatalf("click repository link: %v", err)
+	}
+
+	want := []string{appAuthorURL, appRepoURL}
+	if len(got) != len(want) {
+		t.Fatalf("openURL called %d times (%v), want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("openURL call %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestValidateURLAcceptsOnlyHTTP proves the opener's scheme guard accepts only
+// absolute http/https URLs with a host, so the OS shell never sees anything else.
+func TestValidateURLAcceptsOnlyHTTP(t *testing.T) {
+	for _, ok := range []string{
+		"http://example.com",
+		"https://github.com/daika7ana",
+		appAuthorURL,
+		appRepoURL,
+	} {
+		if _, err := validateURL(ok); err != nil {
+			t.Errorf("validateURL(%q) = %v, want nil", ok, err)
+		}
+	}
+
+	for _, bad := range []string{
+		"",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+		"ftp://example.com",
+		"mailto:x@y.example",
+		"https://",
+		"//example.com",
+	} {
+		if _, err := validateURL(bad); err == nil {
+			t.Errorf("validateURL(%q) = nil, want error", bad)
+		}
+	}
+}
+
+// TestDisplayCapitalization pins the render-layer capitalization of state and
+// boolean strings; the stored values stay lowercase.
+func TestDisplayCapitalization(t *testing.T) {
+	states := map[string]string{
+		"running":       "Running",
+		"stopped":       "Stopped",
+		"starting":      "Starting",
+		"stopping":      "Stopping",
+		"not installed": "Not installed",
+		"unsupported":   "Unsupported",
+		"":              "Unknown",
+	}
+	for in, want := range states {
+		if got := displayState(in); got != want {
+			t.Errorf("displayState(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if yesNo(true) != "Yes" || yesNo(false) != "No" {
+		t.Errorf("yesNo = %q/%q, want Yes/No", yesNo(true), yesNo(false))
+	}
+	if got := resolverID(false); got != "Not set" {
+		t.Errorf("resolverID(false) = %q, want Not set", got)
+	}
+}
+
+// TestServiceStateShownCapitalized proves the Service card shows the capitalized
+// state while the snapshot keeps the raw lowercase value.
+func TestServiceStateShownCapitalized(t *testing.T) {
+	app := settingsApp()
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	if app.snap.scmState != "running" {
+		t.Fatalf("sample snapshot state changed: %q", app.snap.scmState)
+	}
+	texts := textSet(mustFindLayout(t, w, root, "gui:card:service"))
+	if !texts["Running"] {
+		t.Error(`Service card does not show the capitalized state "Running"`)
+	}
+	if texts["running"] {
+		t.Error("Service card still shows the raw lowercase state")
+	}
+}
+
+// textSet collects every rendered text string in a layout tree.
+func textSet(ly *gogui.Layout) (set map[string]bool) {
+	set = map[string]bool{}
+
+	var walk func(*gogui.Layout)
+	walk = func(l *gogui.Layout) {
+		if l == nil {
+			return
+		}
+		if l.Shape != nil && l.Shape.TC != nil && l.Shape.TC.Text != "" {
+			set[l.Shape.TC.Text] = true
+		}
+		for i := range l.Children {
+			walk(&l.Children[i])
+		}
+	}
+	walk(ly)
+
+	return set
 }
 
 // distinctColors counts distinct pixel colors on a coarse grid.

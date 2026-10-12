@@ -226,7 +226,7 @@ func noticeFor(action guiAction, res applyResult, err error) noticeMessage {
 		return noticeMessage{
 			kind:  noticeWarning,
 			title: "Configuration changed",
-			body:  "The config changed since this window read it. Refresh and try again.",
+			body:  "The config changed since this window read it. Try again.",
 		}
 	case err != nil || looksCancelled(res):
 		// UAC declined, or the elevated launch never completed.  Calm and

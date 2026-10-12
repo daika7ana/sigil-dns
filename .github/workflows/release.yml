@@ -35,11 +35,17 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          $version = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+          Write-Host "Building version $version"
+          $stamp = "-X github.com/daika7ana/dns-client/internal/version.Version=$version"
+
           # Console subsystem: CLI + service host + headless --apply helper.
-          go build -trimpath -ldflags '-s -w' -o dist/dns-client.exe ./cmd/dns-client
+          go build -trimpath -ldflags "-s -w $stamp" -o dist/dns-client.exe ./cmd/dns-client
           # GUI subsystem: same program; no console window; opens the status
           # window with no arguments. Still --apply-capable for elevation.
-          go build -trimpath -tags gui -ldflags '-s -w -H windowsgui' -o dist/dns-client-gui.exe ./cmd/dns-client
+          go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/dns-client-gui.exe ./cmd/dns-client
 
       - name: Sign (optional)
         id: sign

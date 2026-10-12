@@ -150,7 +150,7 @@ func serviceCard(t gogui.Theme, app *App) gogui.View {
 
 	return card(t, "gui:card:service", "Service", []gogui.View{
 		kv(t, "Installed", yesNo(app.snap.installed)),
-		kv(t, "State", fallback(app.snap.scmState, "unknown")),
+		kv(t, "State", displayState(app.snap.scmState)),
 		gogui.Button(gogui.ButtonCfg{
 			ID:       "gui:" + string(action),
 			Variant:  actionVariant(action),
@@ -377,7 +377,9 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		saveRow(t, app, d, disabled),
 	)
 
-	return card(t, "gui:card:editor", "Profile editor", fields)
+	// A slightly larger inter-row gap than the read-only cards: the editor has
+	// many stacked fields, and the tight default made it read as one dense block.
+	return cardSpaced(t, "gui:card:editor", "Profile editor", gogui.SpacingSmall, fields)
 }
 
 // saveRow is the Save button and its one-line hint.  Save spans the full field
@@ -408,6 +410,7 @@ func saveRow(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.View 
 // notice is a calm inline banner for a blocking condition.
 func notice(t gogui.Theme, title, detail string) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
+		Sizing:  gogui.FillFit,
 		Color:   t.ColorWarningSubtle,
 		Radius:  gogui.RadiusMedium,
 		Padding: t.PaddingMedium,

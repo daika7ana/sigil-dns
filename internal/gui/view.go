@@ -9,6 +9,7 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/dns-client/internal/version"
 )
 
 // statusKind is the one state the window presents at a time.
@@ -28,6 +29,7 @@ type pageKind int
 const (
 	pageStatus pageKind = iota
 	pageSettings
+	pageAbout
 )
 
 // statusVisual is the resolved banner for a state: a headline, one calm
@@ -80,11 +82,14 @@ func view(w *gogui.Window) gogui.View {
 
 // pageContent is the body of the selected page.
 func pageContent(t gogui.Theme, app *App, windowWidth int) gogui.View {
-	if app.page == pageSettings {
+	switch app.page {
+	case pageSettings:
 		return settingsPage(t, app, windowWidth)
+	case pageAbout:
+		return aboutPage(t)
+	default:
+		return statusPage(t, app)
 	}
-
-	return statusPage(t, app)
 }
 
 // navRail is the left navigation: one button per page, the current one filled.
@@ -99,6 +104,7 @@ func navRail(t gogui.Theme, app *App) gogui.View {
 		Content: []gogui.View{
 			navButton(t, pageStatus, "Status", app.page),
 			navButton(t, pageSettings, "Settings", app.page),
+			navButton(t, pageAbout, "About", app.page),
 		},
 	})
 }
@@ -123,16 +129,104 @@ func navButton(t gogui.Theme, p pageKind, label string, current pageKind) gogui.
 	})
 }
 
-// navRailWidth is the fixed width of the navigation buttons and the rail.
-const navRailWidth = 104
+// navRailWidth is the fixed width of the navigation buttons and the rail.  It
+// is wide enough for the longest label ("Settings") plus the theme's button
+// inset, so the three labels sit on one aligned column with no clipping.
+const navRailWidth = 96
 
 // pageName is the stable suffix for a page's widget ID.
 func pageName(p pageKind) (name string) {
-	if p == pageSettings {
+	switch p {
+	case pageSettings:
 		return "settings"
+	case pageAbout:
+		return "about"
+	default:
+		return "status"
+	}
+}
+
+// About metadata.  Plain constants, so the page needs no service read or config
+// file and renders the same in every state.
+const (
+	appName        = "dns-client"
+	appAuthor      = "daika7ana"
+	appAuthorURL   = "https://github.com/daika7ana"
+	appRepoURL     = "https://github.com/daika7ana/dns-client"
+	appLicense     = "GPLv3"
+	appLicenseNote = "This program links AdguardTeam/urlfilter, which is licensed under GPL-3.0."
+)
+
+// aboutPage is the static read-only About screen: identity, version, author,
+// repository, and license, in the same card/kv style as the Status page.  The
+// author and repository values are links that open in the default browser.
+func aboutPage(t gogui.Theme) gogui.View {
+	rows := []gogui.View{
+		kv(t, "Application", appName),
+		kv(t, "Version", version.Version),
+		kv(t, "IPC protocol", fmt.Sprintf("%d", version.ProtocolVersion)),
+		kvLink(t, "gui:about:author", "Author", appAuthor, appAuthorURL),
+		kvLink(t, "gui:about:repo", "Repository", appRepoURL, appRepoURL),
+		kv(t, "License", appLicense),
+		gogui.Text(gogui.TextCfg{
+			ID:        "gui:about:license",
+			Text:      appLicenseNote,
+			TextStyle: t.TextStyleCaption,
+			Sizing:    gogui.FillFit,
+			Mode:      gogui.TextModeWrap,
+		}),
 	}
 
-	return "status"
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         "gui:about",
+		Sizing:     gogui.FillFill,
+		Spacing:    gogui.SpacingMedium,
+		Scrollable: true,
+		Content: []gogui.View{
+			card(t, "gui:card:about", "About", rows),
+		},
+	})
+}
+
+// kvLink is a kv row whose value is a clickable link.  The label column matches
+// kv so the About rows stay aligned; the value is link-styled accent text.
+func kvLink(t gogui.Theme, id, label, text, url string) gogui.View {
+	return gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		Spacing:    gogui.SpacingMedium,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				Text:      label,
+				TextStyle: t.TextStyleLabel,
+				MinWidth:  132,
+				Sizing:    gogui.FixedFit,
+			}),
+			linkButton(t, id, text, url),
+		},
+	})
+}
+
+// linkButton is an inline link: a borderless ghost button around underlined
+// accent text.  go-gui has no link widget, so the affordance is a ghost button
+// (theme link text, pointer cursor and a hover fill) — clicking it, or pressing
+// Space/Enter while focused, opens url in the default browser.
+func linkButton(t gogui.Theme, id, text, url string) gogui.View {
+	return gogui.Button(gogui.ButtonCfg{
+		ID:      id,
+		Variant: gogui.ButtonGhost,
+		Padding: gogui.PaddingNone,
+		Sizing:  gogui.FitFit,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				Text:      text,
+				TextStyle: t.TextStyleLink,
+				Sizing:    gogui.FitFit,
+			}),
+		},
+		OnClick: func(ctx gogui.EventCtx) { _ = openURL(url) },
+	})
 }
 
 // statusPage is the status screen: a banner and the read-only card stack, all
@@ -217,15 +311,7 @@ func header(t gogui.Theme, app *App) gogui.View {
 		powerCfg.Colors = gogui.ColorSet{} // the danger variant's own error fill
 	}
 
-	controls = append(controls,
-		gogui.Button(gogui.ButtonCfg{
-			ID:      "gui:refresh",
-			Variant: gogui.ButtonSecondary,
-			Label:   "Refresh",
-			OnClick: requestRefresh,
-		}),
-		gogui.Button(powerCfg),
-	)
+	controls = append(controls, gogui.Button(powerCfg))
 
 	return gogui.Row(gogui.ContainerCfg{
 		ID:      "gui:header",
@@ -498,6 +584,13 @@ func cacheSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 // scrollable clip, so scrolled cards painted their legend at the scroll origin
 // and overlapped the banner, and its TitleBG struck a line through the text.
 func card(t gogui.Theme, id, title string, rows []gogui.View) gogui.View {
+	return cardSpaced(t, id, title, gogui.SpacingTight, rows)
+}
+
+// cardSpaced is card with an explicit inter-row gap.  The tight default keeps a
+// read-only list compact; the Settings editor asks for a larger step so its many
+// fields read as separate rows rather than one dense block.
+func cardSpaced(t gogui.Theme, id, title string, spacing gogui.Spacing, rows []gogui.View) gogui.View {
 	content := make([]gogui.View, 0, len(rows)+1)
 	content = append(content, gogui.Text(gogui.TextCfg{
 		Text:      title,
@@ -514,7 +607,7 @@ func card(t gogui.Theme, id, title string, rows []gogui.View) gogui.View {
 		SizeBorder:  gogui.BorderPx(1),
 		Radius:      gogui.RadiusMedium,
 		Padding:     t.PaddingMedium,
-		Spacing:     gogui.SpacingTight,
+		Spacing:     spacing,
 		Content:     content,
 	})
 }
@@ -687,7 +780,16 @@ func resolverID(set bool) (s string) {
 		return "•••• (set)"
 	}
 
-	return "not set"
+	return "Not set"
+}
+
+// displayState capitalizes an SCM state name for display.  The stored value
+// stays lowercase — the DTO and its tests depend on that — and only the rendered
+// text is title-cased: "running" -> "Running", "not installed" -> "Not installed".
+func displayState(s string) string {
+	s = fallback(s, "unknown")
+
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // humanBytes renders a byte count in binary units.
@@ -721,10 +823,10 @@ func fallback(s, def string) (out string) {
 
 func yesNo(b bool) (s string) {
 	if b {
-		return "yes"
+		return "Yes"
 	}
 
-	return "no"
+	return "No"
 }
 
 func enabledWord(b bool) (s string) {

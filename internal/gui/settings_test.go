@@ -147,7 +147,7 @@ func TestSettingsPageRenders(t *testing.T) {
 	}
 
 	for _, id := range []string{
-		"gui:nav:status", "gui:nav:settings",
+		"gui:nav:status", "gui:nav:settings", "gui:nav:about",
 		"gui:service:uninstall",
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",

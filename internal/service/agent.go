@@ -310,18 +310,51 @@ func (a *Agent) listenWithRetry(endpoint string) (ln net.Listener, err error) {
 	return nil, fmt.Errorf("listening on %s: %w", endpoint, err)
 }
 
+// Shutdown bounds.  A go-winio named-pipe listener Close can hang while an
+// overlapped ConnectNamedPipe is outstanding with no client connecting
+// (upstream microsoft/go-winio#357, golang/go#64482): the close's abort relies
+// on CancelIoEx, which is not guaranteed to complete the IO.  wakeListener
+// completes the connect so the listener closes cleanly; closeListenerTimeout
+// guarantees shutdown cannot wedge even if the wake does not take.
+const (
+	wakeTimeout          = 250 * time.Millisecond
+	closeListenerTimeout = 2 * time.Second
+)
+
 // stopIPC stops both IPC listeners.
 func (a *Agent) stopIPC() {
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
 	}
+
+	// Wake each blocked Accept so its listener can close without the go-winio
+	// CancelIoEx hang, then close behind a bound as a safety net.
+	wakeListener(a.endpoint)
+	wakeListener(a.statusEndpoint)
+
 	if a.ln != nil {
-		_ = a.ln.Close()
+		ipc.CloseListener(a.ln, closeListenerTimeout)
 		a.ln = nil
 	}
 	if a.sln != nil {
-		_ = a.sln.Close()
+		ipc.CloseListener(a.sln, closeListenerTimeout)
 		a.sln = nil
+	}
+}
+
+// wakeListener makes a throwaway connection to endpoint so a Serve accept loop
+// blocked in ConnectNamedPipe returns; seeing the canceled context, Serve drops
+// it and exits.  Best-effort: a failure falls back to the bounded close.
+func wakeListener(endpoint string) {
+	if endpoint == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), wakeTimeout)
+	defer cancel()
+
+	if c, err := ipc.Dial(ctx, endpoint); err == nil {
+		_ = c.Close()
 	}
 }

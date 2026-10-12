@@ -79,6 +79,31 @@ func TestSettingsLayoutWhileStopped(t *testing.T) {
 		[]string{"gui:card:service", "gui:card:profiles", "gui:card:editor"})
 }
 
+// TestSettingsOfflineNoticeWraps proves the long "Offline editing" notice
+// wraps instead of forcing the page into a horizontal scrollbar. The notice is
+// a fill-width column: a fit-width one takes the length of its unwrapped detail
+// sentence and pushes the scrollable page wider than the window.
+func TestSettingsOfflineNoticeWraps(t *testing.T) {
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.cached = sampleSnapshot().summary
+	app.snap = snapshot{trust: trustVerified, installed: true, scmState: "stopped"}
+	app.page = pageSettings
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: minWidth, Height: minHeight, State: app,
+	})
+	w.SetView(view)
+	w.TestRender(nil)
+
+	ids := w.ResolveID("gui:settings")
+	if len(ids) != 1 {
+		t.Fatalf("settings page widgets = %d, want 1", len(ids))
+	}
+	if ov, ok := w.ScrollOverflowX(ids[0]); !ok || ov > 0.5 {
+		t.Errorf("settings page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+	}
+}
+
 // statusPowerControlID is the one Status power control.
 const statusPowerControlID = "gui:power"
 
@@ -152,7 +177,8 @@ func layoutFor(t *testing.T, app *App, width, height int) (*gogui.Window, *gogui
 	return w, w.TestRender(nil)
 }
 
-// TestNavRailCompact proves the rail hugs its buttons (no dead space).
+// TestNavRailCompact proves the rail hugs its buttons (no dead space) and every
+// label still fits inside the fixed button width after the rail was narrowed.
 func TestNavRailCompact(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
@@ -165,6 +191,32 @@ func TestNavRailCompact(t *testing.T) {
 	if rail.Shape.Width > navRailWidth+2 {
 		t.Errorf("rail width %.0f exceeds the button width %d", rail.Shape.Width, navRailWidth)
 	}
+
+	// The longest label ("Settings") must fit inside the fixed width with the
+	// theme's button inset, so the narrower rail does not clip it.
+	inset := gogui.CurrentTheme().PaddingButton
+	for _, id := range []string{"gui:nav:status", "gui:nav:settings", "gui:nav:about"} {
+		button := mustFindLayout(t, w, root, id)
+		if absF(button.Shape.Width-navRailWidth) > 1 {
+			t.Errorf("%s width %.0f != navRailWidth %d", id, button.Shape.Width, navRailWidth)
+		}
+		labelW := buttonLabelWidth(button)
+		if labelW+inset.Left+inset.Right > navRailWidth {
+			t.Errorf("%s label %.0f + button inset %.0f exceeds rail width %d: label would clip",
+				id, labelW, inset.Left+inset.Right, navRailWidth)
+		}
+	}
+}
+
+// buttonLabelWidth returns the width of a Label-built button's text child.
+func buttonLabelWidth(ly *gogui.Layout) (width float32) {
+	for i := range ly.Children {
+		if c := ly.Children[i].Shape; c != nil && c.TC != nil {
+			return c.Width
+		}
+	}
+
+	return 0
 }
 
 // TestBannerIndicatorCentred proves the status indicator is vertically centred
@@ -269,12 +321,12 @@ func TestHeaderPowerButton(t *testing.T) {
 }
 
 // TestHeaderPowerRightMost proves the power control is the last (right-most)
-// header action, sitting past Refresh.
+// header action, sitting past the theme control.
 func TestHeaderPowerRightMost(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
 	power := mustFindLayout(t, w, root, "gui:power")
-	for _, id := range []string{"gui:theme", "gui:refresh"} {
+	for _, id := range []string{"gui:theme"} {
 		other := mustFindLayout(t, w, root, id)
 		if power.Shape.X <= other.Shape.X {
 			t.Errorf("power x=%.1f is not right of %s x=%.1f", power.Shape.X, id, other.Shape.X)

@@ -26,12 +26,12 @@ var appIconPNG []byte
 const (
 	defaultWidth  = 1280
 	defaultHeight = 720
-	minWidth      = 520
-	minHeight     = 480
+	minWidth      = 980
+	minHeight     = 620
 )
 
-// pollInterval is the status refresh cadence (SPEC §15.4, phase 2: ~2 s).
-const pollInterval = 2 * time.Second
+// pollInterval is the status refresh cadence (SPEC §15.4: 1 s).
+const pollInterval = 1 * time.Second
 
 // App is the window state the view reads each frame.  It is written only on the
 // main thread; the poller posts updates through Window.QueueCommand.
