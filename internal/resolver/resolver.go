@@ -6,11 +6,11 @@ package resolver
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -40,8 +40,8 @@ const (
 	probeIPv6 = "2001:db8::53"
 )
 
-// DefaultListen is the dual-stack loopback listener set.
-var DefaultListen = []string{"127.0.0.1:53", "[::1]:53"}
+// defaultListen is the dual-stack loopback listener set.
+var defaultListen = []string{"127.0.0.1:53", "[::1]:53"}
 
 // Block-response modes for filtering.
 const (
@@ -55,16 +55,10 @@ const (
 	DefaultBlockTTL uint32 = 3600
 )
 
-// FilterList is one filter-list source (URL or file path).
-type FilterList struct {
-	ID     string
-	Source string
-}
-
 // FilterConfig configures DNS filtering.
 type FilterConfig struct {
 	BlockResponse string
-	Lists         []FilterList
+	Lists         []filter.List
 	TTL           uint32
 	Enabled       bool
 }
@@ -95,7 +89,6 @@ type Config struct {
 type filterState struct {
 	engine        *filter.Engine
 	blockResponse string
-	sum           [32]byte
 	ttl           uint32
 }
 
@@ -122,7 +115,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		cacheDisabled: cfg.CacheDisabled,
 	}
 	if len(r.listen) == 0 {
-		r.listen = DefaultListen
+		r.listen = defaultListen
 	}
 	if r.cacheSize <= 0 {
 		r.cacheSize = DefaultCacheSizeBytes
@@ -180,8 +173,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		}
 
 		// Rules are fixed for the resolver's lifetime; a rule change means a
-		// restart, so there is no live cache to flush here (ClearCache covers
-		// runtime changes).
+		// restart, so there is no live cache to flush here.
 		r.upstreamConf.DomainReservedUpstreams = rulesConf.DomainReservedUpstreams
 		r.upstreamConf.SpecifiedDomainUpstreams = rulesConf.SpecifiedDomainUpstreams
 		r.upstreamConf.SubdomainExclusions = rulesConf.SubdomainExclusions
@@ -200,27 +192,16 @@ func New(cfg Config) (r *Resolver, err error) {
 	return r, nil
 }
 
-// ReloadFilter rebuilds the filter engine from fc and flushes the DNS cache.
-// It is a no-op (with no re-parse) when the list contents are unchanged.
-func (r *Resolver) ReloadFilter(ctx context.Context, fc FilterConfig) (err error) {
-	return r.reloadFilter(ctx, fc)
-}
-
 // reloadFilter loads the lists and swaps in a new filter state.
 func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error) {
 	if !fc.Enabled || len(fc.Lists) == 0 {
 		r.setFilterState(nil)
-		r.ClearCache()
+		r.clearCache()
 
 		return nil
 	}
 
-	lists := make([]filter.List, 0, len(fc.Lists))
-	for _, l := range fc.Lists {
-		lists = append(lists, filter.List{ID: l.ID, Source: l.Source})
-	}
-
-	raw, sum, err := filter.LoadAll(ctx, lists)
+	raw, err := filter.LoadAll(ctx, fc.Lists)
 	if err != nil {
 		return fmt.Errorf("loading filter lists: %w", err)
 	}
@@ -235,12 +216,6 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 		ttl = DefaultBlockTTL
 	}
 
-	// Skip re-parsing unchanged content.
-	if cur := r.filterState.Load(); cur != nil && cur.sum == sum &&
-		cur.blockResponse == fc.BlockResponse && cur.ttl == ttl {
-		return nil
-	}
-
 	eng, err := filter.New(raw)
 	if err != nil {
 		return fmt.Errorf("building filter engine: %w", err)
@@ -249,10 +224,9 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 	r.setFilterState(&filterState{
 		engine:        eng,
 		blockResponse: fc.BlockResponse,
-		sum:           sum,
 		ttl:           ttl,
 	})
-	r.ClearCache()
+	r.clearCache()
 
 	return nil
 }
@@ -336,15 +310,7 @@ func rulesToLines(rules []Rule) (lines []string, err error) {
 func (r *Resolver) SyntheticName() (name string) { return r.handler.synthetic }
 
 // SyntheticName generates a fresh random probe name.
-func SyntheticName() (name string) { return randomLabel() + ".dns-client-probe.invalid." }
-
-// randomLabel returns a random 16-character hex label.
-func randomLabel() (label string) {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-
-	return hex.EncodeToString(b[:])
-}
+func SyntheticName() (name string) { return rand.Text() + ".dns-client-probe.invalid." }
 
 // Start binds the listeners and begins serving.  If the dual-stack listen set
 // fails (e.g. IPv6 is disabled), it retries IPv4-only so enabling is not
@@ -422,11 +388,11 @@ func parseAddrs(addrs []string) (udp []*net.UDPAddr, tcp []*net.TCPAddr, err err
 // ipv4Addrs returns the subset of addrs whose host is an IPv4 address.
 func ipv4Addrs(addrs []string) (v4 []string) {
 	for _, a := range addrs {
-		host, _, err := net.SplitHostPort(a)
+		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
 			continue
 		}
-		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		if ap.Addr().Is4() {
 			v4 = append(v4, a)
 		}
 	}
@@ -446,8 +412,8 @@ func (r *Resolver) UDPAddrs() (addrs []string) {
 	return addrs
 }
 
-// ClearCache flushes the resolver cache.  Call on every state change.
-func (r *Resolver) ClearCache() {
+// clearCache flushes the resolver cache.  Call on every state change.
+func (r *Resolver) clearCache() {
 	if r.proxy != nil {
 		r.proxy.ClearCache()
 	}

@@ -15,9 +15,6 @@ func (stub) Enable(context.Context) error { return ErrUnsupported }
 // Disable implements Controller.
 func (stub) Disable(context.Context) error { return ErrUnsupported }
 
-// Status implements Controller.
-func (stub) Status(context.Context) (Status, error) { return Status{}, ErrUnsupported }
-
 // SnapshotAdapters is unsupported off Windows.
 func SnapshotAdapters(context.Context) (entries []AdapterEntry, err error) {
 	return nil, ErrUnsupported

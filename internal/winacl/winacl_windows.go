@@ -28,7 +28,13 @@ func SecureDir(path string) (err error) {
 
 // aclSystemAdmins sets a protected SYSTEM+Administrators DACL on path.
 func aclSystemAdmins(path string) (err error) {
-	sd, err := windows.SecurityDescriptorFromString(secureSDDL)
+	return SetDACL(path, secureSDDL)
+}
+
+// SetDACL sets a protected DACL on path from an SDDL string.  Callers that need
+// extra principals (e.g. the elevate staging directory) pass their own SDDL.
+func SetDACL(path, sddl string) (err error) {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("winacl: parsing sddl: %w", err)
 	}

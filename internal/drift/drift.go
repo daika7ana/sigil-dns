@@ -51,20 +51,6 @@ const (
 	DecisionConflict
 )
 
-// String implements fmt.Stringer.
-func (d Decision) String() (s string) {
-	switch d {
-	case DecisionOK:
-		return "ok"
-	case DecisionApply:
-		return "apply"
-	case DecisionConflict:
-		return "conflict"
-	default:
-		return "unknown"
-	}
-}
-
 // Decide compares the expected state with the actual state.  It is pure.
 //
 //   - a foreign NRPT rule conflicts only when we rely on NRPT -> DecisionConflict;

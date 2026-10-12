@@ -47,15 +47,3 @@ func Upstream(u string) (s string) {
 
 	return parsed.Scheme + "://" + parsed.Host
 }
-
-// List redacts each upstream and comma-joins the results.
-func List(upstreams []string) (s string) {
-	out := make([]string, 0, len(upstreams))
-	for _, u := range upstreams {
-		if r := Upstream(u); r != "" {
-			out = append(out, r)
-		}
-	}
-
-	return strings.Join(out, ",")
-}

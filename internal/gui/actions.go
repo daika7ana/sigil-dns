@@ -21,8 +21,6 @@ const (
 	// helper's service_* actions with an empty patch.
 	actionInstall   guiAction = "service:install"
 	actionUninstall guiAction = "service:uninstall"
-	actionStart     guiAction = "service:start"
-	actionStop      guiAction = "service:stop"
 
 	// Profile actions.  All four map onto elevate.ActionApply; the structural
 	// verbs additionally set AddProfile/RenameProfile/DeleteProfile.
@@ -78,147 +76,57 @@ func planPower(kind statusKind, installed, running, on, busy, trusted bool) (ps 
 	return ps
 }
 
-// actionLabel is the button text for an action.
-func actionLabel(a guiAction) (label string) {
-	switch a {
-	case actionEnable:
-		return "Enable"
-	case actionRestore:
-		return "Restore now"
-	case actionDisable:
-		return "Disable"
-	case actionInstall:
-		return "Install"
-	case actionUninstall:
-		return "Uninstall"
-	case actionStart:
-		return "Start"
-	case actionStop:
-		return "Stop"
-	case actionSaveProfile:
-		return "Save"
-	case actionAddProfile:
-		return "Add"
-	case actionRenameProfile:
-		return "Rename"
-	case actionDeleteProfile:
-		return "Delete"
-	case actionSetActive:
-		return "Set active"
-	default:
-		return ""
-	}
+// actionMeta is the presentation for one action: its button label and
+// hierarchy, the in-flight note, and the success/failure toast titles.  One
+// table keeps an action's strings and variant together.
+type actionMeta struct {
+	label   string
+	variant gogui.ButtonVariant
+	waiting string
+	done    string
+	fail    string
 }
 
-// actionVariant picks the button hierarchy.  Enable/Restore are the primary
-// call to action; Disable/Stop/Rename are deliberately secondary (routine, not
-// destructive).  Uninstall/Delete are the destructive actions.  The service
-// management buttons stay Secondary so their disabled state reads as greyed
-// rather than a pale filled-primary.
-func actionVariant(a guiAction) (v gogui.ButtonVariant) {
-	switch a {
-	case actionDisable, actionStop, actionRenameProfile,
-		actionInstall, actionStart:
-		return gogui.ButtonSecondary
-	case actionUninstall, actionDeleteProfile:
-		return gogui.ButtonDanger
-	default:
-		return gogui.ButtonPrimary
-	}
+// actionMetas is the presentation for the known actions.  Enable/Restore are
+// the primary call to action; Disable/Rename/the service-management buttons are
+// deliberately Secondary (routine, not destructive, and their disabled state
+// reads as greyed rather than a pale filled-primary); Uninstall/Delete are the
+// destructive actions.
+var actionMetas = map[guiAction]actionMeta{
+	actionEnable: {"Enable", gogui.ButtonPrimary,
+		"Waiting for elevation to enable...", "Enabled", "Could not enable"},
+	actionRestore: {"Restore now", gogui.ButtonPrimary,
+		"Waiting for elevation to restore...", "Restored", "Could not restore"},
+	actionDisable: {"Disable", gogui.ButtonSecondary,
+		"Waiting for elevation to disable...", "Disabled", "Could not disable"},
+	actionInstall: {"Install", gogui.ButtonSecondary,
+		"Waiting for elevation to install the service...", "Service installed", "Could not install the service"},
+	actionUninstall: {"Uninstall", gogui.ButtonDanger,
+		"Waiting for elevation to uninstall the service...", "Service removed", "Could not remove the service"},
+	actionSaveProfile: {"Save", gogui.ButtonPrimary,
+		"Waiting for elevation to save the profile...", "Profile saved", "Could not save the profile"},
+	actionAddProfile: {"Add", gogui.ButtonPrimary,
+		"Waiting for elevation to add the profile...", "Profile added", "Could not add the profile"},
+	actionRenameProfile: {"Rename", gogui.ButtonSecondary,
+		"Waiting for elevation to rename the profile...", "Profile renamed", "Could not rename the profile"},
+	actionDeleteProfile: {"Delete", gogui.ButtonDanger,
+		"Waiting for elevation to delete the profile...", "Profile deleted", "Could not delete the profile"},
+	actionSetActive: {"Set active", gogui.ButtonPrimary,
+		"Waiting for elevation to set the active profile...", "Active profile set", "Could not set the active profile"},
 }
 
-// waitingLabel is the in-flight note shown while the elevated call runs.
-func waitingLabel(a guiAction) (s string) {
-	switch a {
-	case actionEnable:
-		return "Waiting for elevation to enable..."
-	case actionRestore:
-		return "Waiting for elevation to restore..."
-	case actionDisable:
-		return "Waiting for elevation to disable..."
-	case actionInstall:
-		return "Waiting for elevation to install the service..."
-	case actionUninstall:
-		return "Waiting for elevation to uninstall the service..."
-	case actionStart:
-		return "Waiting for elevation to start the service..."
-	case actionStop:
-		return "Waiting for elevation to stop the service..."
-	case actionSaveProfile:
-		return "Waiting for elevation to save the profile..."
-	case actionAddProfile:
-		return "Waiting for elevation to add the profile..."
-	case actionRenameProfile:
-		return "Waiting for elevation to rename the profile..."
-	case actionDeleteProfile:
-		return "Waiting for elevation to delete the profile..."
-	case actionSetActive:
-		return "Waiting for elevation to set the active profile..."
-	default:
-		return "Waiting for elevation..."
+// metaFor returns an action's presentation, or the unknown-action defaults.
+func metaFor(a guiAction) actionMeta {
+	if m, ok := actionMetas[a]; ok {
+		return m
 	}
+
+	return actionMeta{variant: gogui.ButtonPrimary,
+		waiting: "Waiting for elevation...", done: "Done", fail: "Action failed"}
 }
 
-// doneTitle is the success toast title for an action.
-func doneTitle(a guiAction) (title string) {
-	switch a {
-	case actionEnable:
-		return "Enabled"
-	case actionRestore:
-		return "Restored"
-	case actionDisable:
-		return "Disabled"
-	case actionInstall:
-		return "Service installed"
-	case actionUninstall:
-		return "Service removed"
-	case actionStart:
-		return "Service started"
-	case actionStop:
-		return "Service stopped"
-	case actionSaveProfile:
-		return "Profile saved"
-	case actionAddProfile:
-		return "Profile added"
-	case actionRenameProfile:
-		return "Profile renamed"
-	case actionDeleteProfile:
-		return "Profile deleted"
-	case actionSetActive:
-		return "Active profile set"
-	default:
-		return "Done"
-	}
-}
-
-// failTitle is the failure toast title for an action.
-func failTitle(a guiAction) (title string) {
-	switch a {
-	case actionEnable:
-		return "Could not enable"
-	case actionRestore:
-		return "Could not restore"
-	case actionDisable:
-		return "Could not disable"
-	case actionInstall:
-		return "Could not install the service"
-	case actionUninstall:
-		return "Could not remove the service"
-	case actionStart:
-		return "Could not start the service"
-	case actionStop:
-		return "Could not stop the service"
-	case actionSaveProfile:
-		return "Could not save the profile"
-	case actionAddProfile:
-		return "Could not add the profile"
-	case actionRenameProfile:
-		return "Could not rename the profile"
-	case actionDeleteProfile:
-		return "Could not delete the profile"
-	case actionSetActive:
-		return "Could not set the active profile"
-	default:
-		return "Action failed"
-	}
-}
+func actionLabel(a guiAction) string                { return metaFor(a).label }
+func actionVariant(a guiAction) gogui.ButtonVariant { return metaFor(a).variant }
+func waitingLabel(a guiAction) string               { return metaFor(a).waiting }
+func doneTitle(a guiAction) string                  { return metaFor(a).done }
+func failTitle(a guiAction) string                  { return metaFor(a).fail }

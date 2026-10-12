@@ -751,29 +751,6 @@ func healthOK(h *ipc.HealthSummary) bool {
 	return h.Ours && h.IPv4 && h.IPv6
 }
 
-// healthValue renders the health bits as one line.
-func healthValue(h *ipc.HealthSummary) (s string) {
-	if h == nil {
-		return "unknown"
-	}
-
-	var parts []string
-	if h.Ours {
-		parts = append(parts, "loopback")
-	}
-	if h.IPv4 {
-		parts = append(parts, "IPv4")
-	}
-	if h.IPv6 {
-		parts = append(parts, "IPv6")
-	}
-	if len(parts) == 0 {
-		return "failing"
-	}
-
-	return "ok (" + strings.Join(parts, ", ") + ")"
-}
-
 // resolverID masks the resolver id: set or unset, never the value (SPEC §15.2).
 func resolverID(set bool) (s string) {
 	if set {

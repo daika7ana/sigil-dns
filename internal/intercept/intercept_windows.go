@@ -45,26 +45,6 @@ Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' } |
 	return err
 }
 
-// Status implements Controller.
-func (nrptController) Status(ctx context.Context) (st Status, err error) {
-	const script = `
-$c = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' }).Count
-Write-Output $c
-`
-	out, err := runPS(ctx, script)
-	if err != nil {
-		return Status{}, err
-	}
-
-	n, _ := strconv.Atoi(strings.TrimSpace(out))
-	st = Status{Enabled: n > 0, Mechanism: "nrpt"}
-	if st.Enabled {
-		st.Detail = fmt.Sprintf("NRPT rule %q active", DisplayName)
-	}
-
-	return st, nil
-}
-
 // dnsEntry is one interface's captured DNS servers, used by the per-adapter
 // fallback mechanism.
 type dnsEntry struct {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daika7ana/dns-client/internal/drift"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/state"
 )
@@ -62,21 +63,11 @@ type Lifecycle interface {
 	Restore(ctx context.Context) (err error)
 }
 
-// Watcher is a background reconciler (drift detection) started with the service
-// and stopped when the service stops.  It is optional.
-type Watcher interface {
-	// Start launches the background loop.
-	Start()
-
-	// Stop terminates the background loop.
-	Stop()
-}
-
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
 // and restore on stop.
 type Agent struct {
 	lc             *lockedLifecycle
-	watcher        Watcher
+	watcher        *drift.Reconciler
 	logger         *slog.Logger
 	endpoint       string
 	statusEndpoint string
@@ -106,7 +97,7 @@ func NewAgent(lc Lifecycle, logger *slog.Logger, endpoint string) (a *Agent) {
 
 // SetWatcher sets the optional background reconciler.  It must be called before
 // Start.
-func (a *Agent) SetWatcher(w Watcher) { a.watcher = w }
+func (a *Agent) SetWatcher(w *drift.Reconciler) { a.watcher = w }
 
 // SetStatusEndpoint overrides the read-only status endpoint.  Tests use it to
 // isolate listeners; production uses the platform default.

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -27,12 +28,7 @@ func Protocols() []Protocol { return []Protocol{DoH, DoT, DoQ} }
 
 // Valid reports whether p is a known protocol.
 func (p Protocol) Valid() bool {
-	switch p {
-	case DoH, DoT, DoQ:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(Protocols(), p)
 }
 
 // Provider names.
@@ -270,10 +266,7 @@ func expandQuad9(variant string, proto Protocol) (ep Endpoints, err error) {
 		return Endpoints{}, fmt.Errorf("%w: quad9/%s", ErrUnknownVariant, variant)
 	}
 
-	ep.Upstreams = []string{dohURL(m.host)}
-	if proto != DoH {
-		ep.Upstreams = []string{hostURL(proto, m.host)}
-	}
+	ep.Upstreams = []string{hostURL(proto, m.host)}
 	ep.Bootstrap = append(append([]string{}, m.v4...), m.v6...)
 
 	return ep, nil
@@ -510,11 +503,9 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 		}
 
 		return firstHostLabel(host, "dns.controld.com")
-	case Cloudflare:
-		// Cloudflare is a public, id-less provider: an id is neither required
-		// nor extractable (mirrors Quad9).
-		return "", false
 	default:
+		// Cloudflare and Quad9 are public, id-less providers: an id is neither
+		// required nor extractable.
 		return "", false
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"image/color"
 	"strings"
 	"testing"
 	"time"
@@ -444,31 +445,6 @@ func waitIdle(t *testing.T, w *gogui.Window, app *App) {
 	t.Fatal("action did not settle")
 }
 
-// TestRefreshNudgeStillPolls proves the header no longer offers a manual
-// Refresh button, but the refresh nudge still queues a poll (the post-apply path
-// uses the same channel).
-func TestRefreshNudgeStillPolls(t *testing.T) {
-	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
-	app.snap = sampleSnapshot()
-
-	w := gogui.NewTestWindow(t, gogui.WindowCfg{
-		Width: defaultWidth, Height: defaultHeight, State: app,
-	})
-	w.SetView(view)
-	w.TestRender(nil)
-
-	if n := len(w.ResolveID("gui:refresh")); n != 0 {
-		t.Fatalf("header still renders the removed Refresh button (%d)", n)
-	}
-
-	requestRefresh(gogui.EventCtx{Window: w})
-	select {
-	case <-app.refresh:
-	default:
-		t.Fatal("refresh nudge did not request a poll")
-	}
-}
-
 // TestAboutPageRenders proves the About page renders its card with the real
 // identity values, and no widget findings.
 func TestAboutPageRenders(t *testing.T) {
@@ -648,13 +624,11 @@ func textSet(ly *gogui.Layout) (set map[string]bool) {
 // distinctColors counts distinct pixel colors on a coarse grid.
 func distinctColors(img *image.RGBA) (n int) {
 	b := img.Bounds()
-	seen := make(map[uint32]struct{})
+	seen := make(map[color.RGBA]struct{})
 	step := 8
 	for y := b.Min.Y; y < b.Max.Y; y += step {
 		for x := b.Min.X; x < b.Max.X; x += step {
-			c := img.RGBAAt(x, y)
-			key := uint32(c.R)<<24 | uint32(c.G)<<16 | uint32(c.B)<<8 | uint32(c.A)
-			seen[key] = struct{}{}
+			seen[img.RGBAAt(x, y)] = struct{}{}
 		}
 	}
 

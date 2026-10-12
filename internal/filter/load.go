@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// MaxListSize is the maximum size of a single filter list.
-const MaxListSize = 64 << 20
+// maxListSize is the maximum size of a single filter list.
+const maxListSize = 64 << 20
 
 // fetchTimeout bounds a single HTTP(S) list fetch.
 const fetchTimeout = 30 * time.Second
@@ -28,22 +28,18 @@ var (
 
 // List is one filter-list source to load.
 type List struct {
-	// ID is a human-readable identifier (URL or path).
-	ID string
-
 	// Source is an http(s):// URL or a local file path.
 	Source string
 }
 
-// LoadAll reads every list and returns the raw contents plus a combined content
-// checksum.  Lists with identical content are parsed once.
+// LoadAll reads every list and returns the raw contents.  Lists with identical
+// content are parsed once.
 //
 // Note: per SPEC §6 the plan mentioned ETag/If-None-Match refresh, but AdGuard
 // Home does not use conditional requests; its pattern is an unconditional GET
-// plus a content checksum.  We follow that: fetch unconditionally and derive a
-// sha256 so callers can skip re-parsing unchanged content.
-func LoadAll(ctx context.Context, lists []List) (raw []RawList, sum [32]byte, err error) {
-	h := sha256.New()
+// plus a content checksum.  We follow that: fetch unconditionally and dedupe by
+// a per-list sha256.
+func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	seen := map[[32]byte]struct{}{}
 
 	for _, l := range lists {
@@ -53,7 +49,7 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, sum [32]byte, er
 
 		data, lErr := loadOne(ctx, l.Source)
 		if lErr != nil {
-			return nil, [32]byte{}, fmt.Errorf("list %q: %w", l.Source, lErr)
+			return nil, fmt.Errorf("list %q: %w", l.Source, lErr)
 		}
 
 		c := sha256.Sum256(data)
@@ -62,13 +58,10 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, sum [32]byte, er
 		}
 		seen[c] = struct{}{}
 
-		_, _ = h.Write(c[:])
-		raw = append(raw, RawList{ID: l.ID, Text: data})
+		raw = append(raw, RawList{Text: data})
 	}
 
-	copy(sum[:], h.Sum(nil))
-
-	return raw, sum, nil
+	return raw, nil
 }
 
 // loadOne loads and validates a single source.
@@ -109,7 +102,7 @@ func fetch(ctx context.Context, url string) (data []byte, err error) {
 		return nil, fmt.Errorf("unexpected status %s", resp.Status)
 	}
 
-	data, err = readCapped(resp.Body, MaxListSize)
+	data, err = readCapped(resp.Body, maxListSize)
 	if err != nil {
 		return nil, err
 	}
@@ -129,11 +122,11 @@ func readFile(path string) (data []byte, err error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	if info, sErr := f.Stat(); sErr == nil && info.Size() > MaxListSize {
+	if info, sErr := f.Stat(); sErr == nil && info.Size() > maxListSize {
 		return nil, ErrTooBig
 	}
 
-	return readCapped(f, MaxListSize)
+	return readCapped(f, maxListSize)
 }
 
 // readCapped reads at most limit bytes and errors if the source is larger.
@@ -151,9 +144,6 @@ func readCapped(r io.Reader, limit int64) (data []byte, err error) {
 
 // validate rejects payloads that are obviously not filter lists.
 func validate(data []byte) (err error) {
-	if int64(len(data)) > MaxListSize {
-		return ErrTooBig
-	}
 	if isHTML(data) {
 		return ErrHTML
 	}

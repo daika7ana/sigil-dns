@@ -4,6 +4,7 @@ package gui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
@@ -129,7 +130,7 @@ func (a *App) refreshProfiles() {
 		a.active = active
 	}
 
-	if a.selected != "" && len(names) > 0 && !contains(names, a.selected) {
+	if a.selected != "" && len(names) > 0 && !slices.Contains(names, a.selected) {
 		a.selected = a.active
 		a.draft = draftFromSummary(sum, a.selected)
 		a.seeded = true
@@ -374,7 +375,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 				updateDraft(ctx, func(d *profileDraft) { d.cacheSizeMB = text })
 			},
 		}),
-		saveRow(t, app, d, disabled),
+		saveRow(t, d, disabled),
 	)
 
 	// A slightly larger inter-row gap than the read-only cards: the editor has
@@ -385,7 +386,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 // saveRow is the Save button and its one-line hint.  Save spans the full field
 // column (PaddingNone, no blank left inset) so it lines up with the inputs above
 // it; the hint sits underneath.
-func saveRow(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.View {
+func saveRow(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
 		Spacing:    gogui.SpacingTight,
@@ -693,15 +694,4 @@ func first(vals []string) (v string) {
 	}
 
 	return vals[0]
-}
-
-// contains reports whether names holds name.
-func contains(names []string, name string) (ok bool) {
-	for _, n := range names {
-		if n == name {
-			return true
-		}
-	}
-
-	return false
 }

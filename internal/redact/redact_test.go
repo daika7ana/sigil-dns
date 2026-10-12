@@ -40,21 +40,6 @@ func TestUpstream(t *testing.T) {
 	}
 }
 
-func TestList(t *testing.T) {
-	got := List([]string{
-		"https://dns.nextdns.io/SECRET123",
-		"tls://dns.quad9.net:853",
-		"",
-	})
-	want := "https://dns.nextdns.io,tls://dns.quad9.net:853"
-	if got != want {
-		t.Fatalf("List = %q, want %q", got, want)
-	}
-	if strings.Contains(got, "SECRET123") {
-		t.Fatal("List leaked the resolver id")
-	}
-}
-
 // TestUpstreamDoesNotLeakID is the explicit regression guard from the review:
 // a planted NextDNS/ControlD id must never appear in redacted output.
 func TestUpstreamDoesNotLeakID(t *testing.T) {

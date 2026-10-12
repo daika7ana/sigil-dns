@@ -24,9 +24,16 @@ const (
 // (SPEC §15.2) — so caching it here is safe.  It is never an authorization
 // input.
 type settings struct {
-	Width   int                `json:"width,omitempty"`
-	Height  int                `json:"height,omitempty"`
-	Theme   string             `json:"theme,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Theme  string `json:"theme,omitempty"`
+
+	// X and Y are the window's top-left in screen pixels, remembered on close
+	// and restored on open.  Zero (omitted) means "let the OS place it" — a
+	// genuine (0,0) window is not preserved.
+	X int `json:"x,omitempty"`
+	Y int `json:"y,omitempty"`
+
 	Summary *ipc.ConfigSummary `json:"summary,omitempty"`
 }
 

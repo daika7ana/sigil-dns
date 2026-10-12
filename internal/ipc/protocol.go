@@ -105,9 +105,6 @@ type Request struct {
 
 	// Method is the requested operation.
 	Method Method `json:"method"`
-
-	// Params is the method-specific payload (unused so far).
-	Params json.RawMessage `json:"params,omitempty"`
 }
 
 // Response is the JSON envelope of a response.

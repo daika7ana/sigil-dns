@@ -30,6 +30,10 @@ const (
 	minHeight     = 620
 )
 
+// windowTitle is the native window title.  The position shim finds this
+// process's window by it.
+const windowTitle = "dns-client"
+
 // pollInterval is the status refresh cadence (SPEC §15.4: 1 s).
 const pollInterval = 1 * time.Second
 
@@ -80,16 +84,13 @@ type App struct {
 }
 
 // Run opens the client window and blocks until it is closed.
-func Run(cfg Config) (err error) {
+func Run() (err error) {
 	// Detach from the inherited console first: the binary is console-subsystem,
 	// so a double-click would otherwise leave a blank cmd window open for the
 	// whole GUI session.  GUI path only; the CLI commands never do this.
 	detachConsole()
 
-	path := cfg.GuiPath
-	if path == "" {
-		path = defaultGuiPath()
-	}
+	path := defaultGuiPath()
 
 	// Single instance: a second launch must not open a second window.  The
 	// lock is user-scope (beside gui.json) and taken before the window exists;
@@ -122,10 +123,21 @@ func Run(cfg Config) (err error) {
 		settings:  s,
 		cached:    s.Summary,
 	}
-	src := newSource(cfg.Endpoint)
+	src := newSource()
+
+	// The position is captured on close, while the native window still exists
+	// (OnCloseRequest runs before destroy), and applied on open from OnInit.
+	var posX, posY int
+	var havePos bool
+
+	// go-gui shows the window's first frame before OnInit runs, so applying a
+	// saved position there would visibly jump.  When there is one, start the
+	// window fully transparent (the backend replays this before showing it),
+	// apply the position while it is invisible, then reveal it — no jump.
+	restoring := s.X != 0 || s.Y != 0
 
 	w := gogui.NewWindow(gogui.WindowCfg{
-		Title:     "dns-client",
+		Title:     windowTitle,
 		IconPNG:   appIconPNG,
 		Width:     s.Width,
 		Height:    s.Height,
@@ -136,16 +148,35 @@ func Run(cfg Config) (err error) {
 			applyTheme(w, app.themePref)
 			w.SetView(view)
 			startPoller(w, src, app.refresh)
+			if restoring {
+				restoreWindowPosition(windowTitle, s.X, s.Y)
+			}
+			focusWindow(windowTitle)
+			if restoring {
+				w.SetWindowOpacity(1)
+			}
+		},
+		OnCloseRequest: func(win *gogui.Window) {
+			posX, posY, havePos = windowPosition(windowTitle)
+			win.Close()
 		},
 	})
+
+	if restoring {
+		// Replayed by the backend before the window is shown; see OnInit.
+		w.SetWindowOpacity(0)
+	}
 
 	// Blocks on the main thread until the window closes.
 	backend.Run(w)
 
-	// Persist geometry + theme preference.  Best-effort: gui.json is not a
-	// security boundary and a write failure must not fail the run.
+	// Persist geometry, position + theme preference.  Best-effort: gui.json is
+	// not a security boundary and a write failure must not fail the run.
 	if ww, wh := w.WindowSize(); ww > 0 && wh > 0 {
 		s.Width, s.Height = ww, wh
+	}
+	if havePos {
+		s.X, s.Y = posX, posY
 	}
 	s.Theme = app.themePref
 	s.Summary = app.cached
@@ -167,10 +198,18 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}) {
 			snap := readOnce(ctx, src)
 			w.QueueCommand(func(win *gogui.Window) {
 				a := gogui.State[App](win)
+				changed := !samePoll(a.snap, snap)
 				a.snap = snap
 				a.seed(snap)
 				a.cacheSummary(snap)
-				win.InvalidateLayout()
+				// Only relayout when the data actually changed; an unchanged
+				// poll still redraws (so the header clock ticks) but does not
+				// re-run layout, which would re-snap glyphs mid-scroll.
+				if changed {
+					win.InvalidateLayout()
+				} else {
+					win.InvalidateRender()
+				}
 			})
 
 			select {
@@ -191,8 +230,7 @@ func readOnce(ctx context.Context, src statusSource) (snap snapshot) {
 
 	snap, err := src.Read(rctx)
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now(),
-			err: "could not read status"}
+		return snapshot{trust: trustVerified, updated: time.Now()}
 	}
 	if snap.updated.IsZero() {
 		snap.updated = time.Now()
@@ -229,16 +267,6 @@ func themeOptions() (opts []gogui.SegmentOption) {
 		gogui.NewSegmentOption("Auto", themeSystem),
 		gogui.NewSegmentOption("Light", themeLight),
 		gogui.NewSegmentOption("Dark", themeDark),
-	}
-}
-
-// requestRefresh asks the poller for an immediate read without blocking.
-func requestRefresh(ctx gogui.EventCtx) {
-	app := gogui.State[App](ctx.Window)
-
-	select {
-	case app.refresh <- struct{}{}:
-	default:
 	}
 }
 

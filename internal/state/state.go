@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -133,83 +132,24 @@ func (s *Store) Save(st *State) (err error) {
 	return s.writeAtomic(st)
 }
 
-// writeAtomic marshals st and writes it via a temp file, fsync, and rename.
+// writeAtomic marshals st and writes it atomically and ACL-protected.
 func (s *Store) writeAtomic(st *State) (err error) {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding state: %w", err)
 	}
 
-	dir := filepath.Dir(s.path)
-	if err = os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating state dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp state: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err = tmp.Write(data); err != nil {
-		_ = tmp.Close()
-
+	if err = winacl.WriteFileAtomic(s.path, data); err != nil {
 		return fmt.Errorf("writing state: %w", err)
-	}
-	if err = tmp.Sync(); err != nil {
-		_ = tmp.Close()
-
-		return fmt.Errorf("syncing state: %w", err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("closing state: %w", err)
-	}
-	if err = os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("renaming state: %w", err)
-	}
-
-	syncDir(dir)
-
-	if err = secure(s.path); err != nil {
-		return fmt.Errorf("securing state: %w", err)
-	}
-
-	return nil
-}
-
-// syncDir fsyncs dir so the rename is durable.  Best-effort: opening a
-// directory for sync fails on some platforms.
-func syncDir(dir string) {
-	d, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	_ = d.Sync()
-	_ = d.Close()
-}
-
-// secure restricts the state file (and its directory) to SYSTEM and
-// Administrators via the shared winacl helper (a no-op off Windows).
-func secure(path string) (err error) {
-	if err = winacl.SecureDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("securing state dir: %w", err)
-	}
-	if err = winacl.SecureFile(path); err != nil {
-		return fmt.Errorf("securing state file: %w", err)
 	}
 
 	return nil
 }
 
 // Lock is a cross-platform single-instance guard backed by an exclusive lock
-// file containing the owning pid.
+// file containing the owning pid.  The lock is the file's existence (O_EXCL
+// create); the handle is closed after the pid is written.
 type Lock struct {
-	file *os.File
 	path string
 }
 
@@ -261,7 +201,13 @@ func tryAcquire(path string) (l *Lock, err error) {
 		return nil, fmt.Errorf("writing lock: %w", err)
 	}
 
-	return &Lock{file: f, path: path}, nil
+	if err = f.Close(); err != nil {
+		_ = os.Remove(path)
+
+		return nil, fmt.Errorf("closing lock: %w", err)
+	}
+
+	return &Lock{path: path}, nil
 }
 
 // readOwnerPid reads the pid recorded in the lock file.
@@ -283,9 +229,6 @@ func readOwnerPid(path string) (pid int, err error) {
 func (l *Lock) Release() (err error) {
 	if l == nil {
 		return nil
-	}
-	if l.file != nil {
-		_ = l.file.Close()
 	}
 
 	return os.Remove(l.path)

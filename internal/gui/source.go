@@ -4,9 +4,8 @@ package gui
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"net"
+	"reflect"
 	"time"
 
 	"github.com/daika7ana/dns-client/internal/config"
@@ -38,7 +37,6 @@ type snapshot struct {
 	info    *ipc.Info
 	trust   trustKind
 	running bool
-	err     string
 
 	// installed reports whether the dns-client service is registered with the
 	// SCM, and scmState is its state name ("running", "stopped",
@@ -46,6 +44,17 @@ type snapshot struct {
 	// the state is "unsupported".
 	installed bool
 	scmState  string
+}
+
+// samePoll reports whether two reads would produce the same layout.  The
+// updated timestamp is ignored: it changes on every poll but only rewrites
+// header text, so a fresh reading of otherwise-unchanged data must not force a
+// relayout (which would re-snap glyph baselines mid-scroll).
+func samePoll(a, b snapshot) bool {
+	a.updated = time.Time{}
+	b.updated = time.Time{}
+
+	return reflect.DeepEqual(a, b)
 }
 
 // statusSource reads the sanitized status.  The real source speaks the status
@@ -59,45 +68,19 @@ type pipeSource struct {
 	endpoint string
 }
 
-// newSource builds the production status source.  A package variable so a test
-// can substitute a fake.
-var newSource = func(endpoint string) statusSource {
-	if endpoint == "" {
-		endpoint = ipc.StatusEndpoint()
-	}
-
-	return &pipeSource{endpoint: endpoint}
+// newSource builds the production status source for the default status endpoint.
+func newSource() statusSource {
+	return &pipeSource{endpoint: ipc.StatusEndpoint()}
 }
 
 // exchange performs one request/response over conn, decoding the payload into
-// out.  It mirrors ipc.Client.call but over a caller-held connection, so the
-// identity check and the read share one pipe instance (no re-dial window for a
-// squatter to win).
+// out.  It owns conn and applies a read deadline before delegating to the shared
+// wire protocol in ipc.Exchange, so the identity check and the read share one
+// pipe instance (no re-dial window for a squatter to win).
 func exchange(conn net.Conn, method ipc.Method, out any) (err error) {
 	_ = conn.SetDeadline(time.Now().Add(readTimeout))
 
-	if err = json.NewEncoder(conn).Encode(ipc.Request{
-		Version: ipc.ProtocolVersion,
-		Method:  method,
-	}); err != nil {
-		return err
-	}
-
-	var resp ipc.Response
-	if err = json.NewDecoder(conn).Decode(&resp); err != nil {
-		return err
-	}
-	if resp.Version != ipc.ProtocolVersion {
-		return ipc.ErrVersion
-	}
-	if !resp.OK {
-		return errors.New(resp.Error)
-	}
-	if out != nil && len(resp.Data) > 0 {
-		return json.Unmarshal(resp.Data, out)
-	}
-
-	return nil
+	return ipc.Exchange(conn, method, out)
 }
 
 // readPayload fetches the three sanitized reads over a verified connection.
@@ -121,8 +104,8 @@ func readPayload(conn net.Conn) (status *ipc.StatusDTO, summary *ipc.ConfigSumma
 	return status, summary, info
 }
 
-// offlineSummary returns the sanitized summary of the on-disk config, or nil
-// when there is no usable file.  It is the GUI's read-back path while the
+// offlineSummary returns the sanitized summary of the on-disk config (a missing
+// file yields the built-in defaults).  It is the GUI's read-back path while the
 // service is not running (stopped or not yet installed): without it a save made
 // offline is never visible again, because the editor falls back to a stale
 // gui.json cache or the built-in default — so saved settings appeared to reset
@@ -132,30 +115,16 @@ func offlineSummary() *ipc.ConfigSummary {
 	return fileSummary(config.SystemPath())
 }
 
-// fileSummary loads the config at path and reduces it to the sanitized summary.
-// A missing file yields nil so the caller falls back to the cache or the
-// built-in default; a broken file yields a secret-free error summary.
+// fileSummary loads the config at path and reduces it to the sanitized summary
+// via ipc.LoadSummary: a missing file yields the built-in defaults, a broken
+// file a secret-free error summary.  The empty-path guard keeps the callers'
+// "no file" case explicit.
 func fileSummary(path string) *ipc.ConfigSummary {
 	if path == "" {
 		return nil
 	}
 
-	cfg, err := config.Load(path)
-	if err != nil {
-		if errors.Is(err, config.ErrNoConfig) {
-			return nil
-		}
-
-		return &ipc.ConfigSummary{
-			ConfigValid: false,
-			ConfigError: ipc.SanitizedConfigError(err),
-			Revision:    ipc.Revision(path),
-		}
-	}
-
-	sum := ipc.Summarize(cfg)
-	sum.ConfigValid = true
-	sum.Revision = ipc.Revision(path)
+	sum := ipc.LoadSummary(path)
 
 	return &sum
 }

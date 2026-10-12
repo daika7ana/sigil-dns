@@ -23,8 +23,7 @@ import (
 func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
 	pid, running, installed, state, err := serviceProcess()
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now(),
-			err: "could not query service state"}, nil
+		return snapshot{trust: trustVerified, updated: time.Now()}, nil
 	}
 	if !installed {
 		return snapshot{trust: trustVerified, updated: time.Now(),
@@ -38,7 +37,7 @@ func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
 	conn, err := ipc.Dial(ctx, s.endpoint)
 	if err != nil {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			installed: true, scmState: state, err: "status pipe not reachable"}, nil
+			installed: true, scmState: state}, nil
 	}
 	defer func() { _ = conn.Close() }()
 

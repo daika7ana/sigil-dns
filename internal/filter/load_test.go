@@ -18,19 +18,16 @@ func TestLoadAllFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, sum, err := LoadAll(context.Background(), []List{{ID: "local", Source: path}})
+	raw, err := LoadAll(context.Background(), []List{{Source: path}})
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
 	if len(raw) != 1 || !strings.Contains(string(raw[0].Text), "blocked.test") {
 		t.Fatalf("raw = %+v", raw)
 	}
-	if sum == ([32]byte{}) {
-		t.Error("combined checksum is zero")
-	}
 
 	// Same contents twice: deduplicated.
-	raw, _, err = LoadAll(context.Background(), []List{{Source: path}, {Source: path}})
+	raw, err = LoadAll(context.Background(), []List{{Source: path}, {Source: path}})
 	if err != nil {
 		t.Fatalf("LoadAll dup: %v", err)
 	}
@@ -46,7 +43,7 @@ func TestLoadAllHTTP(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	raw, _, err := LoadAll(context.Background(), []List{{ID: srv.URL, Source: srv.URL}})
+	raw, err := LoadAll(context.Background(), []List{{Source: srv.URL}})
 	if err != nil {
 		t.Fatalf("LoadAll http: %v", err)
 	}
@@ -61,7 +58,7 @@ func TestLoadRejectsNonOKStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if _, _, err := LoadAll(context.Background(), []List{{Source: srv.URL}}); err == nil {
+	if _, err := LoadAll(context.Background(), []List{{Source: srv.URL}}); err == nil {
 		t.Fatal("expected error for HTTP 404")
 	}
 }
@@ -73,7 +70,7 @@ func TestLoadRejectsHTML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrHTML) {
+	if _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrHTML) {
 		t.Fatalf("err = %v, want ErrHTML", err)
 	}
 }
@@ -85,7 +82,7 @@ func TestLoadRejectsBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrBinary) {
+	if _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrBinary) {
 		t.Fatalf("err = %v, want ErrBinary", err)
 	}
 }

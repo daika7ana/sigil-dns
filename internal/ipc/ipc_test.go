@@ -73,7 +73,7 @@ func (f *fakeRestorer) Restore(context.Context) (err error) {
 }
 
 func TestEnvelopeRoundTrip(t *testing.T) {
-	req := Request{Version: ProtocolVersion, Method: MethodStatus, Params: json.RawMessage(`{"x":1}`)}
+	req := Request{Version: ProtocolVersion, Method: MethodStatus}
 	data, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -83,7 +83,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if err = json.Unmarshal(data, &gotReq); err != nil {
 		t.Fatalf("unmarshal request: %v", err)
 	}
-	if gotReq.Version != ProtocolVersion || gotReq.Method != MethodStatus || string(gotReq.Params) != `{"x":1}` {
+	if gotReq.Version != ProtocolVersion || gotReq.Method != MethodStatus {
 		t.Fatalf("request round-trip mismatch: %+v", gotReq)
 	}
 
@@ -330,8 +330,15 @@ func TestClientRoundTrip(t *testing.T) {
 
 	ctx := context.Background()
 
-	st, err := c.Status(ctx)
+	conn, err := Dial(ctx, endpoint)
 	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var st *state.State
+	if err = Exchange(conn, MethodStatus, &st); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if st == nil || st.Mode != state.ModeOn || !st.Dirty {
@@ -435,7 +442,15 @@ func TestClientRejectsBadServerVersion(t *testing.T) {
 		_ = json.NewEncoder(c).Encode(Response{Version: 999, OK: true})
 	}()
 
-	if _, err = NewClient(endpoint).Status(context.Background()); !errors.Is(err, ErrVersion) {
+	conn, err := Dial(context.Background(), endpoint)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var st *state.State
+	if err = Exchange(conn, MethodStatus, &st); !errors.Is(err, ErrVersion) {
 		t.Fatalf("bad server version err = %v, want ErrVersion", err)
 	}
 }
@@ -449,7 +464,7 @@ func TestOversizedRequestRejected(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	payload := `{"version":1,"method":"status","params":"` + strings.Repeat("A", maxRequestBytes+1024) + `"}`
+	payload := `{"version":1,"method":"` + strings.Repeat("A", maxRequestBytes+1024) + `"}`
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_, _ = conn.Write([]byte(payload))
 

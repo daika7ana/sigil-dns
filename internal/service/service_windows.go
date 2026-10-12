@@ -92,13 +92,35 @@ func Run(agent *Agent) (err error) {
 	return svc.Run(Name, &handler{agent: agent})
 }
 
-// Install registers the service with the SCM.
-func Install() (err error) {
-	exe, err := os.Executable()
+// Executable returns the canonical service binary for this process image: the
+// non-GUI sibling dns-client.exe when running as the GUI exe and that sibling
+// exists, else the current executable.
+func Executable() (exe string, err error) {
+	cur, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolving executable: %w", err)
+		return "", fmt.Errorf("resolving executable: %w", err)
 	}
 
+	return canonicalServiceExe(cur, func(p string) bool {
+		_, statErr := os.Stat(p)
+
+		return statErr == nil
+	}), nil
+}
+
+// Install registers the service with the SCM against the canonical service
+// binary for this process image.
+func Install() (err error) {
+	exe, err := Executable()
+	if err != nil {
+		return err
+	}
+
+	return InstallExe(exe)
+}
+
+// InstallExe registers the service with the SCM against exe.
+func InstallExe(exe string) (err error) {
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("connecting to SCM: %w", err)
@@ -138,6 +160,12 @@ func Install() (err error) {
 func Uninstall() (err error) {
 	_ = Stop()
 
+	return Delete()
+}
+
+// Delete removes the service registration without stopping it.  Callers that
+// need interception cleared first must run the ordered uninstall themselves.
+func Delete() (err error) {
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("connecting to SCM: %w", err)

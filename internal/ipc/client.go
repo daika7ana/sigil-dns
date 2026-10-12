@@ -4,9 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"time"
-
-	"github.com/daika7ana/dns-client/internal/state"
 )
 
 // clientTimeout bounds a single client call so a stuck server cannot hang the
@@ -30,31 +29,6 @@ func NewClient(endpoint string) (c *Client) {
 	}
 
 	return &Client{endpoint: endpoint}
-}
-
-// Endpoint returns the endpoint this client dials.
-func (c *Client) Endpoint() (endpoint string) { return c.endpoint }
-
-// Status asks the service for the persisted state.  A nil state means no state
-// file exists yet.  This is the full (admin/control-pipe) view.
-func (c *Client) Status(ctx context.Context) (st *state.State, err error) {
-	err = c.call(ctx, MethodStatus, &st)
-
-	return st, err
-}
-
-// StatusSummary asks the status pipe for the sanitized status DTO.
-func (c *Client) StatusSummary(ctx context.Context) (dto *StatusDTO, err error) {
-	err = c.call(ctx, MethodStatus, &dto)
-
-	return dto, err
-}
-
-// Info asks for the service's protocol/app version and capabilities.
-func (c *Client) Info(ctx context.Context) (info *Info, err error) {
-	err = c.call(ctx, MethodInfo, &info)
-
-	return info, err
 }
 
 // ConfigSummary asks for the sanitized config summary.  It is available on both
@@ -109,6 +83,14 @@ func (c *Client) callTimeout(ctx context.Context, method Method, out any, timeou
 
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
+	return Exchange(conn, method, out)
+}
+
+// Exchange performs one request/response exchange over an already-dialed conn.
+// The caller owns conn (including its deadline).  It is exported so non-Client
+// callers (the GUI's raw-pipe reader, tests) share the exact wire protocol and
+// error strings.
+func Exchange(conn net.Conn, method Method, out any) (err error) {
 	if err = json.NewEncoder(conn).Encode(Request{Version: ProtocolVersion, Method: method}); err != nil {
 		return fmt.Errorf("sending %s: %w", method, err)
 	}

@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"sort"
@@ -814,20 +815,10 @@ func TestRenderArtifacts(t *testing.T) {
 // so the artifact dump can be requested through the test selector when a host
 // env var cannot reach the container.
 func runSelectorMentions(needle string) (ok bool) {
-	for i, a := range os.Args {
-		var v string
-		switch {
-		case a == "-test.run" || a == "--test.run":
-			if i+1 < len(os.Args) {
-				v = os.Args[i+1]
-			}
-		case strings.HasPrefix(a, "-test.run="):
-			v = strings.TrimPrefix(a, "-test.run=")
-		}
-		if v != "" && strings.Contains(v, needle) {
-			return true
-		}
+	f := flag.Lookup("test.run")
+	if f == nil {
+		return false
 	}
 
-	return false
+	return strings.Contains(f.Value.String(), needle)
 }

@@ -270,6 +270,31 @@ func upstreamHasPathID(u string) (ok bool) {
 	return !strings.EqualFold(path, "dns-query")
 }
 
+// LoadSummary loads the config at path and returns a sanitized summary.  A
+// missing file falls back to defaults (valid); a broken file yields a
+// secret-free error summary.  It is shared by the service (config_summary) and
+// any local caller.
+func LoadSummary(path string) (sum ConfigSummary) {
+	cfg, err := config.Load(path)
+	if err != nil && !errors.Is(err, config.ErrNoConfig) {
+		return ConfigSummary{
+			ConfigValid: false,
+			ConfigError: SanitizedConfigError(err),
+			Revision:    Revision(path),
+		}
+	}
+
+	if cfg == nil {
+		cfg = config.Default()
+	}
+
+	sum = Summarize(cfg)
+	sum.ConfigValid = true
+	sum.Revision = Revision(path)
+
+	return sum
+}
+
 // Revision returns an opaque revision token for path: config file mtime + size.
 // It returns "" when the file is absent.  Deliberately not a content hash.
 func Revision(path string) (rev string) {

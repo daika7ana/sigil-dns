@@ -8,15 +8,3 @@ import "errors"
 
 // ErrNotBuilt is returned when the binary was built without GUI support.
 var ErrNotBuilt = errors.New("gui support is not built into this binary (rebuild with -tags gui)")
-
-// Config configures the client window.
-type Config struct {
-	// GuiPath is the user-scope gui.json path (window geometry + theme
-	// preference).  Empty uses the platform default
-	// (%LOCALAPPDATA%\dns-client\gui.json).  Never a security boundary.
-	GuiPath string
-
-	// Endpoint overrides the read-only status pipe/socket.  Empty uses
-	// ipc.StatusEndpoint().  Tests set it; production leaves it empty.
-	Endpoint string
-}

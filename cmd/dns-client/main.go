@@ -27,6 +27,7 @@ import (
 	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/drift"
 	"github.com/daika7ana/dns-client/internal/elevate"
+	"github.com/daika7ana/dns-client/internal/filter"
 	"github.com/daika7ana/dns-client/internal/gui"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
@@ -62,7 +63,7 @@ func run(args []string) (err error) {
 		// A -tags gui build makes the status window the default UI for a
 		// no-argument launch; the console build's gui.Run is a stub, so this
 		// falls back to CLI usage.
-		if guiErr := gui.Run(gui.Config{}); !errors.Is(guiErr, gui.ErrNotBuilt) {
+		if guiErr := gui.Run(); !errors.Is(guiErr, gui.ErrNotBuilt) {
 			return guiErr
 		}
 
@@ -120,16 +121,30 @@ type options struct {
 	summary    bool
 }
 
-// parseFlags parses rest for cmd and returns the options.
+// parseFlags parses rest for cmd, registering only the flags cmd supports.
 func parseFlags(cmd string, rest []string) (o options, err error) {
 	fs := flag.NewFlagSet("dns-client "+cmd, flag.ContinueOnError)
-	fs.StringVar(&o.upstream, "upstream", "", "upstream DNS URL (default "+defaultUpstream+")")
-	fs.StringVar(&o.bootstrap, "bootstrap", "", "bootstrap resolver address (default "+defaultBootstrap+")")
-	fs.StringVar(&o.listen, "listen", "", "comma-separated loopback listen addresses")
-	fs.StringVar(&o.statePath, "state", "", "state file path")
-	fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
-	fs.StringVar(&o.profile, "profile", "", "config profile name (default the config's active profile)")
-	fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
+
+	switch cmd {
+	case "enable", "run", "service":
+		fs.StringVar(&o.upstream, "upstream", "", "upstream DNS URL (default "+defaultUpstream+")")
+		fs.StringVar(&o.bootstrap, "bootstrap", "", "bootstrap resolver address (default "+defaultBootstrap+")")
+		fs.StringVar(&o.profile, "profile", "", "config profile name (default the config's active profile)")
+		fs.StringVar(&o.listen, "listen", "", "comma-separated loopback listen addresses")
+		fs.StringVar(&o.statePath, "state", "", "state file path")
+		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
+	case "disable", "restore":
+		fs.StringVar(&o.listen, "listen", "", "comma-separated loopback listen addresses")
+		fs.StringVar(&o.statePath, "state", "", "state file path")
+	case "status":
+		fs.StringVar(&o.statePath, "state", "", "state file path")
+		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
+		fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
+	case "config":
+		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
+	case "reload", "gui", "tray":
+		// These commands take no flags.
+	}
 
 	if err = fs.Parse(rest); err != nil {
 		return o, err
@@ -180,12 +195,12 @@ func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
 		rules = append(rules, resolver.Rule{Domains: pd.Domains, Upstream: pd.Upstream})
 	}
 
-	lists := make([]resolver.FilterList, 0, len(r.Filtering.Lists))
+	lists := make([]filter.List, 0, len(r.Filtering.Lists))
 	for _, l := range r.Filtering.Lists {
 		if !l.Enabled {
 			continue
 		}
-		lists = append(lists, resolver.FilterList{ID: l.URL, Source: l.URL})
+		lists = append(lists, filter.List{Source: l.URL})
 	}
 
 	return lifecycle.New(lifecycle.Config{
@@ -308,21 +323,7 @@ func printConfigSummary(configPath string) (err error) {
 		return printSummary(sum)
 	}
 
-	cfg, err := config.Load(configPath)
-	if err != nil && !errors.Is(err, config.ErrNoConfig) {
-		return printSummary(&ipc.ConfigSummary{
-			ConfigValid: false,
-			ConfigError: ipc.SanitizedConfigError(err),
-			Revision:    ipc.Revision(configPath),
-		})
-	}
-	if cfg == nil {
-		cfg = config.Default()
-	}
-
-	sum := ipc.Summarize(cfg)
-	sum.ConfigValid = true
-	sum.Revision = ipc.Revision(configPath)
+	sum := ipc.LoadSummary(configPath)
 
 	return printSummary(&sum)
 }
@@ -607,7 +608,7 @@ func cmdGUI(args []string) (err error) {
 		return err
 	}
 
-	return gui.Run(gui.Config{})
+	return gui.Run()
 }
 
 // cmdTray starts the tray UI, which talks to the service over IPC.
@@ -662,48 +663,29 @@ func providersList() {
 // providersShow expands a selection and prints the generated profile fragment.
 // Flags may appear before or after the positional selection.
 func providersShow(args []string) (err error) {
-	var (
-		id        string
-		upstream  string
-		bootstrap string
-		spec      string
-	)
+	fs := flag.NewFlagSet("dns-client providers show", flag.ContinueOnError)
+	id := fs.String("id", "", "resolver id")
+	upstream := fs.String("upstream", "", "custom upstream URL")
+	bootstrap := fs.String("bootstrap", "", "comma-separated bootstrap addresses")
 
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--id", a == "-id":
-			if i+1 >= len(args) {
-				return fmt.Errorf("flag %s needs a value", a)
-			}
-			i++
-			id = args[i]
-		case strings.HasPrefix(a, "--id="), strings.HasPrefix(a, "-id="):
-			id = a[strings.IndexByte(a, '=')+1:]
-		case a == "--upstream", a == "-upstream":
-			if i+1 >= len(args) {
-				return fmt.Errorf("flag %s needs a value", a)
-			}
-			i++
-			upstream = args[i]
-		case strings.HasPrefix(a, "--upstream="), strings.HasPrefix(a, "-upstream="):
-			upstream = a[strings.IndexByte(a, '=')+1:]
-		case a == "--bootstrap", a == "-bootstrap":
-			if i+1 >= len(args) {
-				return fmt.Errorf("flag %s needs a value", a)
-			}
-			i++
-			bootstrap = args[i]
-		case strings.HasPrefix(a, "--bootstrap="), strings.HasPrefix(a, "-bootstrap="):
-			bootstrap = a[strings.IndexByte(a, '=')+1:]
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown flag %q", a)
-		default:
-			if spec != "" {
-				return fmt.Errorf("unexpected argument %q", a)
-			}
-			spec = a
+	// A FlagSet stops at the first positional, so parse in a loop to keep
+	// allowing flags on either side of the selection.
+	var spec string
+	for {
+		if err = fs.Parse(args); err != nil {
+			return err
 		}
+
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if spec != "" {
+			return fmt.Errorf("unexpected argument %q", rest[0])
+		}
+
+		spec = rest[0]
+		args = rest[1:]
 	}
 
 	if spec == "" {
@@ -715,14 +697,14 @@ func providersShow(args []string) (err error) {
 		return fmt.Errorf("invalid selection %q", spec)
 	}
 
-	sel := providers.Selection{Provider: parts[0], ID: id, URL: upstream}
+	sel := providers.Selection{Provider: parts[0], ID: *id, URL: *upstream}
 	if len(parts) > 1 {
 		sel.Variant = parts[1]
 	}
 	if len(parts) > 2 {
 		sel.Protocol = providers.Protocol(parts[2])
 	}
-	for _, b := range strings.Split(bootstrap, ",") {
+	for _, b := range strings.Split(*bootstrap, ",") {
 		if b = strings.TrimSpace(b); b != "" {
 			sel.Bootstrap = append(sel.Bootstrap, b)
 		}

@@ -3,51 +3,14 @@ package resolver
 import (
 	"context"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 
 	"github.com/miekg/dns"
+
+	"github.com/daika7ana/dns-client/internal/filter"
 )
-
-// startCountedUpstream starts a fake upstream that answers every query with an A
-// record and counts how many queries reached it.
-func startCountedUpstream(t *testing.T, ip string) (addr string, hits *atomic.Int32) {
-	t.Helper()
-
-	hits = &atomic.Int32{}
-
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen counted upstream: %v", err)
-	}
-
-	srv := &dns.Server{
-		PacketConn: pc,
-		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
-			hits.Add(1)
-
-			resp := &dns.Msg{}
-			resp.SetReply(req)
-			resp.Answer = append(resp.Answer, &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   req.Question[0].Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    0,
-				},
-				A: net.ParseIP(ip).To4(),
-			})
-			_ = w.WriteMsg(resp)
-		}),
-	}
-	go func() { _ = srv.ActivateAndServe() }()
-	t.Cleanup(func() { _ = srv.Shutdown() })
-
-	return pc.LocalAddr().String(), hits
-}
 
 // writeList writes a filter list to a temp file and returns its path.
 func writeList(t *testing.T, text string) (path string) {
@@ -70,7 +33,7 @@ func startFilteredResolver(t *testing.T, upstreamAddr, listPath, blockResponse s
 		Upstreams: []string{upstreamAddr},
 		Filter: FilterConfig{
 			Enabled:       true,
-			Lists:         []FilterList{{ID: "test", Source: listPath}},
+			Lists:         []filter.List{{Source: listPath}},
 			BlockResponse: blockResponse,
 			TTL:           3600,
 		},
@@ -94,7 +57,7 @@ func startFilteredResolver(t *testing.T, upstreamAddr, listPath, blockResponse s
 }
 
 func TestFilterEndToEnd(t *testing.T) {
-	upstream, hits := startCountedUpstream(t, "192.0.2.1")
+	upstream, hits := startUpstream(t, "192.0.2.1")
 	list := writeList(t, "||blocked.test^\n||rw.test^$dnsrewrite=1.2.3.4\n")
 
 	r, qaddr := startFilteredResolver(t, upstream, list, BlockResponseZero)
@@ -140,7 +103,7 @@ func TestFilterEndToEnd(t *testing.T) {
 }
 
 func TestFilterHostsAndNXDOMAIN(t *testing.T) {
-	upstream, hits := startCountedUpstream(t, "192.0.2.1")
+	upstream, hits := startUpstream(t, "192.0.2.1")
 	list := writeList(t, "0.0.0.0 hosts-blocked.test\n")
 
 	_, qaddr := startFilteredResolver(t, upstream, list, BlockResponseZero)
@@ -153,7 +116,7 @@ func TestFilterHostsAndNXDOMAIN(t *testing.T) {
 		t.Fatalf("hosts-blocked name reached upstream: hits = %d", n)
 	}
 
-	upstream2, hits2 := startCountedUpstream(t, "192.0.2.1")
+	upstream2, hits2 := startUpstream(t, "192.0.2.1")
 	list2 := writeList(t, "||blocked.test^\n")
 	_, qaddr2 := startFilteredResolver(t, upstream2, list2, BlockResponseNXDOMAIN)
 

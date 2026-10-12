@@ -33,7 +33,7 @@ const (
 )
 
 // DefaultCacheSizeBytes is 64 MiB.
-const DefaultCacheSizeBytes = 64 << 20
+const DefaultCacheSizeBytes = resolver.DefaultCacheSizeBytes
 
 // DefaultProfileName is the name of the default profile.
 const DefaultProfileName = "default"
@@ -159,9 +159,6 @@ func Load(path string) (c *Config, err error) {
 // directory (SYSTEM + Administrators on Windows).  An ACL failure is a hard
 // error: the config may contain resolver ids.
 func (c *Config) Save(path string) (err error) {
-	if c.SchemaVersion == 0 {
-		c.SchemaVersion = SchemaVersion
-	}
 	c.normalize()
 	if err = c.Validate(); err != nil {
 		return err
@@ -172,43 +169,9 @@ func (c *Config) Save(path string) (err error) {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 
-	dir := filepath.Dir(path)
-	if err = os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating config dir: %w", err)
-	}
-
-	// Restrict the directory before the temp file is created in it, so the temp
-	// does not inherit a permissive ACL.
-	if err = winacl.SecureDir(dir); err != nil {
-		return fmt.Errorf("securing config dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp config: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err = tmp.Write(data); err != nil {
-		_ = tmp.Close()
-
+	// winacl.WriteFileAtomic handles the temp+rename and the SYSTEM/Admins ACL.
+	if err = winacl.WriteFileAtomic(path, data); err != nil {
 		return fmt.Errorf("writing config: %w", err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("closing config: %w", err)
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("renaming config: %w", err)
-	}
-
-	// Protect the final path.
-	if err = winacl.SecureFile(path); err != nil {
-		return fmt.Errorf("securing config file: %w", err)
 	}
 
 	return nil
@@ -354,10 +317,8 @@ func normalizeProfileName(name string) (n string, err error) {
 	if utf8.RuneCountInString(n) > maxProfileName {
 		return "", fmt.Errorf("profile name must be at most %d characters", maxProfileName)
 	}
-	for _, r := range n {
-		if unicode.IsControl(r) {
-			return "", errors.New("profile name must not contain control characters")
-		}
+	if strings.ContainsFunc(n, unicode.IsControl) {
+		return "", errors.New("profile name must not contain control characters")
 	}
 
 	return n, nil

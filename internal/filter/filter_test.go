@@ -11,7 +11,7 @@ import (
 func newTestEngine(t *testing.T, text string) (e *Engine) {
 	t.Helper()
 
-	e, err := New([]RawList{{ID: "test", Text: []byte(text)}})
+	e, err := New([]RawList{{Text: []byte(text)}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

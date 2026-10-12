@@ -16,8 +16,6 @@ func TestElevateActionFor(t *testing.T) {
 		actionRestore:       elevate.ActionRestore,
 		actionInstall:       elevate.ActionServiceInstall,
 		actionUninstall:     elevate.ActionServiceUninstall,
-		actionStart:         elevate.ActionServiceStart,
-		actionStop:          elevate.ActionServiceStop,
 		actionSaveProfile:   elevate.ActionApply,
 		actionAddProfile:    elevate.ActionApply,
 		actionRenameProfile: elevate.ActionApply,
@@ -37,14 +35,12 @@ func TestElevateActionFor(t *testing.T) {
 	}
 }
 
-// TestServiceRequestHasEmptyPatch checks the four service actions map to the
-// four elevate actions with no config patch and a valid request.
+// TestServiceRequestHasEmptyPatch checks the two service actions map to the
+// two elevate actions with no config patch and a valid request.
 func TestServiceRequestHasEmptyPatch(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
 		actionInstall:   elevate.ActionServiceInstall,
 		actionUninstall: elevate.ActionServiceUninstall,
-		actionStart:     elevate.ActionServiceStart,
-		actionStop:      elevate.ActionServiceStop,
 	}
 
 	for a, want := range cases {
@@ -244,7 +240,7 @@ func TestActiveProfileOnlyOnSwitch(t *testing.T) {
 		t.Fatalf("save must not set ActiveProfile, got %q", *save.Patch.ActiveProfile)
 	}
 
-	req, ok := buildElevateRequest(applyRequest{action: actionSetActive, activeSwitch: strptr("work")})
+	req, ok := buildElevateRequest(applyRequest{action: actionSetActive, activeSwitch: new("work")})
 	if !ok {
 		t.Fatal("build returned !ok")
 	}

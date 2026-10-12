@@ -17,7 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -597,13 +597,7 @@ func validVariant(provider, variant string) (ok bool) {
 		return false
 	}
 
-	for _, v := range pr.Variants {
-		if v.Name == variant {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(providers.VariantNames(pr), variant)
 }
 
 // selectionNeedsID reports whether sel's provider/variant requires an id.
@@ -662,23 +656,20 @@ func serviceBinaryMatches(binPath, exe string) (ok bool) {
 	}
 
 	if strings.HasPrefix(s, `"`) {
-		end := strings.Index(s[1:], `"`)
-		if end < 0 {
+		bin, after, found := strings.Cut(s[1:], `"`)
+		if !found {
 			return false
 		}
 
-		bin := s[1 : 1+end]
-		rest := strings.TrimSpace(s[end+2:])
-
-		return strings.EqualFold(bin, exe) && rest == "--service"
+		return strings.EqualFold(bin, exe) && strings.TrimSpace(after) == "--service"
 	}
 
-	fields := strings.Fields(s)
-	if len(fields) != 2 {
+	bin, args, found := strings.Cut(s, " ")
+	if !found {
 		return false
 	}
 
-	return strings.EqualFold(fields[0], exe) && fields[1] == "--service"
+	return strings.EqualFold(bin, exe) && strings.TrimSpace(args) == "--service"
 }
 
 // applyShouldReload decides whether a config-only apply should push the new
@@ -713,12 +704,10 @@ func uninstallPlan(running, enabled, dirty, active bool) (restore bool, reason s
 // running it is always restored, so the probe is skipped.  Pure so the
 // fail-open default is unit-testable.
 func uninstallStateFrom(
-	running bool, pid uint32,
+	running bool,
 	load func() (enabled, dirty, ok bool),
 	probeActive func() bool,
 ) (enabled, dirty, active bool) {
-	_ = pid
-
 	enabled, dirty, ok := load()
 	if !ok {
 		enabled, dirty = false, false
@@ -769,19 +758,4 @@ func restoreInterceptionWith(pid uint32, pipe, local func() error) (err error) {
 	}
 
 	return local()
-}
-
-// canonicalServiceExe returns the executable the service is registered as and
-// compared against: the non-GUI sibling dns-client.exe when exe is the GUI
-// executable and that sibling exists, else exe.  stat is injected so the
-// two-binary resolution is unit-testable.
-func canonicalServiceExe(exe string, stat func(string) bool) (canonical string) {
-	if strings.EqualFold(filepath.Base(exe), "dns-client-gui.exe") {
-		sibling := filepath.Join(filepath.Dir(exe), "dns-client.exe")
-		if stat(sibling) {
-			return sibling
-		}
-	}
-
-	return exe
 }

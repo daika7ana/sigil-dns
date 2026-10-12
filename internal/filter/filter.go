@@ -71,9 +71,6 @@ type Result struct {
 
 // RawList is one filter list already read into memory.
 type RawList struct {
-	// ID is a human-readable list identifier (used for diagnostics only).
-	ID string
-
 	// Text is the raw list contents.  It must not be modified while the Engine
 	// built from it is alive.
 	Text []byte
@@ -112,15 +109,6 @@ func New(lists []RawList) (e *Engine, err error) {
 		eng:     urlfilter.NewDNSEngine(storage),
 		storage: storage,
 	}, nil
-}
-
-// RulesCount returns the number of rules loaded into the engine.
-func (e *Engine) RulesCount() (n uint64) {
-	if e == nil || e.eng == nil {
-		return 0
-	}
-
-	return e.eng.RulesCount()
 }
 
 // Match runs the filter for host and qtype.  host may be given with or without a

@@ -5,17 +5,21 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-// startTestUpstream starts a plain UDP DNS server on an ephemeral port that
-// answers names under .invalid. with NXDOMAIN (so a forwarded synthetic probe
-// would fail) and every other name with an A record.
-func startTestUpstream(t *testing.T) (addr string) {
+// startUpstream starts a plain UDP DNS server on an ephemeral port that answers
+// names under .invalid. with NXDOMAIN (so a forwarded synthetic probe would
+// fail) and every other name with an A record equal to ip.  hits counts every
+// query that reached it.
+func startUpstream(t *testing.T, ip string) (addr string, hits *atomic.Int32) {
 	t.Helper()
+
+	hits = &atomic.Int32{}
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -25,6 +29,8 @@ func startTestUpstream(t *testing.T) (addr string) {
 	srv := &dns.Server{
 		PacketConn: pc,
 		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+			hits.Add(1)
+
 			resp := &dns.Msg{}
 			if strings.HasSuffix(strings.ToLower(req.Question[0].Name), ".invalid.") {
 				resp.SetRcode(req, dns.RcodeNameError)
@@ -41,7 +47,7 @@ func startTestUpstream(t *testing.T) (addr string) {
 					Class:  dns.ClassINET,
 					Ttl:    0,
 				},
-				A: net.IPv4(192, 0, 2, 1),
+				A: net.ParseIP(ip).To4(),
 			})
 			_ = w.WriteMsg(resp)
 		}),
@@ -49,7 +55,7 @@ func startTestUpstream(t *testing.T) (addr string) {
 	go func() { _ = srv.ActivateAndServe() }()
 	t.Cleanup(func() { _ = srv.Shutdown() })
 
-	return pc.LocalAddr().String()
+	return pc.LocalAddr().String(), hits
 }
 
 func query(t *testing.T, addr, name string, qtype uint16) (resp *dns.Msg) {
@@ -68,7 +74,7 @@ func query(t *testing.T, addr, name string, qtype uint16) (resp *dns.Msg) {
 }
 
 func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
-	upstreamAddr := startTestUpstream(t)
+	upstreamAddr, _ := startUpstream(t, "192.0.2.1")
 
 	r, err := New(Config{
 		Logger:    slog.Default(),

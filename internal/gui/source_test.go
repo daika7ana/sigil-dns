@@ -5,8 +5,10 @@ package gui
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/providers"
 )
 
@@ -17,8 +19,8 @@ import (
 func TestFileSummaryReadsSavedConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 
-	if got := fileSummary(path); got != nil {
-		t.Fatalf("missing file: summary = %+v, want nil", got)
+	if got := fileSummary(path); got == nil || !got.ConfigValid {
+		t.Fatalf("missing file: summary = %+v, want valid defaults", got)
 	}
 
 	cfg := config.Default()
@@ -48,5 +50,29 @@ func TestFileSummaryReadsSavedConfig(t *testing.T) {
 	}
 	if len(got.Profiles) != 1 || got.Profiles[0].Name != cfg.Profile {
 		t.Fatalf("profiles = %+v, want the saved profile list", got.Profiles)
+	}
+}
+
+// TestSamePollIgnoresTimestamp proves an otherwise-identical poll does not count
+// as a change (the updated stamp differs on every read), while a real status
+// change does — so the poller only relayouts when it must.
+func TestSamePollIgnoresTimestamp(t *testing.T) {
+	a := snapshot{updated: time.Unix(1000, 0), scmState: "running", installed: true}
+	b := snapshot{updated: time.Unix(2000, 0), scmState: "running", installed: true}
+	if !samePoll(a, b) {
+		t.Fatal("polls differing only in the updated stamp must compare equal")
+	}
+
+	c := b
+	c.scmState = "stopped"
+	if samePoll(a, c) {
+		t.Fatal("a changed SCM state must compare unequal")
+	}
+
+	// A nested list change must also be detected (reflect.DeepEqual, not ==).
+	d := snapshot{summary: &ipc.ConfigSummary{Profiles: []ipc.ProfileSummary{{Name: "a"}}}}
+	e := snapshot{summary: &ipc.ConfigSummary{Profiles: []ipc.ProfileSummary{{Name: "b"}}}}
+	if samePoll(d, e) {
+		t.Fatal("differing profile lists must compare unequal")
 	}
 }

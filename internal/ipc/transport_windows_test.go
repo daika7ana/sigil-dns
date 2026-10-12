@@ -27,9 +27,15 @@ func TestWindowsPipeRoundTrip(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, ln, NewServer(lc, nil), AdminAuthorizer) }()
 
-	c := NewClient(name)
-	st, err := c.Status(context.Background())
+	conn, err := Dial(ctx, name)
 	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var st *state.State
+	if err = Exchange(conn, MethodStatus, &st); err != nil {
 		t.Fatalf("Status over pipe: %v", err)
 	}
 	if st == nil || st.Mode != state.ModeOn {
@@ -64,15 +70,23 @@ func TestWindowsStatusPipeRoundTrip(t *testing.T) {
 	}()
 
 	c := NewClient(name)
-	dto, err := c.StatusSummary(context.Background())
+
+	conn, err := Dial(ctx, name)
 	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var dto StatusDTO
+	if err = Exchange(conn, MethodStatus, &dto); err != nil {
 		t.Fatalf("StatusSummary over status pipe: %v", err)
 	}
-	if dto == nil || !dto.Enabled {
+	if !dto.Enabled {
 		t.Fatalf("DTO = %+v", dto)
 	}
 
-	if err = c.Enable(context.Background()); err == nil {
+	if err = c.Enable(ctx); err == nil {
 		t.Fatal("Enable on status pipe should be forbidden")
 	}
 

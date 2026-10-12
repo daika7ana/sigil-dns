@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/state"
@@ -118,8 +119,15 @@ func TestAgentStartupErrorDegraded(t *testing.T) {
 	}
 	defer func() { _ = a.Stop(context.Background()) }()
 
-	c := ipc.NewClient(a.endpoint)
-	if _, err := c.Status(context.Background()); err != nil {
+	conn, err := ipc.Dial(context.Background(), a.endpoint)
+	if err != nil {
+		t.Fatalf("Dial control pipe: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var st *state.State
+	if err = ipc.Exchange(conn, ipc.MethodStatus, &st); err != nil {
 		t.Fatalf("IPC not available after degraded start: %v", err)
 	}
 }
@@ -151,8 +159,15 @@ func TestAgentServesIPC(t *testing.T) {
 
 	c := ipc.NewClient(a.endpoint)
 
-	st, err := c.Status(ctx)
+	conn, err := ipc.Dial(ctx, a.endpoint)
 	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var st *state.State
+	if err = ipc.Exchange(conn, ipc.MethodStatus, &st); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if st == nil || st.Mode != state.ModeOn {
@@ -191,15 +206,24 @@ func TestAgentStatusPipeReadOnly(t *testing.T) {
 	defer func() { _ = a.Stop(context.Background()) }()
 
 	c := ipc.NewClient(a.statusEndpoint)
-	dto, err := c.StatusSummary(context.Background())
+
+	ctx := context.Background()
+	conn, err := ipc.Dial(ctx, a.statusEndpoint)
 	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	var dto ipc.StatusDTO
+	if err = ipc.Exchange(conn, ipc.MethodStatus, &dto); err != nil {
 		t.Fatalf("StatusSummary: %v", err)
 	}
-	if dto == nil || !dto.Enabled || dto.Mode != string(state.ModeOn) || dto.Mechanism != string(state.MechanismNRPT) {
+	if !dto.Enabled || dto.Mode != string(state.ModeOn) || dto.Mechanism != string(state.MechanismNRPT) {
 		t.Fatalf("DTO = %+v", dto)
 	}
 
-	if err = c.Enable(context.Background()); err == nil {
+	if err = c.Enable(ctx); err == nil {
 		t.Fatal("Enable on status pipe should be forbidden")
 	}
 	if lc.enableCalls != 0 {

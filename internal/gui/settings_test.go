@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -185,7 +186,7 @@ func TestServiceSectionEnablement(t *testing.T) {
 		wantDisabled bool // for whichever button is shown
 	}{
 		{"absent-trusted", snapshot{trust: trustVerified, updated: time.Now()}, true, false, false},
-		{"present-trusted", runningService(), false, true, false},
+		{"present-trusted", sampleSnapshot(), false, true, false},
 		{"absent-unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()}, true, false, true},
 	}
 
@@ -374,14 +375,7 @@ func newSettingsWindow(t *testing.T, app *App) *gogui.Window {
 func assertDisabled(t *testing.T, root *gogui.Layout, w *gogui.Window, id string, want bool) {
 	t.Helper()
 
-	ids := w.ResolveID(id)
-	if len(ids) == 0 {
-		t.Fatalf("widget %q is not rendered", id)
-	}
-	ly, ok := root.FindByID(ids[0])
-	if !ok || ly.Shape == nil {
-		t.Fatalf("widget %q is not in the layout", id)
-	}
+	ly := mustFindLayout(t, w, root, id)
 	if ly.Shape.Disabled != want {
 		t.Errorf("%q Disabled = %v, want %v", id, ly.Shape.Disabled, want)
 	}
@@ -414,15 +408,6 @@ func profilesSnapshot() snapshot {
 			CacheSizeBytes: 8 << 20,
 		},
 	}
-
-	return s
-}
-
-// runningService is a healthy snapshot with the service installed and running.
-func runningService() snapshot {
-	s := sampleSnapshot()
-	s.installed = true
-	s.scmState = "running"
 
 	return s
 }
@@ -724,5 +709,25 @@ func TestResolverIDFieldEnablement(t *testing.T) {
 				t.Errorf("id hint present = %v, want %v", got, tt.wantHint)
 			}
 		})
+	}
+}
+
+// TestSettingsPositionRoundTrip proves the remembered window position survives
+// a save/load through gui.json, including a negative X (a monitor left of the
+// primary).
+func TestSettingsPositionRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gui.json")
+	want := settings{Width: 1280, Height: 720, Theme: themeDark, X: -1200, Y: 40}
+
+	if err := saveSettings(path, want); err != nil {
+		t.Fatalf("saveSettings: %v", err)
+	}
+
+	got := loadSettings(path)
+	if got.X != want.X || got.Y != want.Y {
+		t.Fatalf("position = (%d,%d), want (%d,%d)", got.X, got.Y, want.X, want.Y)
+	}
+	if got.Width != want.Width || got.Height != want.Height || got.Theme != want.Theme {
+		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
 }

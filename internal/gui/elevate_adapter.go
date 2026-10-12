@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"strings"
 
@@ -51,7 +52,7 @@ func buildElevateRequest(req applyRequest) (er elevate.Request, ok bool) {
 	er = elevate.Request{
 		Action:           action,
 		ExpectedRevision: req.expectedRevision,
-		UUID:             newUUID(),
+		UUID:             rand.Text(),
 	}
 
 	switch req.action {
@@ -60,7 +61,7 @@ func buildElevateRequest(req applyRequest) (er elevate.Request, ok bool) {
 
 	case actionAddProfile:
 		if req.op != nil {
-			er.Patch.AddProfile = strptr(req.op.name)
+			er.Patch.AddProfile = new(req.op.name)
 		}
 
 	case actionRenameProfile:
@@ -76,7 +77,7 @@ func buildElevateRequest(req applyRequest) (er elevate.Request, ok bool) {
 
 	case actionDeleteProfile:
 		if req.op != nil {
-			er.Patch.DeleteProfile = strptr(req.op.name)
+			er.Patch.DeleteProfile = new(req.op.name)
 		}
 
 	case actionSetActive:
@@ -84,7 +85,7 @@ func buildElevateRequest(req applyRequest) (er elevate.Request, ok bool) {
 	}
 
 	if req.activeSwitch != nil {
-		er.Patch.ActiveProfile = strptr(*req.activeSwitch)
+		er.Patch.ActiveProfile = new(*req.activeSwitch)
 	}
 
 	return er, true
@@ -103,10 +104,6 @@ func elevateActionFor(a guiAction) (elevate.Action, bool) {
 		return elevate.ActionServiceInstall, true
 	case actionUninstall:
 		return elevate.ActionServiceUninstall, true
-	case actionStart:
-		return elevate.ActionServiceStart, true
-	case actionStop:
-		return elevate.ActionServiceStop, true
 	case actionSaveProfile, actionAddProfile, actionRenameProfile, actionDeleteProfile, actionSetActive:
 		return elevate.ActionApply, true
 	default:
@@ -141,9 +138,9 @@ func draftName(d *profileDraft) (name string) {
 func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	provider := strings.TrimSpace(d.provider)
 	pp := elevate.ProfilePatch{
-		Provider: strptr(provider),
-		Variant:  strptr(strings.TrimSpace(d.variant)),
-		Protocol: strptr(strings.TrimSpace(d.protocol)),
+		Provider: new(provider),
+		Variant:  new(strings.TrimSpace(d.variant)),
+		Protocol: new(strings.TrimSpace(d.protocol)),
 	}
 
 	// The id is sent only for a provider/variant that uses one, so a value
@@ -151,7 +148,7 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	// field still means "keep" (SPEC §15.2).
 	if needsResolverID(provider, d.variant) {
 		if id := strings.TrimSpace(d.id); id != "" {
-			pp.ID = strptr(id)
+			pp.ID = new(id)
 		}
 	}
 
@@ -159,7 +156,7 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	// it in (blank = keep the existing upstream).
 	if provider == providers.Custom {
 		if u := strings.TrimSpace(d.url); u != "" {
-			pp.URL = strptr(u)
+			pp.URL = new(u)
 		}
 	}
 
@@ -167,14 +164,14 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 		pp.Bootstrap = &bs
 	}
 
-	pp.Filtering = &elevate.FilteringPatch{Enabled: boolptr(d.filtering)}
+	pp.Filtering = &elevate.FilteringPatch{Enabled: new(d.filtering)}
 	if d.filtering {
 		if br := strings.TrimSpace(d.blockResp); br != "" {
-			pp.Filtering.BlockResponse = strptr(br)
+			pp.Filtering.BlockResponse = new(br)
 		}
 	}
 
-	pp.Cache = &elevate.CachePatch{Enabled: boolptr(d.cache)}
+	pp.Cache = &elevate.CachePatch{Enabled: new(d.cache)}
 	if mb := parseMiB(d.cacheSizeMB); mb > 0 {
 		size := mb * (1 << 20)
 		pp.Cache.SizeBytes = &size
@@ -182,9 +179,3 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 
 	return pp
 }
-
-// strptr returns a pointer to a copy of s.
-func strptr(s string) *string { return &s }
-
-// boolptr returns a pointer to a copy of b.
-func boolptr(b bool) *bool { return &b }

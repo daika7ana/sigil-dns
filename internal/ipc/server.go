@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/state"
 	"github.com/daika7ana/dns-client/internal/version"
 )
@@ -251,26 +250,7 @@ func (s *Server) handleStatus() (resp Response) {
 // summary.  A missing file falls back to defaults (valid); a broken file yields
 // a secret-free error summary.
 func (s *Server) configSummary() (sum ConfigSummary) {
-	path := s.configPath
-
-	cfg, err := config.Load(path)
-	if err != nil && !errors.Is(err, config.ErrNoConfig) {
-		return ConfigSummary{
-			ConfigValid: false,
-			ConfigError: SanitizedConfigError(err),
-			Revision:    Revision(path),
-		}
-	}
-
-	if cfg == nil {
-		cfg = config.Default()
-	}
-
-	sum = Summarize(cfg)
-	sum.ConfigValid = true
-	sum.Revision = Revision(path)
-
-	return sum
+	return LoadSummary(s.configPath)
 }
 
 // marshalOK marshals v into a success response.

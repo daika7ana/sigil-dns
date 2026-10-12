@@ -24,6 +24,7 @@ import (
 	"github.com/daika7ana/dns-client/internal/lifecycle"
 	"github.com/daika7ana/dns-client/internal/service"
 	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/dns-client/internal/winacl"
 )
 
 // Bounded waits (SPEC §15.2): the helper must never hang the UI or the SCM.
@@ -331,54 +332,11 @@ func applyConfigChanged(ctx context.Context, changed bool) (msg string, err erro
 // (the non-GUI sibling when running as the GUI exe), not the current process
 // image.  It does not load the config or touch interception.
 func installService() (res Result) {
-	exe, err := serviceExecutable()
-	if err != nil {
-		return Result{Err: "could not resolve the service executable"}
-	}
-
-	m, err := mgr.Connect()
-	if err != nil {
-		return Result{Err: "could not contact the service manager"}
-	}
-	defer func() { _ = m.Disconnect() }()
-
-	s, err := m.CreateService(service.Name, exe, mgr.Config{
-		DisplayName:      service.DisplayName,
-		Description:      service.Description,
-		StartType:        mgr.StartAutomatic,
-		ServiceStartName: service.Account,
-	}, "--service")
-	if err != nil {
+	if err := service.Install(); err != nil {
 		return Result{Err: "service could not be installed"}
 	}
-	defer func() { _ = s.Close() }()
-
-	// Restart on failure (SPEC §9: never leave a loopbacked system with a dead
-	// service).
-	_ = s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-	}, 86400)
-	_ = s.SetRecoveryActionsOnNonCrashFailures(true)
 
 	return Result{OK: true, Message: "service installed"}
-}
-
-// serviceExecutable returns the canonical service binary to register and compare
-// against, resolving the two-binary layout (dns-client.exe + dns-client-gui.exe)
-// so the helper launched from the GUI still matches the registered non-GUI exe.
-func serviceExecutable() (exe string, err error) {
-	cur, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-
-	return canonicalServiceExe(cur, func(p string) bool {
-		_, statErr := os.Stat(p)
-
-		return statErr == nil
-	}), nil
 }
 
 // stopService stops the service and waits for it to reach the stopped state.
@@ -403,7 +361,7 @@ func startService() (res Result) {
 // startRegisteredService performs the anti-hijack registration check and starts
 // the service.  All errors are static and path-free.
 func startRegisteredService() (err error) {
-	exe, err := serviceExecutable()
+	exe, err := service.Executable()
 	if err != nil {
 		return errors.New("could not resolve the service executable")
 	}
@@ -553,7 +511,7 @@ func verifyInterceptionDown(ctx context.Context) (err error) {
 // registration.
 func uninstallService(ctx context.Context) (res Result) {
 	running, pid := serviceRunning()
-	enabled, dirty, active := uninstallStateFrom(running, pid, loadPersistedState, func() bool {
+	enabled, dirty, active := uninstallStateFrom(running, loadPersistedState, func() bool {
 		return probeNRPTActive(ctx)
 	})
 	restore, reason := uninstallPlan(running, enabled, dirty, active)
@@ -577,7 +535,7 @@ func uninstallService(ctx context.Context) (res Result) {
 			return verifyInterceptionDown(ctx)
 		},
 		func() error {
-			if dErr := deleteService(); dErr != nil {
+			if dErr := service.Delete(); dErr != nil {
 				return errors.New("could not remove the service registration")
 			}
 
@@ -589,24 +547,6 @@ func uninstallService(ctx context.Context) (res Result) {
 	}
 
 	return Result{OK: true, Message: "service uninstalled (" + reason + ")"}
-}
-
-// deleteService opens the service and deletes its registration, without the
-// loose service.Uninstall stop-ignoring wrapper.
-func deleteService() (err error) {
-	m, err := mgr.Connect()
-	if err != nil {
-		return fmt.Errorf("connecting to SCM: %w", err)
-	}
-	defer func() { _ = m.Disconnect() }()
-
-	s, err := m.OpenService(service.Name)
-	if err != nil {
-		return fmt.Errorf("opening service: %w", err)
-	}
-	defer func() { _ = s.Close() }()
-
-	return s.Delete()
 }
 
 // driveControl verifies the control-pipe server identity, then issues the IPC
@@ -834,23 +774,7 @@ func secureUserOnly(path string) (err error) {
 		return fmt.Errorf("reading user sid: %w", err)
 	}
 
-	sd, err := windows.SecurityDescriptorFromString(stagingSDDL(user.User.Sid.String()))
-	if err != nil {
-		return fmt.Errorf("parsing staging sddl: %w", err)
-	}
-
-	dacl, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("reading staging dacl: %w", err)
-	}
-
-	err = windows.SetNamedSecurityInfo(
-		path,
-		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, dacl, nil,
-	)
-	if err != nil {
+	if err = winacl.SetDACL(path, stagingSDDL(user.User.Sid.String())); err != nil {
 		return fmt.Errorf("setting acl on %s: %w", path, err)
 	}
 

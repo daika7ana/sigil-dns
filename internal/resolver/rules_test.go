@@ -3,7 +3,6 @@ package resolver
 import (
 	"context"
 	"log/slog"
-	"net"
 	"testing"
 
 	"github.com/AdguardTeam/dnsproxy/proxy"
@@ -107,40 +106,6 @@ func TestParseRulesShape(t *testing.T) {
 	}
 }
 
-// startFakeUpstream starts a UDP DNS server that answers every query with an A
-// record equal to ip (the question is echoed, so this also identifies which
-// upstream answered a DS query).
-func startFakeUpstream(t *testing.T, ip string) (addr string) {
-	t.Helper()
-
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen fake upstream: %v", err)
-	}
-
-	srv := &dns.Server{
-		PacketConn: pc,
-		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
-			resp := &dns.Msg{}
-			resp.SetReply(req)
-			resp.Answer = append(resp.Answer, &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   req.Question[0].Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    0,
-				},
-				A: net.ParseIP(ip).To4(),
-			})
-			_ = w.WriteMsg(resp)
-		}),
-	}
-	go func() { _ = srv.ActivateAndServe() }()
-	t.Cleanup(func() { _ = srv.Shutdown() })
-
-	return pc.LocalAddr().String()
-}
-
 // firstA returns the address of the first A record in resp.
 func firstA(t *testing.T, resp *dns.Msg) (ip string) {
 	t.Helper()
@@ -162,8 +127,8 @@ func TestRulesRoutingEndToEnd(t *testing.T) {
 		ipRule    = "192.0.2.2"
 	)
 
-	addrDefault := startFakeUpstream(t, ipDefault)
-	addrRule := startFakeUpstream(t, ipRule)
+	addrDefault, _ := startUpstream(t, ipDefault)
+	addrRule, _ := startUpstream(t, ipRule)
 
 	r, err := New(Config{
 		Logger:    slog.Default(),

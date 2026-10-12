@@ -16,8 +16,7 @@ func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
 	conn, err := ipc.Dial(ctx, s.endpoint)
 	if err != nil {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			scmState: "unsupported", err: "status source not reachable",
-			summary: offlineSummary()}, nil
+			scmState: "unsupported", summary: offlineSummary()}, nil
 	}
 	defer func() { _ = conn.Close() }()
 

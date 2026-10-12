@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -602,7 +601,7 @@ func TestUninstallStateFrom(t *testing.T) {
 	}
 
 	t.Run("missing state plus active probe forces restore", func(t *testing.T) {
-		enabled, dirty, active := uninstallStateFrom(false, 0, load(false, false, false), func() bool { return true })
+		enabled, dirty, active := uninstallStateFrom(false, load(false, false, false), func() bool { return true })
 		if enabled || dirty || !active {
 			t.Fatalf("state = %v/%v/%v, want false/false/true", enabled, dirty, active)
 		}
@@ -612,7 +611,7 @@ func TestUninstallStateFrom(t *testing.T) {
 	})
 
 	t.Run("missing state and inactive probe is clean", func(t *testing.T) {
-		enabled, dirty, active := uninstallStateFrom(false, 0, load(false, false, false), func() bool { return false })
+		enabled, dirty, active := uninstallStateFrom(false, load(false, false, false), func() bool { return false })
 		if restore, reason := uninstallPlan(false, enabled, dirty, active); restore || reason == "" {
 			t.Fatalf("restore=%v reason=%q, want false/non-empty", restore, reason)
 		}
@@ -620,14 +619,14 @@ func TestUninstallStateFrom(t *testing.T) {
 
 	t.Run("running service skips the probe", func(t *testing.T) {
 		probed := false
-		uninstallStateFrom(true, 123, load(false, false, false), func() bool { probed = true; return true })
+		uninstallStateFrom(true, load(false, false, false), func() bool { probed = true; return true })
 		if probed {
 			t.Fatal("probe ran for a running service")
 		}
 	})
 
 	t.Run("recorded enabled restores even when probe is quiet", func(t *testing.T) {
-		enabled, dirty, active := uninstallStateFrom(false, 0, load(true, false, true), func() bool { return false })
+		enabled, dirty, active := uninstallStateFrom(false, load(true, false, true), func() bool { return false })
 		if restore, _ := uninstallPlan(false, enabled, dirty, active); !restore {
 			t.Fatal("enabled state must restore")
 		}
@@ -743,33 +742,6 @@ func TestRestoreInterceptionWith(t *testing.T) {
 			t.Fatalf("err = %v, want ErrLocked", err)
 		}
 	})
-}
-
-// TestCanonicalServiceExe pins the two-binary (dns-client.exe +
-// dns-client-gui.exe) resolution used for install and the anti-hijack check.
-func TestCanonicalServiceExe(t *testing.T) {
-	dir := filepath.Join("C:", "app")
-	gui := filepath.Join(dir, "dns-client-gui.exe")
-	plain := filepath.Join(dir, "dns-client.exe")
-
-	exists := func(string) bool { return true }
-	missing := func(string) bool { return false }
-
-	if got := canonicalServiceExe(gui, exists); got != plain {
-		t.Fatalf("gui with sibling = %q, want %q", got, plain)
-	}
-	if got := canonicalServiceExe(gui, missing); got != gui {
-		t.Fatalf("gui without sibling = %q, want %q", got, gui)
-	}
-	if got := canonicalServiceExe(plain, exists); got != plain {
-		t.Fatalf("plain = %q, want %q", got, plain)
-	}
-
-	// The registered non-GUI path must match after canonicalization.
-	canonical := canonicalServiceExe(gui, exists)
-	if !serviceBinaryMatches(`"`+plain+`" --service`, canonical) {
-		t.Fatal("sibling canonical exe did not match the registered dns-client.exe")
-	}
 }
 
 // TestApplyRequestIDSafety covers the id/provider/metadata hardening.
