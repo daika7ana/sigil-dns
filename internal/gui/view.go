@@ -40,10 +40,36 @@ type statusVisual struct {
 	headline      string
 	detail        string
 	headlineStyle gogui.TextStyle
-	bg            gogui.Color // banner wash
-	accent        gogui.Color // the dot
+	bg            gogui.Color // banner fill
+	accent        gogui.Color // the status dot
 	kind          statusKind
 }
+
+// Layout constants for the shell.  The content column is capped so cards and
+// fields never stretch into long empty bars on a wide window; the nav rail is
+// an icon+label pane wide enough for the longest label.
+const (
+	// navRailWidth is the fixed width of one navigation item.  The rail adds
+	// navRailPad on each side, so its total width is navRailWidth+2*navRailPad.
+	navRailWidth float32 = 200
+	// navRailPad is the inset of the rail's items from its own edges.
+	navRailPad float32 = 8
+	// contentMaxWidth caps the reading width of every page.
+	contentMaxWidth float32 = 960
+	// contentPad is the inset around the reading column and inside a page
+	// column, trimmed a few px tighter than the PaddingMedium (14) rung on both
+	// axes.
+	contentPad float32 = 10
+	// brandSize is the app mark's square edge.
+	brandSize float32 = 34
+	// navItemMinHeight is the navigation item's height floor, so the larger
+	// glyph and its label sit comfortably and the hit target stays a good size.
+	navItemMinHeight float32 = 40
+	// headerMinHeight floors the header band to an even integer so its bottom
+	// hairline lands on a whole pixel and reads the same weight as the nav-pane
+	// divider (a fractional band would antialias it into two faint rows).
+	headerMinHeight float32 = 64
+)
 
 // view builds the window for the current state.  It runs on the main thread
 // during the frame pass.
@@ -54,13 +80,17 @@ func view(w *gogui.Window) gogui.View {
 
 	content := []gogui.View{
 		header(t, app),
+		divider(t),
 		gogui.Row(gogui.ContainerCfg{
-			ID:      "gui:body",
-			Sizing:  gogui.FillFill,
-			Spacing: gogui.SpacingMedium,
+			ID:         "gui:body",
+			Sizing:     gogui.FillFill,
+			Padding:    gogui.PaddingNone,
+			Spacing:    gogui.NoSpacing,
+			SizeBorder: gogui.NoBorder,
 			Content: []gogui.View{
 				navRail(t, app),
-				pageContent(t, app, windowWidth),
+				verticalDivider(t),
+				contentArea(t, app, windowWidth),
 			},
 		}),
 	}
@@ -71,13 +101,55 @@ func view(w *gogui.Window) gogui.View {
 	}
 
 	return gogui.Column(gogui.ContainerCfg{
-		Sizing: gogui.FillFill,
-		Color:  t.ColorBackground,
-		// No bottom padding: the page ends flush with the content's last block,
-		// so there is no reserved blank band under the page.
-		Padding: gogui.NewPadding(t.PaddingMedium.Top, t.PaddingMedium.Right, 0, t.PaddingMedium.Left),
-		Spacing: gogui.SpacingMedium,
-		Content: content,
+		Sizing:     gogui.FillFill,
+		Color:      t.ColorBackground,
+		Padding:    gogui.PaddingNone,
+		Spacing:    gogui.NoSpacing,
+		SizeBorder: gogui.NoBorder,
+		Content:    content,
+	})
+}
+
+// divider is the hairline under the header band.
+func divider(t gogui.Theme) gogui.View {
+	return gogui.Separator(gogui.SeparatorCfg{
+		ID:    "gui:header:divider",
+		Color: t.ColorBorder,
+	})
+}
+
+// verticalDivider is the hairline between the nav rail and the page.
+func verticalDivider(t gogui.Theme) gogui.View {
+	return gogui.Separator(gogui.SeparatorCfg{
+		ID:       "gui:nav:divider",
+		Vertical: true,
+		Color:    t.ColorBorder,
+	})
+}
+
+// scrollbarGutter is the extra right inset on a page column.  The scrollbar is
+// drawn at the column's own right edge, so this is the gap that lets the bar
+// float in a gutter instead of abutting the cards.
+const scrollbarGutter float32 = 6
+
+// pagePadding is the inset inside a scrollable page column: contentPad on
+// three sides, plus scrollbarGutter on the right.
+func pagePadding() gogui.Padding {
+	return gogui.NewPadding(contentPad, contentPad+scrollbarGutter, contentPad, contentPad)
+}
+
+// contentArea centers a capped reading column in the space beside the rail.
+// HAlignCenter places the capped child box; MaxWidth on the child is what caps
+// it, so the column stays readable at any window width.
+func contentArea(t gogui.Theme, app *App, windowWidth int) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         "gui:contentwrap",
+		Sizing:     gogui.FillFill,
+		HAlign:     gogui.HAlignCenter,
+		Padding:    gogui.NewPadding(contentPad, contentPad, contentPad, contentPad),
+		Spacing:    gogui.NoSpacing,
+		SizeBorder: gogui.NoBorder,
+		Content:    []gogui.View{pageContent(t, app, windowWidth)},
 	})
 }
 
@@ -95,48 +167,104 @@ func pageContent(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	}
 }
 
-// navRail is the left navigation: one button per page, the current one filled.
-// It has no padding of its own so its width is exactly the button width.
+// navRail is the left NavigationView pane: one icon+label item per page.  The
+// selected item takes an accent wash and a leading accent bar; the others stay
+// ghost so they recede.  Like the header it takes the background tone, with the
+// hairline divider doing the separation.
 func navRail(t gogui.Theme, app *App) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID:         "gui:nav",
 		Sizing:     gogui.FixedFit,
-		Padding:    gogui.PaddingNone,
+		Color:      t.ColorBackground,
+		Padding:    gogui.NewPadding(t.PaddingSmall.Top, navRailPad, t.PaddingSmall.Bottom, navRailPad),
+		Spacing:    gogui.SpacingTight,
 		SizeBorder: gogui.NoBorder,
-		Spacing:    gogui.SpacingSmall,
 		Content: []gogui.View{
-			navButton(t, pageStatus, "Status", app.page),
-			navButton(t, pageSettings, "Settings", app.page),
-			navButton(t, pageRules, "Rules", app.page),
-			navButton(t, pageAbout, "About", app.page),
+			navItem(t, app, pageStatus, "Status", gogui.IconActivity),
+			navItem(t, app, pageSettings, "Settings", gogui.IconGear),
+			navItem(t, app, pageRules, "Rules", gogui.IconFilter),
+			navItem(t, app, pageAbout, "About", gogui.IconInfo),
 		},
 	})
 }
 
-// navButton builds one navigation button.  The selected page keeps a filled
-// (secondary) face so the current screen reads at a glance; the others stay
-// ghost so they recede.  The rail hugs this fixed width, so there is no dead
-// space beside the buttons.
-func navButton(t gogui.Theme, p pageKind, label string, current pageKind) gogui.View {
-	variant := gogui.ButtonGhost
-	if p == current {
-		variant = gogui.ButtonSecondary
+// navItem builds one navigation entry.  The item fills the rail's item width
+// and carries a leading accent bar (transparent when unselected) so the labels
+// sit on one column whatever the selection.
+func navItem(t gogui.Theme, app *App, p pageKind, label, icon string) gogui.View {
+	selected := p == app.page
+
+	bar := gogui.ColorTransparent
+	if selected {
+		bar = t.ColorAccent
 	}
 
-	return gogui.Button(gogui.ButtonCfg{
-		ID:      "gui:nav:" + pageName(p),
-		Variant: variant,
-		Label:   label,
-		Width:   navRailWidth,
-		Sizing:  gogui.FixedFit,
-		OnClick: func(ctx gogui.EventCtx) { setPage(ctx, p) },
+	row := gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFill,
+		Padding:    gogui.PaddingNone,
+		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
+		VAlign:     gogui.VAlignMiddle,
+		Content: []gogui.View{
+			// The selection indicator: a short accent bar at the item's left.
+			gogui.Column(gogui.ContainerCfg{
+				Width:      3,
+				Height:     16,
+				Sizing:     gogui.FixedFixed,
+				Color:      bar,
+				Radius:     gogui.RadiusPx(2),
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+			}),
+			navIcon(t, icon, selected),
+			gogui.Text(gogui.TextCfg{
+				Text:      label,
+				TextStyle: t.TextStyleBody,
+				Sizing:    gogui.FillFit,
+			}),
+		},
 	})
+
+	cfg := gogui.ButtonCfg{
+		ID:        "gui:nav:" + pageName(p),
+		Sizing:    gogui.FixedFit,
+		Width:     navRailWidth,
+		MinHeight: navItemMinHeight,
+		Content:   []gogui.View{row},
+		OnClick:   func(ctx gogui.EventCtx) { setPage(ctx, p) },
+	}
+	if selected {
+		cfg.Variant = gogui.ButtonSecondary
+		cfg.Colors = gogui.ColorSet{
+			Base:   t.ColorAccentSubtle,
+			Hover:  t.ColorAccentSubtle,
+			Click:  t.ColorAccentSubtle,
+			Focus:  t.ColorAccentSubtle,
+			Border: gogui.ColorTransparent,
+		}
+	} else {
+		cfg.Variant = gogui.ButtonGhost
+	}
+
+	return gogui.Button(cfg)
 }
 
-// navRailWidth is the fixed width of the navigation buttons and the rail.  It
-// is wide enough for the longest label ("Settings") plus the theme's button
-// inset, so the three labels sit on one aligned column with no clipping.
-const navRailWidth = 96
+// navIcon is the item's leading glyph, in the accent when selected.  It sits on
+// the IconLarge rung (17px at the tuned body 14) so it reads as a proper
+// NavigationView icon beside the 14px label, not a small dot.
+func navIcon(t gogui.Theme, icon string, selected bool) gogui.View {
+	ts := t.TextStyleIconLarge
+	ts.Color = t.TextStyleSecondary.Color
+	if selected {
+		ts.Color = t.ColorAccent
+	}
+
+	return gogui.Text(gogui.TextCfg{
+		Text:      icon,
+		TextStyle: ts,
+		Sizing:    gogui.FitFit,
+	})
+}
 
 // pageName is the stable suffix for a page's widget ID.
 func pageName(p pageKind) (name string) {
@@ -186,7 +314,10 @@ func aboutPage(t gogui.Theme) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID:         "gui:about",
 		Sizing:     gogui.FillFill,
+		MaxWidth:   contentMaxWidth,
+		Padding:    pagePadding(),
 		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
 		Scrollable: true,
 		Content: []gogui.View{
 			card(t, "gui:card:about", "About", rows),
@@ -203,12 +334,7 @@ func kvLink(t gogui.Theme, id, label, text, url string) gogui.View {
 		Padding:    gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
-			gogui.Text(gogui.TextCfg{
-				Text:      label,
-				TextStyle: t.TextStyleLabel,
-				MinWidth:  132,
-				Sizing:    gogui.FixedFit,
-			}),
+			labelText(t, label),
 			linkButton(t, id, text, url),
 		},
 	})
@@ -248,16 +374,19 @@ func statusPage(t gogui.Theme, app *App) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID:         "gui:content",
 		Sizing:     gogui.FillFill,
+		MaxWidth:   contentMaxWidth,
+		Padding:    pagePadding(),
 		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
 		Scrollable: true,
 		Content:    content,
 	})
 }
 
-// header is a single compact row: the app title, a status caption, and the
-// window controls.  The single Protection button lives here (labelled Enable
-// when interception is off, Disable when on); Restore appears only for the
-// crash-leftover state.
+// header is the app's identity band: the app mark and title on the left, the
+// window actions (theme, Restore, Protection) on the right.  It takes the
+// background tone — chrome is background, cards are panel — so neutral buttons
+// and the theme control read against it.
 func header(t gogui.Theme, app *App) gogui.View {
 	ps := powerStateFor(t, app)
 
@@ -276,12 +405,6 @@ func header(t gogui.Theme, app *App) gogui.View {
 	}
 
 	controls := []gogui.View{
-		gogui.Text(gogui.TextCfg{
-			Text:      caption,
-			TextStyle: t.TextStyleCaption,
-			Sizing:    gogui.FillFit,
-			Mode:      gogui.TextModeWrap,
-		}),
 		gogui.SegmentedControl(gogui.SegmentedControlCfg{
 			ID:      "gui:theme",
 			Value:   app.themePref,
@@ -302,32 +425,101 @@ func header(t gogui.Theme, app *App) gogui.View {
 		}))
 	}
 
-	// The power control is the right-most action: green to enable, red to
-	// disable, so the button reads the state, not just its label.
+	// The power control is the right-most action.  ONLY the enabled, actionable
+	// Enable wears the success green; every other state — the protected Disable,
+	// and an Enable that cannot run yet (not installed, unverified, busy) — is a
+	// calm neutral secondary, so a disabled control reads inert instead of a
+	// washed success block.  A healthy "protected" session is never danger-red.
 	powerCfg := gogui.ButtonCfg{
 		ID:       "gui:power",
-		Variant:  gogui.ButtonPrimary,
-		Colors:   successButtonColors(t),
+		Variant:  gogui.ButtonSecondary,
 		Label:    actionLabel(power),
 		Disabled: !ps.canToggle,
 		OnClick:  togglePower,
 	}
-	if ps.on {
-		powerCfg.Variant = gogui.ButtonDanger
-		powerCfg.Colors = gogui.ColorSet{} // the danger variant's own error fill
+	switch {
+	case !ps.canToggle:
+		// Inert: a neutral control fill, never a washed success block.
+		powerCfg.Colors = disabledNeutralColors(t)
+	case !ps.on:
+		powerCfg.Variant = gogui.ButtonPrimary
+		powerCfg.Colors = successButtonColors(t)
 	}
 
 	controls = append(controls, gogui.Button(powerCfg))
 
 	return gogui.Row(gogui.ContainerCfg{
-		ID:      "gui:header",
-		Sizing:  gogui.FillFit,
-		Spacing: gogui.SpacingMedium,
-		VAlign:  gogui.VAlignMiddle,
-		Content: append([]gogui.View{gogui.Text(gogui.TextCfg{
-			Text:      "dns-client",
-			TextStyle: t.TextStyleTitle,
-		})}, controls...),
+		ID:         "gui:header",
+		Sizing:     gogui.FillFit,
+		Color:      t.ColorBackground,
+		MinHeight:  headerMinHeight,
+		Padding:    gogui.NewPadding(t.PaddingMedium.Top, t.PaddingLarge.Left, t.PaddingMedium.Bottom, t.PaddingLarge.Right),
+		Spacing:    gogui.SpacingMedium,
+		VAlign:     gogui.VAlignMiddle,
+		SizeBorder: gogui.NoBorder,
+		Content:    append([]gogui.View{brand(t, caption)}, controls...),
+	})
+}
+
+// brand is the app identity block: a mark, the title, and the status caption.
+// It fills the header's free space so the actions land on the right.
+func brand(t gogui.Theme, caption string) gogui.View {
+	return gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		Padding:    gogui.PaddingNone,
+		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
+		VAlign:     gogui.VAlignMiddle,
+		Content: []gogui.View{
+			brandMark(t),
+			gogui.Column(gogui.ContainerCfg{
+				Sizing:     gogui.FitFit,
+				Padding:    gogui.PaddingNone,
+				Spacing:    gogui.SpacingTight,
+				SizeBorder: gogui.NoBorder,
+				Content: []gogui.View{
+					gogui.Text(gogui.TextCfg{
+						Text:      "dns-client",
+						TextStyle: t.TextStyleTitle,
+						Sizing:    gogui.FitFit,
+					}),
+					gogui.Text(gogui.TextCfg{
+						Text:      caption,
+						TextStyle: t.TextStyleCaption,
+						Sizing:    gogui.FitFit,
+						Mode:      gogui.TextModeWrap,
+					}),
+				},
+			}),
+		},
+	})
+}
+
+// brandMark is the app's rounded accent square with the shield glyph.  The
+// glyph sits on the IconMedium rung so it keeps proportion with the enlarged
+// title beside it.
+func brandMark(t gogui.Theme) gogui.View {
+	ts := t.TextStyleIconMedium
+	ts.Color = t.ColorTextOnAccent
+
+	return gogui.Row(gogui.ContainerCfg{
+		ID:         "gui:brand",
+		Width:      brandSize,
+		Height:     brandSize,
+		Sizing:     gogui.FixedFixed,
+		Color:      t.ColorAccent,
+		Radius:     gogui.RadiusMedium,
+		HAlign:     gogui.HAlignCenter,
+		VAlign:     gogui.VAlignMiddle,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				Text:      gogui.IconShield,
+				TextStyle: ts,
+				Sizing:    gogui.FitFit,
+			}),
+		},
 	})
 }
 
@@ -346,6 +538,16 @@ func successButtonColors(t gogui.Theme) gogui.ColorSet {
 	return gogui.ColorSet{Base: g, Hover: g, Click: g, Focus: g, Border: g}
 }
 
+// disabledNeutralColors is an inert neutral control look: a theme "active"
+// surface fill with a neutral border, so a disabled button reads as a clearly
+// shaped but dormant control.  Disabled is pinned so the renderer paints the
+// muted fill as given rather than a dimmed base.
+func disabledNeutralColors(t gogui.Theme) gogui.ColorSet {
+	a := t.Cfg.ColorActive
+
+	return gogui.ColorSet{Base: a, Hover: a, Click: a, Focus: a, Border: t.ColorBorder, Disabled: a}
+}
+
 // updatedText is the last-poll timestamp, folded into the header so it never
 // occupies a footer band.
 func updatedText(app *App) (s string) {
@@ -358,7 +560,7 @@ func updatedText(app *App) (s string) {
 
 // toast width and page-edge margin for the floating toast.
 const (
-	toastWidth  float32 = 300
+	toastWidth  float32 = 320
 	toastMargin float32 = 16
 )
 
@@ -383,8 +585,9 @@ func toastOverlay(t gogui.Theme, app *App) gogui.View {
 		FloatZIndex:  1000,
 		Color:        bg,
 		ColorBorder:  t.ColorBorder,
-		SizeBorder:   gogui.BorderPx(1),
-		Radius:       gogui.RadiusMedium,
+		SizeBorder:   gogui.BorderThin,
+		Radius:       gogui.RadiusLarge,
+		Shadow:       t.Cfg.ShadowPopover,
 		Padding:      t.PaddingMedium,
 		Spacing:      gogui.SpacingTight,
 		Content: []gogui.View{
@@ -437,17 +640,20 @@ func noticePalette(t gogui.Theme, k noticeKind) (title gogui.TextStyle, bg gogui
 	}
 }
 
-// banner is the state headline.  The indicator sits in a row with the headline
-// so it is vertically centred on the title line, not the block; the sentence
-// sits below.  The indicator is a ring, filled and glowing only when protected.
+// banner is the state surface: a rounded panel with a status dot, a headline,
+// and one calm sentence.  The dot carries the state color; a healthy session
+// keeps the neutral panel fill so the page never becomes a full-width wash,
+// while a genuine anomaly tints the fill.
 func banner(t gogui.Theme, v statusVisual) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
-		ID:      "gui:banner",
-		Sizing:  gogui.FillFit,
-		Color:   v.bg,
-		Radius:  gogui.RadiusMedium,
-		Padding: t.PaddingMedium,
-		Spacing: gogui.SpacingTight,
+		ID:          "gui:banner",
+		Sizing:      gogui.FillFit,
+		Color:       v.bg,
+		ColorBorder: t.ColorBorder,
+		SizeBorder:  gogui.BorderThin,
+		Radius:      gogui.RadiusLarge,
+		Padding:     t.PaddingLarge,
+		Spacing:     gogui.SpacingSmall,
 		Content: []gogui.View{
 			gogui.Row(gogui.ContainerCfg{
 				ID:         "gui:banner:title",
@@ -584,25 +790,22 @@ func cacheSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 	return card(t, "gui:card:cache", "Cache & bootstrap", rows)
 }
 
-// card is a bordered panel with a bold heading and label/value rows.  It uses
-// a plain filled/outlined Column with an in-flow heading Text rather than the
-// toolkit's group-box Title: the group-box legend is drawn outside the
+// card is a Fluent surface: a rounded panel with a hairline border and a
+// heading.  Cards separate from the page by fill value, never by a shadow.  It
+// uses a plain filled/outlined Column with an in-flow heading Text rather than
+// the toolkit's group-box Title: the group-box legend is drawn outside the
 // scrollable clip, so scrolled cards painted their legend at the scroll origin
 // and overlapped the banner, and its TitleBG struck a line through the text.
 func card(t gogui.Theme, id, title string, rows []gogui.View) gogui.View {
-	return cardSpaced(t, id, title, gogui.SpacingTight, rows)
+	return cardSpaced(t, id, title, gogui.SpacingMedium, rows)
 }
 
-// cardSpaced is card with an explicit inter-row gap.  The tight default keeps a
-// read-only list compact; the Settings editor asks for a larger step so its many
-// fields read as separate rows rather than one dense block.
+// cardSpaced is card with an explicit inter-row gap.  The medium default gives
+// every card the same vertical rhythm; a caller can tighten it for a dense
+// read-only list.
 func cardSpaced(t gogui.Theme, id, title string, spacing gogui.Spacing, rows []gogui.View) gogui.View {
 	content := make([]gogui.View, 0, len(rows)+1)
-	content = append(content, gogui.Text(gogui.TextCfg{
-		Text:      title,
-		TextStyle: t.TextStyleTitleSmall,
-		Sizing:    gogui.FillFit,
-	}))
+	content = append(content, cardTitle(t, title))
 	content = append(content, rows...)
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -610,11 +813,30 @@ func cardSpaced(t gogui.Theme, id, title string, spacing gogui.Spacing, rows []g
 		Sizing:      gogui.FillFit,
 		Color:       t.ColorPanel,
 		ColorBorder: t.ColorBorder,
-		SizeBorder:  gogui.BorderPx(1),
-		Radius:      gogui.RadiusMedium,
-		Padding:     t.PaddingMedium,
+		SizeBorder:  gogui.BorderThin,
+		Radius:      gogui.RadiusLarge,
+		Padding:     t.PaddingLarge,
 		Spacing:     spacing,
 		Content:     content,
+	})
+}
+
+// cardTitle is a card's heading line.
+func cardTitle(t gogui.Theme, title string) gogui.View {
+	return gogui.Text(gogui.TextCfg{
+		Text:      title,
+		TextStyle: t.TextStyleTitleSmall,
+		Sizing:    gogui.FillFit,
+	})
+}
+
+// labelText is the fixed-width label column shared by kv rows.
+func labelText(t gogui.Theme, label string) gogui.View {
+	return gogui.Text(gogui.TextCfg{
+		Text:      label,
+		TextStyle: t.TextStyleLabel,
+		MinWidth:  132,
+		Sizing:    gogui.FixedFit,
 	})
 }
 
@@ -628,12 +850,7 @@ func kv(t gogui.Theme, label, value string) gogui.View {
 		Padding:    gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
-			gogui.Text(gogui.TextCfg{
-				Text:      label,
-				TextStyle: t.TextStyleLabel,
-				MinWidth:  132,
-				Sizing:    gogui.FixedFit,
-			}),
+			labelText(t, label),
 			gogui.Text(gogui.TextCfg{
 				Text:      value,
 				TextStyle: t.TextStyleBody,
@@ -641,6 +858,45 @@ func kv(t gogui.Theme, label, value string) gogui.View {
 				Mode:      gogui.TextModeWrap,
 			}),
 		},
+	})
+}
+
+// settingRow is a Fluent settings row: a title (with an optional description)
+// on the left and the controlling widget on the right.  It is what gives a
+// card its shape — the row earns the full card width instead of leaving the
+// control stranded at one edge.
+func settingRow(t gogui.Theme, title, desc string, control gogui.View) gogui.View {
+	left := []gogui.View{bodyText(t, title)}
+	if desc != "" {
+		left = append(left, caption(t, desc))
+	}
+
+	return gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		Spacing:    gogui.SpacingMedium,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		VAlign:     gogui.VAlignMiddle,
+		Content: []gogui.View{
+			gogui.Column(gogui.ContainerCfg{
+				Sizing:     gogui.FillFit,
+				Spacing:    gogui.SpacingTight,
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+				Content:    left,
+			}),
+			control,
+		},
+	})
+}
+
+// bodyText is a fill-width body line.
+func bodyText(t gogui.Theme, s string) gogui.View {
+	return gogui.Text(gogui.TextCfg{
+		Text:      s,
+		TextStyle: t.TextStyleBody,
+		Sizing:    gogui.FillFit,
+		Mode:      gogui.TextModeWrap,
 	})
 }
 
@@ -702,12 +958,14 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 			}
 		}
 
+		// A healthy session keeps the neutral panel fill: the green dot and
+		// headline carry the state, so the page is not a full-width wash.
 		return statusVisual{
 			kind:          kindRunning,
 			headline:      "Protected",
 			detail:        "DNS queries are handled by the dns-client loopback resolver.",
 			headlineStyle: t.TextStyleSuccess,
-			bg:            t.ColorSuccessSubtle,
+			bg:            t.ColorPanel,
 			accent:        t.TextStyleSuccess.Color,
 		}
 	case s.status != nil && s.status.Dirty:

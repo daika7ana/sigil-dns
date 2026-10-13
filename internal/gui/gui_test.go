@@ -445,6 +445,38 @@ func waitIdle(t *testing.T, w *gogui.Window, app *App) {
 	t.Fatal("action did not settle")
 }
 
+// TestWindowsThemeTunedTokens pins the app's WinUI calibration so the numbers
+// are visible and further tunable: a thinner scrollbar with a larger edge
+// inset, and a two-step font-ladder bump (body 12 -> 14).
+func TestWindowsThemeTunedTokens(t *testing.T) {
+	for _, name := range []string{"windows", "windows-dark"} {
+		th := windowsTheme(name, gogui.ThemeDark)
+		if th.Cfg.SizeScrollbar != themeScrollbarSize {
+			t.Errorf("%s SizeScrollbar = %v, want %v", name, th.Cfg.SizeScrollbar, themeScrollbarSize)
+		}
+		if !th.Cfg.SizeScrollbarGap.IsSet() || th.Cfg.SizeScrollbarGap.Get(0) != themeScrollbarGap {
+			t.Errorf("%s SizeScrollbarGap = (%v,set=%v), want %v", name, th.Cfg.SizeScrollbarGap.Get(0), th.Cfg.SizeScrollbarGap.IsSet(), themeScrollbarGap)
+		}
+		if !th.Cfg.SizeScrollbarGapEnd.IsSet() || th.Cfg.SizeScrollbarGapEnd.Get(0) != themeScrollbarGapEnd {
+			t.Errorf("%s SizeScrollbarGapEnd = (%v,set=%v), want %v", name, th.Cfg.SizeScrollbarGapEnd.Get(0), th.Cfg.SizeScrollbarGapEnd.IsSet(), themeScrollbarGapEnd)
+		}
+		// Body 12 + 2
+		if want := float32(12) + themeFontDelta; th.Cfg.TextStyleDef.Size != want {
+			t.Errorf("%s body size = %v, want %v", name, th.Cfg.TextStyleDef.Size, want)
+		}
+		// The family stays empty, so Windows resolves its own system face.
+		if th.Cfg.TextStyleDef.Family != "" {
+			t.Errorf("%s pinned a font family %q", name, th.Cfg.TextStyleDef.Family)
+		}
+	}
+
+	// The fallback is calibrated too.
+	fb := windowsTheme("no-such-theme", gogui.ThemeDark)
+	if fb.Cfg.SizeScrollbar != themeScrollbarSize {
+		t.Errorf("fallback SizeScrollbar = %v, want %v", fb.Cfg.SizeScrollbar, themeScrollbarSize)
+	}
+}
+
 // TestAboutPageRenders proves the About page renders its card with the real
 // identity values, and no widget findings.
 func TestAboutPageRenders(t *testing.T) {

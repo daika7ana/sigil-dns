@@ -244,16 +244,69 @@ func readOnce(ctx context.Context, src statusSource) (snap snapshot) {
 	return snap
 }
 
-// applyTheme pins the window theme from the stored preference.
+// applyTheme pins the window theme from the stored preference.  The Windows
+// WinUI pair is the token base for the whole UI: hairlines, the squarer radius
+// ladder, the WinUI accent, and the Win11 blue-to-cyan selection ramp.  It
+// falls back to the toolkit light/dark presets if the built-in Windows themes
+// are ever unavailable.
 func applyTheme(w *gogui.Window, pref string) {
 	switch pref {
 	case themeLight:
-		w.SetTheme(gogui.ThemeLight)
+		w.SetTheme(windowsTheme("windows", gogui.ThemeLight))
 	case themeDark:
-		w.SetTheme(gogui.ThemeDark)
+		w.SetTheme(windowsTheme("windows-dark", gogui.ThemeDark))
 	default:
-		w.FollowSystemAppearance(gogui.ThemeLight, gogui.ThemeDark)
+		w.FollowSystemAppearance(
+			windowsTheme("windows", gogui.ThemeLight),
+			windowsTheme("windows-dark", gogui.ThemeDark))
 	}
+}
+
+// WinUI base-theme calibration.  The built-in Windows theme is the token base;
+// these tune it for the app without pinning a font family or changing structure.
+const (
+	// themeScrollbarSize is the bar thickness.  WinUI ships 10 (chunky); the
+	// app asks for a thinner, quieter bar.
+	themeScrollbarSize float32 = 6
+	// themeScrollbarGap insets the bar from the edge it tracks, and
+	// themeScrollbarGapEnd shortens the track at its ends, so the thumb reads
+	// as floating in the gutter rather than hugging the card edge.
+	themeScrollbarGap    float32 = 2
+	themeScrollbarGapEnd float32 = 6
+	// themeFontDelta bumps the whole ladder up two steps (body 12 -> 14); the
+	// derived rungs follow.  Bounds are defensive; AdjustFontSize errors out of
+	// range and the untuned theme is kept.
+	themeFontDelta float32 = 2
+	themeFontMin   float32 = 8
+	themeFontMax   float32 = 28
+)
+
+// windowsTheme returns the registered Windows theme by name, calibrated for the
+// app, or the toolkit preset as a fallback (also calibrated).
+func windowsTheme(name string, fallback gogui.Theme) gogui.Theme {
+	base, ok := gogui.ThemeGet(name)
+	if !ok {
+		base = fallback
+	}
+
+	return tuneTheme(base)
+}
+
+// tuneTheme applies the app's calibration to a base theme: a thinner scrollbar
+// with a larger edge inset, and a two-step font-ladder bump.  Rebuilt from the
+// theme's own Cfg so nothing else moves, and side-effect-free.
+func tuneTheme(base gogui.Theme) gogui.Theme {
+	cfg := base.Cfg
+	cfg.SizeScrollbar = themeScrollbarSize
+	cfg.SizeScrollbarGap = gogui.SomeF(themeScrollbarGap)
+	cfg.SizeScrollbarGapEnd = gogui.SomeF(themeScrollbarGapEnd)
+
+	t := gogui.ThemeMaker(cfg)
+	if adjusted, err := t.AdjustFontSize(themeFontDelta, themeFontMin, themeFontMax); err == nil {
+		return adjusted
+	}
+
+	return t
 }
 
 // setThemePref applies a theme choice from the header control and remembers it.

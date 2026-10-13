@@ -553,30 +553,179 @@ func TestRuleRowItemsCentred(t *testing.T) {
 	}
 }
 
-// TestRemoveButtonsDanger proves both Remove controls wear the theme's danger
-// (error) fill, matching the Delete / Uninstall destructive buttons.
+// TestRemoveButtonsDanger proves the repeated per-row destructive controls wear
+// the danger *outline* — danger-styled (error border) but subordinate (neutral
+// fill), not the filled danger block — matching the profile Delete; and that a
+// disabled one reads muted rather than full-red.
 func TestRemoveButtonsDanger(t *testing.T) {
+	newApp := func(busy bool) *App {
+		app := rulesApp()
+		app.busy = busy
+		app.draft.name = "default"
+		app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
+		app.draft.lists = []listDraft{{host: "ads.example", enabled: true, idx: 0}}
+		app.draft.rulesKnown = true
+		app.seeded = true
+
+		return app
+	}
+
+	t.Run("enabled is a danger outline, not a filled block", func(t *testing.T) {
+		w := newSettingsWindow(t, newApp(false))
+		root := w.TestRender(nil)
+		th := gogui.CurrentTheme()
+
+		for _, id := range []string{"gui:rule:0:remove", "gui:list:0:remove"} {
+			ly := mustFindLayout(t, w, root, id)
+			if ly.Shape.Color == th.Cfg.ColorError {
+				t.Errorf("%s fill = danger %v: a row remove must be an outline, not a filled block",
+					id, ly.Shape.Color)
+			}
+			if ly.Shape.ColorBorder != th.Cfg.ColorError {
+				t.Errorf("%s border = %v, want danger outline %v", id, ly.Shape.ColorBorder, th.Cfg.ColorError)
+			}
+		}
+	})
+
+	t.Run("disabled reads muted", func(t *testing.T) {
+		w := newSettingsWindow(t, newApp(true))
+		root := w.TestRender(nil)
+		th := gogui.CurrentTheme()
+
+		ly := mustFindLayout(t, w, root, "gui:rule:0:remove")
+		if !ly.Shape.Disabled {
+			t.Fatal("remove should be disabled while busy")
+		}
+		if ly.Shape.Color != th.Cfg.ColorActive {
+			t.Errorf("disabled remove fill = %v, want muted %v", ly.Shape.Color, th.Cfg.ColorActive)
+		}
+		// The silhouette stays a button: a visible neutral border, not a red
+		// one blended away behind bare error text.
+		if ly.Shape.ColorBorder != th.Cfg.ColorBorder {
+			t.Errorf("disabled remove border = %v, want neutral %v", ly.Shape.ColorBorder, th.Cfg.ColorBorder)
+		}
+	})
+}
+
+// TestSettingsCardTitleStrongerThanGroupHeading proves the editor's two heading
+// levels are distinct: the card title is the strong level and the in-card group
+// heading is a clearly subordinate, quieter level.
+func TestSettingsCardTitleStrongerThanGroupHeading(t *testing.T) {
+	w, root := layoutFor(t, settingsApp(), defaultWidth, 2400)
+
+	card := mustFindLayout(t, w, root, "gui:card:editor")
+	title := childLayout(card, 0)
+	if title == nil || title.Shape == nil || title.Shape.TC == nil {
+		t.Fatal("editor card title text not found")
+	}
+	group := mustFindLayout(t, w, root, "gui:edit:group:provider")
+	if group.Shape == nil || group.Shape.TC == nil {
+		t.Fatal("group heading text not found")
+	}
+
+	titleStyle := title.Shape.TC.TextStyle
+	groupStyle := group.Shape.TC.TextStyle
+	if titleStyle.Size <= groupStyle.Size {
+		t.Errorf("card title size %.1f is not larger than group heading size %.1f: levels are flat",
+			titleStyle.Size, groupStyle.Size)
+	}
+	if titleStyle.Color == groupStyle.Color {
+		t.Errorf("card title and group heading share color %v: the heading must be quieter", titleStyle.Color)
+	}
+}
+
+// TestRulesControlColumnsAligned proves the per-row controls share two fixed
+// columns — one enable toggle column and one remove column — identical between
+// list rows and rule rows, so the two-column layout reads as deliberate.
+func TestRulesControlColumnsAligned(t *testing.T) {
 	app := rulesApp()
 	app.draft.name = "default"
 	app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
-	app.draft.lists = []listDraft{{host: "ads.example", enabled: true, idx: 0}}
+	app.draft.lists = []listDraft{
+		{host: "ads.example.net", enabled: true, idx: 0},
+		{host: "trackers.example.org", enabled: false, idx: 1},
+	}
 	app.draft.rulesKnown = true
 	app.seeded = true
 
 	w := newSettingsWindow(t, app)
 	root := w.TestRender(nil)
-	want := gogui.CurrentTheme().Cfg.ColorError
 
-	for _, id := range []string{"gui:rule:0:remove", "gui:list:0:remove"} {
+	var wantToggleX float32
+	for i, id := range []string{"gui:list:0:enable", "gui:list:1:enable", "gui:rule:0:enable"} {
 		ly := mustFindLayout(t, w, root, id)
-		if ly.Shape.Color != want {
-			t.Errorf("%s fill = %v, want danger %v", id, ly.Shape.Color, want)
+		if i == 0 {
+			wantToggleX = ly.Shape.X
+
+			continue
+		}
+		if absF(ly.Shape.X-wantToggleX) > 1 {
+			t.Errorf("%s toggle x=%.1f != %.1f: enable column drifts", id, ly.Shape.X, wantToggleX)
+		}
+	}
+
+	var wantRemoveRight float32
+	for i, id := range []string{"gui:list:0:remove", "gui:list:1:remove", "gui:rule:0:remove"} {
+		ly := mustFindLayout(t, w, root, id)
+		r := ly.Shape.X + ly.Shape.Width
+		if i == 0 {
+			wantRemoveRight = r
+
+			continue
+		}
+		if absF(r-wantRemoveRight) > 1 {
+			t.Errorf("%s remove right=%.1f != %.1f: remove column drifts", id, r, wantRemoveRight)
 		}
 	}
 }
 
-// TestSettingsOfflineNoticeWraps proves the long "Offline editing" notice
-// wraps instead of forcing the page into a horizontal scrollbar. The notice is
+// TestNoticeCalmAndTitled proves the inline notice is a calm neutral panel with
+// a heading title (not a full-bleed warning wash in body text), and that the two
+// severities stay distinguishable by their accent stripe.
+func TestNoticeCalmAndTitled(t *testing.T) {
+	th := gogui.CurrentTheme()
+
+	unverified := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	unverified.snap = snapshot{trust: trustUnverified, running: true, updated: time.Now()}
+	unverified.page = pageSettings
+
+	w, root := layoutFor(t, unverified, defaultWidth, 2400)
+	n := mustFindLayout(t, w, root, "gui:notice")
+	if n.Shape.Color != th.ColorPanel {
+		t.Errorf("notice fill = %v, want calm panel %v", n.Shape.Color, th.ColorPanel)
+	}
+	stripe := childLayout(n, 0)
+	body := childLayout(n, 1)
+	title := childLayout(body, 0)
+	detail := childLayout(body, 1)
+	if stripe == nil || title == nil || detail == nil ||
+		stripe.Shape == nil || title.Shape == nil || detail.Shape == nil ||
+		title.Shape.TC == nil || detail.Shape.TC == nil {
+		t.Fatal("notice stripe/title/detail missing")
+	}
+	if *title.Shape.TC.TextStyle != th.TextStyleTitleSmall {
+		t.Errorf("notice title is not the heading role (size %.1f, color %v)",
+			title.Shape.TC.TextStyle.Size, title.Shape.TC.TextStyle.Color)
+	}
+	if *detail.Shape.TC.TextStyle != th.TextStyleSecondary {
+		t.Errorf("notice detail is not the secondary role (size %.1f)",
+			detail.Shape.TC.TextStyle.Size)
+	}
+	warnAccent := stripe.Shape.Color
+
+	offline := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	offline.cached = sampleSnapshot().summary
+	offline.snap = snapshot{trust: trustVerified, installed: true, scmState: "stopped"}
+	offline.page = pageSettings
+	w2, root2 := layoutFor(t, offline, defaultWidth, 2400)
+	n2 := mustFindLayout(t, w2, root2, "gui:notice")
+	stripe2 := childLayout(n2, 0)
+	if stripe2.Shape.Color == warnAccent {
+		t.Errorf("both notice severities share accent %v; keep them distinguishable", warnAccent)
+	}
+}
+
+// TestSettingsOfflineNoticeWraps proves the long "Offline editing" notice// wraps instead of forcing the page into a horizontal scrollbar. The notice is
 // a fill-width column: a fit-width one takes the length of its unwrapped detail
 // sentence and pushes the scrollable page wider than the window.
 func TestSettingsOfflineNoticeWraps(t *testing.T) {
@@ -673,42 +822,68 @@ func layoutFor(t *testing.T, app *App, width, height int) (*gogui.Window, *gogui
 	return w, w.TestRender(nil)
 }
 
-// TestNavRailCompact proves the rail hugs its buttons (no dead space) and every
-// label still fits inside the fixed button width after the rail was narrowed.
+// TestNavRailCompact proves the rail hugs its NavigationView items (no dead
+// space) and every icon+label item still fits inside the fixed item width.
 func TestNavRailCompact(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
 	rail := mustFindLayout(t, w, root, "gui:nav")
 	btn := mustFindLayout(t, w, root, "gui:nav:status")
-	if absF(rail.Shape.Width-btn.Shape.Width) > 2 {
-		t.Errorf("rail width %.0f vs button width %.0f: dead space beside the buttons",
+
+	// The rail is one item wide plus its own inset.
+	wantRail := navRailWidth + 2*navRailPad
+	if absF(rail.Shape.Width-wantRail) > 2 {
+		t.Errorf("rail width %.0f, want %.0f (item %.0f + rail inset)",
+			rail.Shape.Width, wantRail, navRailWidth)
+	}
+	if rail.Shape.Width-btn.Shape.Width > 2*navRailPad+2 {
+		t.Errorf("rail width %.0f vs button width %.0f: dead space beside the items",
 			rail.Shape.Width, btn.Shape.Width)
 	}
-	if rail.Shape.Width > navRailWidth+2 {
-		t.Errorf("rail width %.0f exceeds the button width %d", rail.Shape.Width, navRailWidth)
-	}
 
-	// The longest label ("Settings") must fit inside the fixed width with the
-	// theme's button inset, so the narrower rail does not clip it.
+	// Every item is the same width and has room for the accent bar, the icon
+	// and the longest label ("Settings").
 	inset := gogui.CurrentTheme().PaddingButton
-	for _, id := range []string{"gui:nav:status", "gui:nav:settings", "gui:nav:rules", "gui:nav:about"} {
-		button := mustFindLayout(t, w, root, id)
+	// bar (3) + icon (~17, IconLarge) + two inter-part gaps (SpacingMedium each).
+	const navItemLeading float32 = 48
+	for _, tc := range []struct{ id, label string }{
+		{"gui:nav:status", "Status"},
+		{"gui:nav:settings", "Settings"},
+		{"gui:nav:rules", "Rules"},
+		{"gui:nav:about", "About"},
+	} {
+		button := mustFindLayout(t, w, root, tc.id)
 		if absF(button.Shape.Width-navRailWidth) > 1 {
-			t.Errorf("%s width %.0f != navRailWidth %d", id, button.Shape.Width, navRailWidth)
+			t.Errorf("%s width %.0f != navRailWidth %.0f", tc.id, button.Shape.Width, navRailWidth)
 		}
-		labelW := buttonLabelWidth(button)
-		if labelW+inset.Left+inset.Right > navRailWidth {
-			t.Errorf("%s label %.0f + button inset %.0f exceeds rail width %d: label would clip",
-				id, labelW, inset.Left+inset.Right, navRailWidth)
+		labelW := findTextWidth(button, tc.label)
+		if labelW == 0 {
+			t.Errorf("%s does not render its %q label", tc.id, tc.label)
+
+			continue
+		}
+		// Measure the label's intrinsic width (font-free fallback included)
+		// and check the leading parts plus the button inset leave room for it.
+		intrinsic := w.TextWidth(tc.label, gogui.CurrentTheme().TextStyleBody)
+		if intrinsic+navItemLeading+inset.Left+inset.Right > navRailWidth {
+			t.Errorf("%s label %.0f + leading %.0f + inset %.0f exceeds item width %.0f: label would clip",
+				tc.id, intrinsic, navItemLeading, inset.Left+inset.Right, navRailWidth)
 		}
 	}
 }
 
-// buttonLabelWidth returns the width of a Label-built button's text child.
-func buttonLabelWidth(ly *gogui.Layout) (width float32) {
+// findTextWidth returns the width of the first text shape in the subtree whose
+// content is label, or 0 when none renders it.
+func findTextWidth(ly *gogui.Layout, label string) (width float32) {
+	if ly == nil || ly.Shape == nil {
+		return 0
+	}
+	if ly.Shape.TC != nil && ly.Shape.TC.Text == label {
+		return ly.Shape.Width
+	}
 	for i := range ly.Children {
-		if c := ly.Children[i].Shape; c != nil && c.TC != nil {
-			return c.Width
+		if w := findTextWidth(&ly.Children[i], label); w > 0 {
+			return w
 		}
 	}
 
@@ -830,8 +1005,9 @@ func TestHeaderPowerRightMost(t *testing.T) {
 	}
 }
 
-// TestHeaderPowerStyled proves the power button wears the theme's state colour:
-// the success green to enable, the error red to disable.
+// TestHeaderPowerStyled proves the power button's palette: the affirmative
+// Enable wears the success green, and Disable does NOT wear danger-red — a
+// healthy "protected" session must not look like an error.
 func TestHeaderPowerStyled(t *testing.T) {
 	th := gogui.CurrentTheme()
 
@@ -845,18 +1021,36 @@ func TestHeaderPowerStyled(t *testing.T) {
 
 	w, root = layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 	disable := mustFindLayout(t, w, root, "gui:power")
-	if disable.Shape.Color != th.Cfg.ColorError {
-		t.Errorf("Disable fill = %v, want error %v", disable.Shape.Color, th.Cfg.ColorError)
+	if disable.Shape.Color == th.Cfg.ColorError {
+		t.Errorf("Disable fill = %v: the protected state must not be danger-red", disable.Shape.Color)
+	}
+
+	// Disabled (service not installed): the power button must read inert/neutral,
+	// never a washed success-green block with white-on-pale-green text.
+	notInstalled := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	notInstalled.snap = snapshot{trust: trustVerified, updated: time.Now()}
+	w, root = layoutFor(t, notInstalled, defaultWidth, defaultHeight)
+	idle := mustFindLayout(t, w, root, "gui:power")
+	if !idle.Shape.Disabled {
+		t.Fatal("power should be disabled when the service is not installed")
+	}
+	if idle.Shape.Color == th.Cfg.ColorSuccess {
+		t.Errorf("disabled power fill = success %v: must be neutral/inert, not a success block", idle.Shape.Color)
+	}
+	if idle.Shape.Color != th.Cfg.ColorActive {
+		t.Errorf("disabled power fill = %v, want the neutral inert surface %v", idle.Shape.Color, th.Cfg.ColorActive)
 	}
 }
 
 // TestCardRowsCompact proves the label/value rows carry no container padding:
-// each row is only as tall as its content, so a two-row card reads as a list.
+// each body row is only as tall as its content, so a two-row card reads as a
+// list rather than a stack of padded blocks.
 func TestCardRowsCompact(t *testing.T) {
 	w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
 	card := mustFindLayout(t, w, root, "gui:card:service")
 
-	for i := 1; i <= 2; i++ {
+	// Children after the heading are the Fluent settings rows.
+	for i := 1; i < len(card.Children); i++ {
 		row := childLayout(card, i)
 		if row == nil || row.Shape == nil {
 			t.Fatalf("service card row %d is missing", i)
@@ -877,43 +1071,45 @@ func TestCardRowsCompact(t *testing.T) {
 	}
 }
 
-// TestProfileButtonsAlign proves the four profile verbs share one width and
-// span the field column: the row starts with the selector and ends with the
-// editor fields.
+// TestProfileButtonsAlign proves the neutral profile verbs share one width and
+// span the field column, and that the destructive Delete is subordinate
+// (narrower) and still reaches the column's right edge.
 func TestProfileButtonsAlign(t *testing.T) {
 	w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
 
 	sel := mustFindLayout(t, w, root, "gui:profile:select")
 	column := mustFindLayout(t, w, root, "gui:edit:provider") // same card column width
 
-	ids := []string{"gui:profile:add", "gui:profile:rename", "gui:profile:delete", "gui:profile:active"}
-	widths := make([]float32, 0, len(ids))
-	var first, last *gogui.Layout
-	for i, id := range ids {
+	neutral := []string{"gui:profile:add", "gui:profile:rename", "gui:profile:active"}
+	widths := make([]float32, 0, len(neutral))
+	var first *gogui.Layout
+	for i, id := range neutral {
 		btn := mustFindLayout(t, w, root, id)
 		if i == 0 {
 			first = btn
 		}
-		last = btn
 		widths = append(widths, btn.Shape.Width)
 	}
+	del := mustFindLayout(t, w, root, "gui:profile:delete")
 
 	if absF(first.Shape.X-sel.Shape.X) > 1 {
 		t.Errorf("profile row x=%.1f does not start at the field column x=%.1f", first.Shape.X, sel.Shape.X)
 	}
-	selRight := sel.Shape.X + sel.Shape.Width
-	lastRight := last.Shape.X + last.Shape.Width
 	colRight := column.Shape.X + column.Shape.Width
-	if absF(selRight-colRight) > 1 {
+	if selRight := sel.Shape.X + sel.Shape.Width; absF(selRight-colRight) > 1 {
 		t.Errorf("profile selector right %.1f does not reach the field column right %.1f", selRight, colRight)
 	}
-	if absF(lastRight-colRight) > 1 {
+	if lastRight := del.Shape.X + del.Shape.Width; absF(lastRight-colRight) > 1 {
 		t.Errorf("profile row right %.1f does not reach the field column right %.1f", lastRight, colRight)
 	}
 	for i := 1; i < len(widths); i++ {
 		if absF(widths[i]-widths[0]) > 1 {
-			t.Errorf("button width %.1f differs from %.1f", widths[i], widths[0])
+			t.Errorf("neutral button width %.1f differs from %.1f", widths[i], widths[0])
 		}
+	}
+	if del.Shape.Width >= widths[0] {
+		t.Errorf("Delete width %.1f is not narrower than the neutral verbs %.1f: not subordinate",
+			del.Shape.Width, widths[0])
 	}
 }
 
@@ -965,20 +1161,78 @@ func TestDropdownPopupsWide(t *testing.T) {
 	}
 }
 
-// TestEditorSaveAligned proves the Save button shares both edges of the editor's
-// field column, rather than floating at an indented offset.
+// TestEditorSaveAligned proves the Save button is right-aligned to the editor's
+// field column and narrower than it, so the primary action reads as a button
+// rather than a full-column bar.
 func TestEditorSaveAligned(t *testing.T) {
 	w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
 	save := mustFindLayout(t, w, root, "gui:profile:save")
 
 	for _, id := range []string{"gui:edit:provider", "gui:edit:id", "gui:edit:bootstrap"} {
 		field := mustFindLayout(t, w, root, id)
-		if absF(save.Shape.X-field.Shape.X) > 1 {
-			t.Errorf("Save x=%.1f vs %s x=%.1f", save.Shape.X, id, field.Shape.X)
+		if sr, fr := save.Shape.X+save.Shape.Width, field.Shape.X+field.Shape.Width; absF(sr-fr) > 1 {
+			t.Errorf("Save right %.1f vs %s right %.1f", sr, id, fr)
 		}
-		if sv, fv := save.Shape.X+save.Shape.Width, field.Shape.X+field.Shape.Width; absF(sv-fv) > 1 {
-			t.Errorf("Save right %.1f vs %s right %.1f", sv, id, fv)
+		if save.Shape.Width >= field.Shape.Width {
+			t.Errorf("Save width %.1f is not narrower than %s width %.1f: a full-column bar",
+				save.Shape.Width, id, field.Shape.Width)
 		}
+		if save.Shape.X <= field.Shape.X {
+			t.Errorf("Save x=%.1f is not inset from %s x=%.1f", save.Shape.X, id, field.Shape.X)
+		}
+	}
+}
+
+// TestEditorGroupsSeparated proves the editor card marks its field groups with
+// dividers, so the grouping is legible rather than reading as accidental gaps.
+func TestEditorGroupsSeparated(t *testing.T) {
+	w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
+	card := mustFindLayout(t, w, root, "gui:card:editor")
+
+	for _, id := range []string{"gui:edit:divider:1", "gui:edit:divider:2"} {
+		ly := mustFindLayout(t, w, root, id)
+		if !layoutContains(card, ly) {
+			t.Errorf("%s is not inside the editor card", id)
+		}
+	}
+}
+
+// TestRulesRightEdgesAlign proves every right-side control in the Rules list
+// card lands on the card's inner right edge, and the add field is attached to
+// its button (no detached gap).  Applies at both widths.
+func TestRulesRightEdgesAlign(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{{"default", defaultWidth, defaultHeight}, {"large", wideWidth, wideHeight}} {
+		t.Run(size.name, func(t *testing.T) {
+			w := gogui.NewTestWindow(t, gogui.WindowCfg{
+				Width: size.w, Height: 2400, State: rulesApp(),
+			})
+			w.SetView(view)
+			root := w.TestRender(nil)
+
+			card := mustFindLayout(t, w, root, "gui:card:lists")
+			innerRight := card.Shape.X + card.Shape.Width - card.Shape.Padding.Right - card.Shape.SizeBorder
+
+			for _, id := range []string{
+				"gui:list:0:remove", "gui:list:1:remove",
+				"gui:list:add:row", "gui:lists:refresh",
+			} {
+				ly := mustFindLayout(t, w, root, id)
+				if r := ly.Shape.X + ly.Shape.Width; absF(r-innerRight) > 0.5 {
+					t.Errorf("%s right %.1f != card inner right %.1f", id, r, innerRight)
+				}
+			}
+
+			field := mustFindLayout(t, w, root, "gui:list:add:url")
+			btn := mustFindLayout(t, w, root, "gui:list:add")
+			if gap := btn.Shape.X - (field.Shape.X + field.Shape.Width); gap > 2 {
+				t.Errorf("add field and its button have a %.1f px gap; want attached", gap)
+			}
+
+			assertNoFindings(t, w)
+		})
 	}
 }
 
@@ -1174,6 +1428,42 @@ func assertPageLayout(t *testing.T, app *App, width, height int, cardIDs []strin
 	assertNoFindings(t, w)
 }
 
+// TestContentColumnCapped proves the reading column is capped at
+// contentMaxWidth and centered, that the cards fill it (minus the page inset),
+// and that the page keeps the scrollbar gutter (right = left + scrollbarGutter).
+func TestContentColumnCapped(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{{"default", defaultWidth, defaultHeight}, {"large", wideWidth, wideHeight}} {
+		t.Run(size.name, func(t *testing.T) {
+			w, root := layoutFor(t, statusApp(), size.w, size.h)
+
+			page := mustFindLayout(t, w, root, "gui:content")
+			if absF(page.Shape.Width-contentMaxWidth) > 0.5 {
+				t.Errorf("page width %.1f != contentMaxWidth %.0f", page.Shape.Width, contentMaxWidth)
+			}
+			if got := page.Shape.Padding.Right - page.Shape.Padding.Left; absF(got-scrollbarGutter) > 0.5 {
+				t.Errorf("page right-left padding = %.1f, want scrollbar gutter %.0f", got, scrollbarGutter)
+			}
+
+			// Cards fill the column's content box.
+			card := mustFindLayout(t, w, root, "gui:card:profile")
+			if want := page.Shape.Width - page.Shape.Padding.Width(); absF(card.Shape.Width-want) > 0.5 {
+				t.Errorf("card width %.1f != page content width %.1f", card.Shape.Width, want)
+			}
+
+			// Centered within the content area.
+			wrap := mustFindLayout(t, w, root, "gui:contentwrap")
+			leftGap := page.Shape.X - (wrap.Shape.X + wrap.Shape.Padding.Left)
+			rightGap := (wrap.Shape.X + wrap.Shape.Width - wrap.Shape.Padding.Right) - (page.Shape.X + page.Shape.Width)
+			if absF(leftGap-rightGap) > 1 {
+				t.Errorf("column not centered: left gap %.1f, right gap %.1f", leftGap, rightGap)
+			}
+		})
+	}
+}
+
 // absF is a float32 absolute value.
 func absF(f float32) float32 {
 	if f < 0 {
@@ -1283,8 +1573,8 @@ func TestRenderArtifacts(t *testing.T) {
 		name string
 		th   gogui.Theme
 	}{
-		{"light", gogui.ThemeLight},
-		{"dark", gogui.ThemeDark},
+		{"light", windowsTheme("windows", gogui.ThemeLight)},
+		{"dark", windowsTheme("windows-dark", gogui.ThemeDark)},
 	}
 
 	for _, p := range pages {

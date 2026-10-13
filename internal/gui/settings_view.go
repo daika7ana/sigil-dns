@@ -39,7 +39,10 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID:         "gui:settings",
 		Sizing:     gogui.FillFill,
+		MaxWidth:   contentMaxWidth,
+		Padding:    pagePadding(),
 		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
 		Scrollable: true,
 		Content:    content,
 	})
@@ -61,10 +64,10 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 	}
 	content = append(content,
 		caption(t, "Editing profile: "+fallback(app.draft.name, "—")),
-		cardSpaced(t, "gui:card:lists", "Filter lists", gogui.SpacingSmall, []gogui.View{
+		card(t, "gui:card:lists", "Filter lists", []gogui.View{
 			listSection(t, app, app.draft, disabled),
 		}),
-		cardSpaced(t, "gui:card:rules", "Per-domain routing", gogui.SpacingSmall, []gogui.View{
+		card(t, "gui:card:rules", "Per-domain routing", []gogui.View{
 			ruleSection(t, app.draft, disabled),
 		}),
 		saveRow(t, app.draft, disabled),
@@ -73,7 +76,10 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID:         "gui:rules",
 		Sizing:     gogui.FillFill,
+		MaxWidth:   contentMaxWidth,
+		Padding:    pagePadding(),
 		Spacing:    gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder,
 		Scrollable: true,
 		Content:    content,
 	})
@@ -84,12 +90,12 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 // service identity is unverified; the offline hint explains a cached config.
 func editNotice(t gogui.Theme, app *App) gogui.View {
 	if !canEdit(app.snap) {
-		return notice(t,
+		return notice(t, noticeWarning,
 			"Service identity not verified",
 			"Editing is unavailable until the dns-client service is verified.")
 	}
 	if hint := editingHint(app); hint != "" {
-		return notice(t, "Offline editing", hint)
+		return notice(t, noticeInfo, "Offline editing", hint)
 	}
 
 	return nil
@@ -195,16 +201,46 @@ func serviceCard(t gogui.Theme, app *App) gogui.View {
 		action = actionUninstall
 	}
 
+	control := gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FitFit,
+		Spacing:    gogui.SpacingSmall,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		VAlign:     gogui.VAlignMiddle,
+		Content: []gogui.View{
+			serviceBadge(app.snap),
+			gogui.Button(gogui.ButtonCfg{
+				ID:       "gui:" + string(action),
+				Variant:  actionVariant(action),
+				Label:    actionLabel(action) + " service",
+				Disabled: disabled,
+				OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, action) },
+			}),
+		},
+	})
+
+	// The badge carries the installed/not-installed state, so there is no
+	// separate "Installed" row: one source of truth for the service state.
 	return card(t, "gui:card:service", "Service", []gogui.View{
-		kv(t, "Installed", yesNo(app.snap.installed)),
-		kv(t, "State", displayState(app.snap.scmState)),
-		gogui.Button(gogui.ButtonCfg{
-			ID:       "gui:" + string(action),
-			Variant:  actionVariant(action),
-			Label:    actionLabel(action) + " service",
-			Disabled: disabled,
-			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, action) },
-		}),
+		settingRow(t, "Background service",
+			"Runs the local resolver and applies the system DNS settings.", control),
+	})
+}
+
+// serviceBadge is the SCM state as a Fluent status pill.  It carries the
+// capitalized state word (the DTO keeps the lowercase value).
+func serviceBadge(s snapshot) gogui.View {
+	variant := gogui.BadgeSuccess
+	switch {
+	case !s.installed:
+		variant = gogui.BadgeInfo
+	case !s.running:
+		variant = gogui.BadgeWarning
+	}
+
+	return gogui.Badge(gogui.BadgeCfg{
+		Label:   displayState(s.scmState),
+		Variant: variant,
 	})
 }
 
@@ -230,19 +266,32 @@ func versionCaption(t gogui.Theme, app *App) gogui.View {
 // closed field, but only as a floor, so a value below the field's own width
 // leaves the filling field untouched while lifting every popup close to it.
 //
-// The field width is the window minus fixed chrome (nav rail plus paddings),
-// so the floor tracks the window and the ratio/cap keep it just under the field
-// to avoid ever growing the field past its card.  Long-content lists (Provider,
-// Variant) may still exceed the floor — the toolkit gives no way to cap the
-// popup without also capping the field.
+// It mirrors the content column's geometry: the contentArea inset, the page
+// column's own padding (with its scrollbar gutter), and the card inset.  The
+// column is capped at contentMaxWidth, so the floor tracks the window until the
+// cap binds.  The ratio keeps it just under the field to avoid ever growing the
+// field past its card.  Long-content lists (Provider, Variant) may still exceed
+// the floor — the toolkit gives no way to cap the popup without also capping
+// the field.
 func selectFloor(windowWidth int) float32 {
+	t := gogui.CurrentTheme()
 	const (
-		chrome   float32 = 238 // nav rail + root/card padding, measured
-		ratio    float32 = 0.9
+		ratio    float32 = 0.92
 		minFloor float32 = 200
 	)
 
-	floor := (float32(windowWidth) - chrome) * ratio
+	navTotal := navRailWidth + 2*navRailPad
+
+	// Space the centered column may occupy, then the cap.
+	avail := float32(windowWidth) - navTotal - t.SizeBorder - 2*contentPad
+	pageCol := min(avail, contentMaxWidth)
+
+	// Inside the column: the page padding (contentPad + scrollbarGutter across)
+	// and the card's own inset.
+	pageInner := pageCol - (2*contentPad + scrollbarGutter)
+	cardInner := pageInner - t.PaddingLarge.Width() - 2*t.SizeBorder
+
+	floor := cardInner * ratio
 	if floor < minFloor {
 		floor = minFloor
 	}
@@ -282,6 +331,7 @@ func profilesCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			Spacing:    gogui.SpacingSmall,
 			Padding:    gogui.PaddingNone,
 			SizeBorder: gogui.NoBorder,
+			VAlign:     gogui.VAlignMiddle,
 			Content: []gogui.View{
 				gogui.Button(gogui.ButtonCfg{
 					ID: "gui:profile:add", Variant: gogui.ButtonSecondary, Label: "Add",
@@ -292,12 +342,6 @@ func profilesCard(t gogui.Theme, app *App, floor float32) gogui.View {
 					Sizing: gogui.FillFit, Disabled: disabled || selected == "", OnClick: promptRenameProfile,
 				}),
 				gogui.Button(gogui.ButtonCfg{
-					ID: "gui:profile:delete", Variant: gogui.ButtonDanger, Label: "Delete",
-					Sizing:   gogui.FillFit,
-					Disabled: disabled || deleteDisabled(names, app.active, selected),
-					OnClick:  confirmDeleteProfile,
-				}),
-				gogui.Button(gogui.ButtonCfg{
 					ID: "gui:profile:active", Variant: gogui.ButtonSecondary, Label: "Set active",
 					Sizing:   gogui.FillFit,
 					Disabled: disabled || selected == "" || selected == app.active,
@@ -305,25 +349,85 @@ func profilesCard(t gogui.Theme, app *App, floor float32) gogui.View {
 						runSetActive(ctx.Window, selectedProfile(app))
 					},
 				}),
+				// Destructive and irreversible: the subordinate outline-danger
+				// treatment, so it does not out-shout the neutral verbs.
+				dangerOutlineButton(t, "gui:profile:delete", "Delete",
+					disabled || deleteDisabled(names, app.active, selected), confirmDeleteProfile),
 			},
 		}),
 	})
 }
 
+// dangerOutlineColors is the subordinate destructive look for an ENABLED row
+// action: a control-fill button whose 1px error outline and error label give it
+// the same silhouette as its neutral siblings, rather than a filled red block
+// or bare red text.
+func dangerOutlineColors(t gogui.Theme) gogui.ColorSet {
+	return gogui.ColorSet{
+		Base:     t.ColorInterior,
+		Hover:    t.ColorErrorSubtle,
+		Click:    t.ColorErrorSubtle,
+		Focus:    t.ColorInterior,
+		Border:   t.Cfg.ColorError,
+		Disabled: t.Cfg.ColorActive,
+	}
+}
+
+// dangerOutlineDisabledColors is the same button when it cannot run: a neutral
+// fill and a neutral border that still draw the button silhouette (matching its
+// disabled siblings), so an inert destructive control reads muted rather than
+// as bare red text.  Disabled is pinned so the renderer paints the muted fill
+// as given instead of a dimmed danger base.
+func dangerOutlineDisabledColors(t gogui.Theme) gogui.ColorSet {
+	return gogui.ColorSet{
+		Base:     t.Cfg.ColorActive,
+		Hover:    t.Cfg.ColorActive,
+		Click:    t.Cfg.ColorActive,
+		Focus:    t.Cfg.ColorActive,
+		Border:   t.Cfg.ColorBorder,
+		Disabled: t.Cfg.ColorActive,
+	}
+}
+
+// dangerOutlineButton is the one treatment for a repeated, per-row destructive
+// action (profile Delete, list/rule Remove): a danger-styled outline that stays
+// subordinate on an otherwise-neutral form.  Enabled it is an error outline
+// with an error label; disabled it keeps the same button shape but goes fully
+// neutral and inert.  A card-level consequential action (Uninstall) uses the
+// filled ButtonDanger instead, because it is that surface's single primary.
+func dangerOutlineButton(t gogui.Theme, id, label string, disabled bool, onClick func(gogui.EventCtx)) gogui.View {
+	style := t.TextStyleError
+	colors := dangerOutlineColors(t)
+	if disabled {
+		style = t.TextStyleDisabled
+		colors = dangerOutlineDisabledColors(t)
+	}
+
+	return gogui.Button(gogui.ButtonCfg{
+		ID: id, Variant: gogui.ButtonSecondary, Sizing: gogui.FitFit,
+		Colors: colors, Disabled: disabled,
+		Content: []gogui.View{gogui.Text(gogui.TextCfg{
+			Text: label, TextStyle: style, Sizing: gogui.FitFit,
+		})},
+		OnClick: onClick,
+	})
+}
+
 // editorCard is the per-profile editor for the selected profile.  It is
 // editable whenever there is a profile to edit — including the built-in default
-// seeded on a fresh install — and the identity check passes.
+// seeded on a fresh install — and the identity check passes.  The fields are
+// grouped into headed sections so the dense form reads as a setting page rather
+// than one long block.
 func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	d := app.draft
 	disabled := app.busy || !canEdit(app.snap) || d.name == ""
 
-	fields := []gogui.View{
+	providerFields := []gogui.View{
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:provider", Label: "Provider",
 			Options: providerOptions(), Selected: one(d.provider),
 			Disabled: disabled, OnSelect: setDraftProvider,
 		}, floor),
-		caption(t, providerDescription(d.provider)),
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:variant", Label: "Variant",
 			Options: variantOptions(d.provider), Selected: one(d.variant),
@@ -340,9 +444,9 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	// The custom provider's transport is dictated by its URL, so there is no
 	// protocol choice to make; show a one-line hint instead of the control.
 	if d.provider == providers.Custom {
-		fields = append(fields, caption(t, "Transport is taken from the custom URL."))
+		providerFields = append(providerFields, caption(t, "Transport is taken from the custom URL."))
 	} else {
-		fields = append(fields, protocolSelect(d, disabled, floor))
+		providerFields = append(providerFields, protocolSelect(d, disabled, floor))
 	}
 
 	// The resolver id is only meaningful for providers that use one; the
@@ -351,7 +455,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	// switching provider updates it on the next repaint.
 	idNeeded := needsResolverID(d.provider, d.variant)
 
-	fields = append(fields, gogui.Input(gogui.InputCfg{
+	providerFields = append(providerFields, gogui.Input(gogui.InputCfg{
 		ID: "gui:edit:id", Label: "Resolver ID", Sizing: gogui.FillFit,
 		Text: d.id, IsPassword: true, Placeholder: "•••• leave blank to keep",
 		Disabled: disabled || !idNeeded,
@@ -363,7 +467,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		},
 	}))
 	if !idNeeded {
-		fields = append(fields, gogui.Text(gogui.TextCfg{
+		providerFields = append(providerFields, gogui.Text(gogui.TextCfg{
 			ID:        "gui:edit:id:hint",
 			Text:      "This provider does not use a resolver ID.",
 			TextStyle: t.TextStyleCaption,
@@ -373,7 +477,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	}
 
 	if d.provider == providers.Custom {
-		fields = append(fields, gogui.Input(gogui.InputCfg{
+		providerFields = append(providerFields, gogui.Input(gogui.InputCfg{
 			ID: "gui:edit:url", Label: "Custom URL", Sizing: gogui.FillFit,
 			Text: d.url, Placeholder: "leave blank to keep", Disabled: disabled,
 			OnTextChanged: func(text string, ctx gogui.EventCtx) {
@@ -382,15 +486,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		}))
 	}
 
-	fields = append(fields,
-		gogui.Input(gogui.InputCfg{
-			ID: "gui:edit:bootstrap", Label: "Bootstrap (comma-separated)",
-			Sizing: gogui.FillFit,
-			Text:   d.bootstrap, Disabled: disabled,
-			OnTextChanged: func(text string, ctx gogui.EventCtx) {
-				updateDraft(ctx, func(d *profileDraft) { d.bootstrap = text })
-			},
-		}),
+	filteringFields := []gogui.View{
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:filtering", Label: "Filtering", Selected: d.filtering,
 			Disabled: disabled,
@@ -406,6 +502,9 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 				updateDraft(ctx, func(d *profileDraft) { d.blockResp = first(vals) })
 			},
 		}, floor),
+	}
+
+	cacheFields := []gogui.View{
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:cache", Label: "Cache", Selected: d.cache,
 			Disabled: disabled,
@@ -421,17 +520,71 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 				updateDraft(ctx, func(d *profileDraft) { d.cacheSizeMB = text })
 			},
 		}),
-		saveRow(t, d, disabled),
-	)
+		bootstrapField(t, d, disabled),
+	}
 
-	// A slightly larger inter-row gap than the read-only cards: the editor has
-	// many stacked fields, and the tight default made it read as one dense block.
-	return cardSpaced(t, "gui:card:editor", "Profile editor", gogui.SpacingSmall, fields)
+	return card(t, "gui:card:editor", "Profile editor", []gogui.View{
+		fieldGroup(t, "gui:edit:group:provider", "Provider", providerFields...),
+		groupDivider(t, 1),
+		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
+		groupDivider(t, 2),
+		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields...),
+		saveRow(t, d, disabled),
+	})
 }
 
-// saveRow is the Save button and its one-line hint.  Save spans the full field
-// column (PaddingNone, no blank left inset) so it lines up with the inputs above
-// it; the hint sits underneath.
+// groupDivider separates two field groups in the editor card, so the grouping
+// stays legible even where a heading's text is not read.
+func groupDivider(t gogui.Theme, i int) gogui.View {
+	return gogui.Separator(gogui.SeparatorCfg{
+		ID:    fmt.Sprintf("gui:edit:divider:%d", i),
+		Color: t.ColorBorder,
+	})
+}
+
+// bootstrapField is the bootstrap server list input.
+func bootstrapField(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
+	return gogui.Input(gogui.InputCfg{
+		ID: "gui:edit:bootstrap", Label: "Bootstrap (comma-separated)",
+		Sizing: gogui.FillFit,
+		Text:   d.bootstrap, Disabled: disabled,
+		OnTextChanged: func(text string, ctx gogui.EventCtx) {
+			updateDraft(ctx, func(d *profileDraft) { d.bootstrap = text })
+		},
+	})
+}
+
+// fieldGroup is a headed block of related fields inside the editor card.  The
+// heading is a quiet, subordinate level below the card title (the card title is
+// the strong "body strong" heading; a group heading is smaller and quieter), so
+// the hierarchy reads: card title > group heading > field.  The fields keep one
+// uniform tight rhythm, and the card's dividers mark the boundaries.
+func fieldGroup(t gogui.Theme, id, title string, fields ...gogui.View) gogui.View {
+	content := []gogui.View{gogui.Text(gogui.TextCfg{
+		ID:        id,
+		Text:      title,
+		TextStyle: t.TextStyleLabel,
+		Sizing:    gogui.FillFit,
+	})}
+	content = append(content, fields...)
+
+	return gogui.Column(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		Spacing:    gogui.SpacingSmall,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content:    content,
+	})
+}
+
+// saveButtonMinWidth is the comfortable minimum for the primary Save action.
+// A Fit-width button would collapse to its label in a font-less render; a floor
+// keeps it a button-sized target.
+const saveButtonMinWidth float32 = 140
+
+// saveRow is the Save button and its one-line hint.  Save is a content-width
+// button right-aligned to the field column, so the primary action reads as a
+// button rather than a full-column bar; the hint sits underneath.
 func saveRow(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
@@ -439,10 +592,18 @@ func saveRow(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 		Padding:    gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
-			gogui.Button(gogui.ButtonCfg{
-				ID: "gui:profile:save", Variant: gogui.ButtonPrimary, Label: "Save",
-				Sizing: gogui.FillFit, Disabled: disabled,
-				OnClick: func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) },
+			gogui.Row(gogui.ContainerCfg{
+				Sizing:     gogui.FillFit,
+				HAlign:     gogui.HAlignEnd,
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+				Content: []gogui.View{
+					gogui.Button(gogui.ButtonCfg{
+						ID: "gui:profile:save", Variant: gogui.ButtonPrimary, Label: "Save",
+						Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
+						OnClick: func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) },
+					}),
+				},
 			}),
 			gogui.Text(gogui.TextCfg{
 				Text:      "Blank resolver ID keeps the current one.",
@@ -469,17 +630,15 @@ func listSection(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.V
 	}
 
 	// Add-by-URL: paste a URL and Add.  Only a new list carries its URL in
-	// full; existing lists are edited by index (SPEC §15.2).
+	// full; existing lists are edited by index (SPEC §15.2).  The field and its
+	// button are one InputGroup, so the trailing control is attached to the
+	// field (no detached gap) and the pair shares the card's right edge.
 	children = append(children,
-		gogui.Row(gogui.ContainerCfg{
-			ID:         "gui:list:add:row",
-			Sizing:     gogui.FillFit,
-			Spacing:    gogui.SpacingSmall,
-			Padding:    gogui.PaddingNone,
-			SizeBorder: gogui.NoBorder,
-			VAlign:     gogui.VAlignMiddle,
-			Content: []gogui.View{
-				gogui.Input(gogui.InputCfg{
+		gogui.InputGroup(gogui.InputGroupCfg{
+			ID:     "gui:list:add:row",
+			Sizing: gogui.FillFit,
+			Segments: []gogui.InputGroupSegment{
+				gogui.InputGroupInput(gogui.InputCfg{
 					ID: "gui:list:add:url", Sizing: gogui.FillFit,
 					Text:        app.listInput,
 					Placeholder: "https://example.com/hosts.txt",
@@ -488,7 +647,7 @@ func listSection(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.V
 						setListInput(ctx, text)
 					},
 				}),
-				gogui.Button(gogui.ButtonCfg{
+				gogui.InputGroupButton(gogui.ButtonCfg{
 					ID: "gui:list:add", Variant: gogui.ButtonSecondary, Label: "Add list",
 					Sizing: gogui.FitFit, Disabled: disabled, OnClick: addList,
 				}),
@@ -499,13 +658,15 @@ func listSection(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.V
 
 	return gogui.Column(gogui.ContainerCfg{
 		ID: "gui:edit:lists", Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		Spacing: gogui.SpacingMedium, Padding: gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder, Content: children,
 	})
 }
 
 // listRow is one filter list: its redacted host (or a newly typed URL), an
-// enable toggle, and a remove control.
+// enable toggle, and a remove control.  The two controls form one right-hand
+// cluster with fixed inter-control spacing, so the toggle and remove columns
+// land in the same place in every list and rule row.
 func listRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 	l := d.lists[i]
 	label := l.host
@@ -515,22 +676,36 @@ func listRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 
 	return gogui.Row(gogui.ContainerCfg{
 		ID: fmt.Sprintf("gui:list:%d", i), Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingSmall, Padding: gogui.PaddingNone,
+		Spacing: gogui.SpacingMedium, Padding: gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder, VAlign: gogui.VAlignMiddle,
 		Content: []gogui.View{
 			gogui.Text(gogui.TextCfg{
 				ID: fmt.Sprintf("gui:list:%d:host", i), Text: fallback(label, "(list)"),
 				TextStyle: t.TextStyleBody, Sizing: gogui.FillFit, Mode: gogui.TextModeWrap,
 			}),
-			gogui.Toggle(gogui.ToggleCfg{
-				ID: fmt.Sprintf("gui:list:%d:enable", i), Label: "Enabled",
-				Selected: l.enabled, Disabled: disabled, OnClick: listToggle(i),
-			}),
-			gogui.Button(gogui.ButtonCfg{
-				ID: fmt.Sprintf("gui:list:%d:remove", i), Variant: gogui.ButtonDanger,
-				Label: "Remove", Sizing: gogui.FitFit, Disabled: disabled, OnClick: removeList(i),
-			}),
+			rowControlCluster(t,
+				gogui.Toggle(gogui.ToggleCfg{
+					ID: fmt.Sprintf("gui:list:%d:enable", i), Label: "Enabled",
+					Selected: l.enabled, Disabled: disabled, OnClick: listToggle(i),
+				}),
+				dangerOutlineButton(t, fmt.Sprintf("gui:list:%d:remove", i), "Remove",
+					disabled, removeList(i)),
+			),
 		},
+	})
+}
+
+// rowControlCluster is the shared right-hand control column of a list or rule
+// row: an enable toggle and a subordinate remove, at one fixed inter-control
+// gap so both controls read as two deliberate columns rather than drift.
+func rowControlCluster(t gogui.Theme, toggle, remove gogui.View) gogui.View {
+	return gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FitFit,
+		Spacing:    gogui.SpacingSmall,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		VAlign:     gogui.VAlignMiddle,
+		Content:    []gogui.View{toggle, remove},
 	})
 }
 
@@ -576,7 +751,7 @@ func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 
 	return gogui.Column(gogui.ContainerCfg{
 		ID: "gui:edit:rules", Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		Spacing: gogui.SpacingMedium, Padding: gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder, Content: children,
 	})
 }
@@ -595,7 +770,7 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 
 	return gogui.Column(gogui.ContainerCfg{
 		ID: fmt.Sprintf("gui:rule:%d", i), Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		Spacing: gogui.SpacingSmall, Padding: gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
 			gogui.Input(gogui.InputCfg{
@@ -612,7 +787,7 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 						Text: "Upstream", TextStyle: t.TextStyleLabel, Sizing: gogui.FillFit,
 					}),
 					gogui.Row(gogui.ContainerCfg{
-						Sizing: gogui.FillFit, Spacing: gogui.SpacingSmall,
+						Sizing: gogui.FillFit, Spacing: gogui.SpacingMedium,
 						Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
 						VAlign: gogui.VAlignMiddle,
 						Content: []gogui.View{
@@ -622,14 +797,14 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 								Placeholder: "leave blank to keep", Disabled: disabled,
 								OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleUpstream(i, text, ctx) },
 							}),
-							gogui.Toggle(gogui.ToggleCfg{
-								ID: fmt.Sprintf("gui:rule:%d:enable", i), Label: "Enabled",
-								Selected: r.enabled, Disabled: disabled, OnClick: ruleToggle(i),
-							}),
-							gogui.Button(gogui.ButtonCfg{
-								ID: fmt.Sprintf("gui:rule:%d:remove", i), Variant: gogui.ButtonDanger,
-								Label: "Remove", Sizing: gogui.FitFit, Disabled: disabled, OnClick: removeRule(i),
-							}),
+							rowControlCluster(t,
+								gogui.Toggle(gogui.ToggleCfg{
+									ID: fmt.Sprintf("gui:rule:%d:enable", i), Label: "Enabled",
+									Selected: r.enabled, Disabled: disabled, OnClick: ruleToggle(i),
+								}),
+								dangerOutlineButton(t, fmt.Sprintf("gui:rule:%d:remove", i), "Remove",
+									disabled, removeRule(i)),
+							),
 						},
 					}),
 				},
@@ -638,23 +813,64 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 	})
 }
 
-// notice is a calm inline banner for a blocking condition.
-func notice(t gogui.Theme, title, detail string) gogui.View {
-	return gogui.Column(gogui.ContainerCfg{
-		Sizing:  gogui.FillFit,
-		Color:   t.ColorWarningSubtle,
-		Radius:  gogui.RadiusMedium,
-		Padding: t.PaddingMedium,
-		Spacing: gogui.SpacingTight,
+// notice is a calm inline banner for a blocking condition.  It is a neutral
+// panel with a thin leading severity stripe — not a full-bleed wash — so it
+// never out-shouts the page.  The title is a real heading; the detail line is
+// secondary.  The stripe's hue is the only difference between the two
+// severities (a warning caution vs an informational note).
+func notice(t gogui.Theme, kind noticeKind, title, detail string) gogui.View {
+	return gogui.Row(gogui.ContainerCfg{
+		ID:          "gui:notice",
+		Sizing:      gogui.FillFit,
+		Color:       t.ColorPanel,
+		ColorBorder: t.ColorBorder,
+		SizeBorder:  gogui.BorderThin,
+		Radius:      gogui.RadiusLarge,
+		Padding:     t.PaddingMedium,
+		Spacing:     gogui.SpacingMedium,
+		VAlign:      gogui.VAlignMiddle,
 		Content: []gogui.View{
-			gogui.Text(gogui.TextCfg{Text: title, TextStyle: t.TextStyleWarning}),
-			gogui.Text(gogui.TextCfg{
-				Text:      detail,
-				TextStyle: t.TextStyleSecondary,
-				Mode:      gogui.TextModeWrap,
+			// The severity stripe: a 3px rounded bar spanning the notice height.
+			gogui.Column(gogui.ContainerCfg{
+				Width:      3,
+				Sizing:     gogui.FixedFill,
+				Color:      noticeAccent(t, kind),
+				Radius:     gogui.RadiusPx(2),
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+			}),
+			gogui.Column(gogui.ContainerCfg{
+				Sizing:     gogui.FillFill,
+				Spacing:    gogui.SpacingTight,
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+				Content: []gogui.View{
+					gogui.Text(gogui.TextCfg{
+						Text:      title,
+						TextStyle: t.TextStyleTitleSmall,
+						Sizing:    gogui.FillFit,
+					}),
+					gogui.Text(gogui.TextCfg{
+						Text:      detail,
+						TextStyle: t.TextStyleSecondary,
+						Mode:      gogui.TextModeWrap,
+						Sizing:    gogui.FillFit,
+					}),
+				},
 			}),
 		},
 	})
+}
+
+// noticeAccent is the leading stripe color for an inline notice: a warning hue
+// for a caution (unverified identity), the accent for an informational note
+// (offline editing).  Both are calm accents, not fills.
+func noticeAccent(t gogui.Theme, kind noticeKind) gogui.Color {
+	if kind == noticeWarning {
+		return t.TextStyleWarning.Color
+	}
+
+	return t.TextStyleLink.Color
 }
 
 // caption is a small, wrapped secondary line under a field.
@@ -990,15 +1206,6 @@ func blockResponseOptions() (opts []gogui.SelectOption) {
 		gogui.NewSelectOption("0.0.0.0", "0.0.0.0"),
 		gogui.NewSelectOption("nxdomain", "nxdomain"),
 	}
-}
-
-// providerDescription is the selected provider's one-line description.
-func providerDescription(name string) (desc string) {
-	if p, ok := providers.Lookup(name); ok {
-		return p.Description
-	}
-
-	return ""
 }
 
 // defaultVariant is a provider's default variant name.
