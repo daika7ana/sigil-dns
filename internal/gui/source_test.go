@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -50,6 +51,34 @@ func TestFileSummaryReadsSavedConfig(t *testing.T) {
 	}
 	if len(got.Profiles) != 1 || got.Profiles[0].Name != cfg.Profile {
 		t.Fatalf("profiles = %+v, want the saved profile list", got.Profiles)
+	}
+}
+
+// TestReadLiveSkipsConfigWhileReadLoadsIt proves the split: the live read
+// leaves the heavy fields nil and never touches config.yaml, while the full
+// read still resolves the offline summary while the service is stopped (here
+// forced by an unreachable endpoint).
+func TestReadLiveSkipsConfigWhileReadLoadsIt(t *testing.T) {
+	// Keep offlineSummary away from any real config file.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ProgramData", t.TempDir())
+
+	s := &pipeSource{endpoint: filepath.Join(t.TempDir(), "absent.sock")}
+
+	live, err := s.ReadLive(context.Background())
+	if err != nil {
+		t.Fatalf("ReadLive: %v", err)
+	}
+	if live.summary != nil || live.info != nil {
+		t.Fatalf("ReadLive touched the config: summary=%+v info=%+v", live.summary, live.info)
+	}
+
+	full, err := s.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if full.summary == nil {
+		t.Fatal("Read did not resolve the offline summary while stopped")
 	}
 }
 

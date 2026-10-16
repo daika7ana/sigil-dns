@@ -79,6 +79,7 @@ type State struct {
 	Mode          Mode      `json:"mode"`
 	Intercept     Mechanism `json:"intercept"`
 	Upstream      string    `json:"active_upstream"`
+	Bypass        []string  `json:"bypass,omitempty"`
 	Snapshot      *Snapshot `json:"snapshot,omitempty"`
 	Health        *Health   `json:"last_health,omitempty"`
 	SchemaVersion int       `json:"schema_version"`

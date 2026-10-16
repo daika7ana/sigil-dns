@@ -104,12 +104,12 @@ func (s *system) Apply(ctx context.Context) (err error) {
 		return intercept.ApplyAdapters(ctx, entries)
 	}
 
-	return intercept.New().Enable(ctx)
+	return intercept.New(nil).Enable(ctx, st.Bypass)
 }
 
 // Disable removes interception and clears the state after persistent drift.
 func (s *system) Disable(ctx context.Context) (err error) {
-	if err = intercept.New().Disable(ctx); err != nil {
+	if err = intercept.New(nil).Disable(ctx); err != nil {
 		return err
 	}
 

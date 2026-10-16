@@ -8,29 +8,111 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // New returns the Windows NRPT controller.
-func New() Controller { return nrptController{} }
+func New(logger *slog.Logger) Controller {
+	if logger == nil {
+		logger = slog.Default().With("component", "intercept")
+	}
 
-// nrptController manages our single NRPT rule.
-type nrptController struct{}
+	return nrptController{logger: logger}
+}
+
+// nrptController manages our NRPT rules.
+type nrptController struct {
+	logger *slog.Logger
+}
 
 // Enable implements Controller.  It is idempotent: any stale rule of ours is
-// removed before the rule is added.
-func (nrptController) Enable(ctx context.Context) (err error) {
-	const script = `
-$ErrorActionPreference = 'Stop'
-Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' } |
-    Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
-Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'dns-client' | Out-Null
-`
-	_, err = runPS(ctx, script)
+// removed before the catch-all and the bypass exemptions are added.  A bypass
+// exemption whose empty-name-server encoding did not take effect falls back to
+// pinning the adapter's current DNS servers.
+func (c nrptController) Enable(ctx context.Context, bypass []string) (err error) {
+	namespaces := normalizeBypass(bypass)
 
-	return err
+	out, err := runPS(ctx, nrptEnableScript(namespaces))
+	if err != nil {
+		return err
+	}
+
+	missing := nrptVerify(out, namespaces)
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// The empty-name-server encoding is not first-class in the DnsClient
+	// cmdlets, so fall back to the adapter's current DNS servers.
+	servers := currentDNSServers(ctx)
+	if len(servers) == 0 {
+		c.warnUnverified(ctx, missing)
+
+		return nil
+	}
+
+	fbOut, fErr := runPS(ctx, nrptFallbackScript(missing, servers))
+	if fErr != nil {
+		c.logger.WarnContext(ctx, "bypass fallback failed", "err", fErr)
+		c.warnUnverified(ctx, missing)
+
+		return nil
+	}
+
+	// Never fail the whole enable because one bypass could not be applied: the
+	// domain simply keeps going through our resolver.
+	c.warnUnverified(ctx, nrptVerify(fbOut, missing))
+
+	return nil
+}
+
+// warnUnverified logs a warning for each namespace still unverifiable.
+func (c nrptController) warnUnverified(ctx context.Context, namespaces []string) {
+	for _, ns := range namespaces {
+		c.logger.WarnContext(ctx, "bypass namespace unverified", "namespace", ns)
+	}
+}
+
+// normalizeBypass maps bypass domains to unique NRPT namespaces, dropping empties.
+func normalizeBypass(bypass []string) (namespaces []string) {
+	seen := map[string]bool{}
+	for _, d := range bypass {
+		ns := nrptNamespace(d)
+		if ns == "" || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		namespaces = append(namespaces, ns)
+	}
+
+	return namespaces
+}
+
+// currentDNSServers returns every distinct non-loopback DNS server configured on
+// any interface.
+func currentDNSServers(ctx context.Context) (servers []string) {
+	entries, err := snapshotAdapters(ctx)
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	for _, e := range entries {
+		for _, a := range append(append([]string{}, e.IPv4...), e.IPv6...) {
+			a = strings.TrimSpace(a)
+			if a == "" || a == "127.0.0.1" || a == "::1" || seen[a] {
+				continue
+			}
+			seen[a] = true
+			servers = append(servers, a)
+		}
+	}
+
+	return servers
 }
 
 // Disable implements Controller.  It removes only our rule and is idempotent.
@@ -200,8 +282,11 @@ Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'dns-client' } | ForEa
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
-		case line == "ours=1":
-			st.Ours = true
+		// Bypass exemptions make our rule count > 1, so any positive count is ours.
+		case strings.HasPrefix(line, "ours="):
+			if n, cErr := strconv.Atoi(strings.TrimPrefix(line, "ours=")); cErr == nil && n >= 1 {
+				st.Ours = true
+			}
 		case strings.HasPrefix(line, "foreign="):
 			st.Conflicts = append(st.Conflicts, strings.TrimPrefix(line, "foreign="))
 		}
@@ -210,19 +295,11 @@ Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'dns-client' } | ForEa
 	return st, nil
 }
 
-// psList renders addrs as a PowerShell array literal with each item quoted.
-func psList(addrs []string) (list string) {
-	quoted := make([]string, len(addrs))
-	for i, a := range addrs {
-		quoted[i] = "'" + strings.ReplaceAll(a, "'", "''") + "'"
-	}
-
-	return strings.Join(quoted, ",")
-}
-
 // runPS runs a PowerShell command and returns its stdout.
 func runPS(ctx context.Context, script string) (out string, err error) {
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	// Keep a console-less GUI/--apply process from flashing a console window.
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

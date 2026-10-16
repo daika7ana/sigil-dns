@@ -34,6 +34,7 @@ type Config struct {
 	Upstreams      []string
 	Bootstrap      []string
 	Rules          []resolver.Rule
+	Bypass         []string
 	Filter         resolver.FilterConfig
 	Listen         []string
 	CacheSizeBytes int
@@ -60,7 +61,7 @@ func New(cfg Config) (l *Lifecycle) {
 	return &Lifecycle{
 		cfg:    cfg,
 		store:  state.NewStore(cfg.StatePath),
-		ic:     intercept.New(),
+		ic:     intercept.New(logger),
 		logger: logger,
 	}
 }
@@ -114,6 +115,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		Dirty:         true,
 		Upstream:      strings.Join(l.upstreamsOrDefault(), ","),
 		Health:        toStateHealth(hr),
+		Bypass:        l.cfg.Bypass,
 	}
 	if err = l.store.Save(st); err != nil {
 		_ = l.stopResolver(ctx)
@@ -122,7 +124,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 4. Apply interception.
-	if err = l.ic.Enable(ctx); err != nil {
+	if err = l.ic.Enable(ctx, l.cfg.Bypass); err != nil {
 		// Keep the dirty marker so a later restore undoes any partial change.
 		_ = l.stopResolver(ctx)
 
@@ -364,7 +366,10 @@ func (l *Lifecycle) flush(ctx context.Context) {
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if err := exec.CommandContext(c, "ipconfig", "/flushdns").Run(); err != nil {
+	cmd := exec.CommandContext(c, "ipconfig", "/flushdns")
+	hideWindow(cmd)
+
+	if err := cmd.Run(); err != nil {
 		l.logger.WarnContext(ctx, "ipconfig /flushdns failed", "err", err)
 	}
 }

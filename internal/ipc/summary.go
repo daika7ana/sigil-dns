@@ -35,12 +35,15 @@ type ListSummary struct {
 	Enabled bool `json:"enabled"`
 }
 
-// PerDomainSummary is one per-domain routing rule, reduced to its domains and
-// its enabled flag.  The upstream is never exposed; editing is replace-only
-// (SPEC §15.2).
+// PerDomainSummary is one per-domain routing rule, reduced to its domains, its
+// bypass flag and its enabled flag.  The upstream is never exposed; editing is
+// replace-only (SPEC §15.2).
 type PerDomainSummary struct {
 	// Domains is the rule's domain list (never an upstream).
 	Domains []string `json:"domains"`
+
+	// Bypass reports whether the domains resolve via the system resolver.
+	Bypass bool `json:"bypass,omitempty"`
 
 	// Enabled reports whether the rule is active.
 	Enabled bool `json:"enabled"`
@@ -265,6 +268,7 @@ func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSumm
 	for _, r := range p.PerDomain {
 		s.PerDomain = append(s.PerDomain, PerDomainSummary{
 			Domains: append([]string(nil), r.Domains...),
+			Bypass:  r.Bypass,
 			Enabled: r.IsEnabled(),
 		})
 	}

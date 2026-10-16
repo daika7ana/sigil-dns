@@ -153,10 +153,15 @@ type Cache struct {
 // by internal/resolver (see rulesToLines + proxy.ParseUpstreamsConfig).  Domains
 // accept the dnsmasq conventions the resolver documents: "*.sub.domain" matches
 // the subdomains of sub.domain (not the base), while "sub.domain" matches the
-// base and all subdomains.
+// base and all subdomains.  A rule is one of two kinds: a forward rule routes
+// Domains to Upstream, while a bypass rule (Bypass) resolves them with the
+// system's normal DNS and carries no Upstream.
 type PerDomain struct {
 	Domains  []string `yaml:"domains"`
-	Upstream string   `yaml:"upstream"`
+	Upstream string   `yaml:"upstream,omitempty"`
+
+	// Bypass sends the domains to the system resolver instead of Upstream.
+	Bypass bool `yaml:"bypass,omitempty"`
 
 	// Enabled toggles the rule without deleting it.  A nil (absent) field means
 	// enabled, so existing rules keep matching across an upgrade.
@@ -398,8 +403,18 @@ func (p Profile) validate(name string) (err error) {
 
 	// Per-domain and filtering fields: validated here, applied by the resolver.
 	for i, pd := range p.PerDomain {
-		if len(pd.Domains) == 0 || strings.TrimSpace(pd.Upstream) == "" {
-			return fmt.Errorf("profile %q: per_domain %d needs domains and an upstream", name, i)
+		if len(pd.Domains) == 0 {
+			return fmt.Errorf("profile %q: per_domain %d needs domains", name, i)
+		}
+		if pd.Bypass {
+			if strings.TrimSpace(pd.Upstream) != "" {
+				return fmt.Errorf("profile %q: per_domain %d is a bypass rule with an upstream", name, i)
+			}
+
+			continue
+		}
+		if strings.TrimSpace(pd.Upstream) == "" {
+			return fmt.Errorf("profile %q: per_domain %d needs an upstream", name, i)
 		}
 	}
 	for i, l := range p.Filtering.Lists {

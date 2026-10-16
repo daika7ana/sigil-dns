@@ -253,6 +253,32 @@ func TestPerDomainMapping(t *testing.T) {
 	}
 }
 
+// TestPerDomainBypassMapping proves a bypass row carries Bypass and never a
+// typed or kept upstream, so a stale value (or a seeded index) cannot leak into
+// a bypass patch — which the helper rejects outright.
+func TestPerDomainBypassMapping(t *testing.T) {
+	d := profileDraft{
+		name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+		rulesKnown: true,
+		perDomain: []ruleDraft{
+			// A seeded rule switched to bypass: no Keep, even with a blank upstream.
+			{domains: "local.example", bypass: true, idx: 3, enabled: true},
+			// A bypass row carrying a leftover typed upstream: it must not travel.
+			{domains: "lan.example", bypass: true, upstream: "  tls://10.0.0.1:853  ", enabled: false},
+		},
+	}
+
+	rules := *saveRequest(t, d).Patch.Profiles["w"].PerDomain
+	if len(rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(rules))
+	}
+	for i, r := range rules {
+		if !r.Bypass || r.Upstream != "" || r.Keep != nil {
+			t.Errorf("rule %d = %+v, want Bypass with no upstream and no Keep", i, r)
+		}
+	}
+}
+
 // TestLegacySummaryDoesNotSendRules proves a draft seeded from a legacy
 // top-level summary (which carries no per-domain rules) does not send an empty
 // rule array — that would silently clear the profile's rules on an unrelated

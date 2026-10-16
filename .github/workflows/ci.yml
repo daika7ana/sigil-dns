@@ -22,9 +22,9 @@ jobs:
       - run: go vet ./...
       - run: go vet -tags gui ./...
       - run: go test -timeout 120s ./...
-      # The GUI headless smoke test runs on Linux only (no GPU/display needed).
-      - if: matrix.os == 'ubuntu-latest'
-        run: go test -tags gui ./internal/gui/
+      # GUI headless smoke test (software renderer; no GPU/display needed).  Run
+      # on both runners: Linux for fast feedback, Windows for the real target.
+      - run: go test -tags gui ./internal/gui/
 
   integration-windows:
     runs-on: windows-latest

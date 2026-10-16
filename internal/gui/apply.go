@@ -141,10 +141,7 @@ func runRequest(w *gogui.Window, req applyRequest) {
 			a.showToast(win, noticeFor(req.action, res, err))
 			// Re-poll at once.  The banner reflects the service, never an
 			// optimistic guess.
-			select {
-			case a.refresh <- struct{}{}:
-			default:
-			}
+			requestRefresh(a.refresh)
 			win.InvalidateLayout()
 		})
 	}()

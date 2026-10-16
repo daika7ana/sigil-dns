@@ -306,8 +306,8 @@ func TestRulesRuleSection(t *testing.T) {
 
 	for _, id := range []string{
 		"gui:edit:rules",
-		"gui:rule:0:domains", "gui:rule:0:upstream", "gui:rule:0:enable", "gui:rule:0:remove",
-		"gui:rule:1:domains", "gui:rule:1:upstream", "gui:rule:1:enable", "gui:rule:1:remove",
+		"gui:rule:0:domains", "gui:rule:0:kind", "gui:rule:0:upstream", "gui:rule:0:enable", "gui:rule:0:remove",
+		"gui:rule:1:domains", "gui:rule:1:kind", "gui:rule:1:upstream", "gui:rule:1:enable", "gui:rule:1:remove",
 		"gui:rule:add",
 	} {
 		if n := len(w.ResolveID(id)); n != 1 {
@@ -325,6 +325,123 @@ func TestRulesRuleSection(t *testing.T) {
 	if !app.draft.perDomain[0].enabled || app.draft.perDomain[1].enabled {
 		t.Errorf("seeded enable states = %v/%v, want true/false",
 			app.draft.perDomain[0].enabled, app.draft.perDomain[1].enabled)
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRulesRuleKind proves the per-domain editor offers both rule kinds: an
+// Upstream / Bypass selector per row, a live upstream input only for an
+// upstream rule, and a grounded caption in its place for a bypass rule — with
+// the enable and remove controls still present for both.
+func TestRulesRuleKind(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{
+		{domains: "up.example", enabled: true},
+		{domains: "bypass.example", bypass: true, enabled: true},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	// Both rows offer the kind selector, and both keep the row controls.
+	for _, id := range []string{
+		"gui:rule:0:kind", "gui:rule:1:kind",
+		"gui:rule:0:enable", "gui:rule:1:enable",
+		"gui:rule:0:remove", "gui:rule:1:remove",
+	} {
+		if n := len(w.ResolveID(id)); n != 1 {
+			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	// Only the upstream row has a live target input.
+	if n := len(w.ResolveID("gui:rule:0:upstream")); n != 1 {
+		t.Errorf("upstream row target input = %d, want 1", n)
+	}
+	if n := len(w.ResolveID("gui:rule:1:upstream")); n != 0 {
+		t.Errorf("bypass row has an upstream input (%d), want none", n)
+	}
+
+	// The bypass row states where its domains resolve; the upstream row does not.
+	const want = "Resolved by the system's normal DNS, not by dns-client."
+	if !textSet(mustFindLayout(t, w, root, "gui:rule:1"))[want] {
+		t.Errorf("bypass row does not show %q", want)
+	}
+	if textSet(mustFindLayout(t, w, root, "gui:rule:0"))[want] {
+		t.Error("upstream row shows the bypass caption")
+	}
+
+	assertNoFindings(t, w)
+}
+
+// TestRulesKindFitsMinWindow proves the kind selector and its row keep the
+// Rules page inside the minimum window width (no horizontal scrollbar).
+func TestRulesKindFitsMinWindow(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{
+		{domains: "up.example", enabled: true},
+		{domains: "bypass.example", bypass: true, enabled: true},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: minWidth, Height: minHeight, State: app,
+	})
+	w.SetView(view)
+	w.TestRender(nil)
+
+	ids := w.ResolveID("gui:rules")
+	if len(ids) != 1 {
+		t.Fatalf("rules page widgets = %d, want 1", len(ids))
+	}
+	if ov, ok := w.ScrollOverflowX(ids[0]); !ok || ov > 0.5 {
+		t.Errorf("rules page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+	}
+	assertNoFindings(t, w)
+}
+
+// TestRuleKindSwitch proves switching a row to Bypass drops its live upstream
+// input for the caption while keeping the row's other state, and switching back
+// restores the input.
+func TestRuleKindSwitch(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{domains: "a.example", upstream: "1.1.1.1", enabled: false}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	if err := w.TestClick("gui:rule:0:kind:opt:1"); err != nil {
+		t.Fatalf("click Bypass segment: %v", err)
+	}
+	w.TestRender(nil)
+	if !app.draft.perDomain[0].bypass {
+		t.Fatal("Bypass segment did not set the rule kind")
+	}
+	if n := len(w.ResolveID("gui:rule:0:upstream")); n != 0 {
+		t.Errorf("bypass row still shows an upstream input (%d)", n)
+	}
+	// Switching the kind leaves the rest of the row alone.
+	if app.draft.perDomain[0].domains != "a.example" || app.draft.perDomain[0].enabled {
+		t.Errorf("row state changed while switching kind: %+v", app.draft.perDomain[0])
+	}
+
+	if err := w.TestClick("gui:rule:0:kind:opt:0"); err != nil {
+		t.Fatalf("click Upstream segment: %v", err)
+	}
+	w.TestRender(nil)
+	if app.draft.perDomain[0].bypass {
+		t.Fatal("Upstream segment did not clear the rule kind")
+	}
+	if n := len(w.ResolveID("gui:rule:0:upstream")); n != 1 {
+		t.Errorf("upstream row input = %d, want 1", n)
 	}
 	assertNoFindings(t, w)
 }
@@ -634,13 +751,19 @@ func TestSettingsCardTitleStrongerThanGroupHeading(t *testing.T) {
 	}
 }
 
-// TestRulesControlColumnsAligned proves the per-row controls share two fixed
-// columns — one enable toggle column and one remove column — identical between
-// list rows and rule rows, so the two-column layout reads as deliberate.
+// TestRulesControlColumnsAligned proves the repeated row controls share fixed
+// columns within each section: the list rows' toggles/removes line up, and the
+// rule rows' do too.  A rule is a contained panel with its own inner padding,
+// so its control column is inset from the list rows' by that padding; each
+// section still holds one deliberate enable column and one remove column rather
+// than drifting row to row.
 func TestRulesControlColumnsAligned(t *testing.T) {
 	app := rulesApp()
 	app.draft.name = "default"
-	app.draft.perDomain = []ruleDraft{{domains: "a.example", enabled: true}}
+	app.draft.perDomain = []ruleDraft{
+		{domains: "a.example", enabled: true},
+		{domains: "b.example", enabled: true},
+	}
 	app.draft.lists = []listDraft{
 		{host: "ads.example.net", enabled: true, idx: 0},
 		{host: "trackers.example.org", enabled: false, idx: 1},
@@ -651,32 +774,125 @@ func TestRulesControlColumnsAligned(t *testing.T) {
 	w := newSettingsWindow(t, app)
 	root := w.TestRender(nil)
 
-	var wantToggleX float32
-	for i, id := range []string{"gui:list:0:enable", "gui:list:1:enable", "gui:rule:0:enable"} {
-		ly := mustFindLayout(t, w, root, id)
-		if i == 0 {
-			wantToggleX = ly.Shape.X
-
-			continue
+	for _, pair := range [][2]string{
+		{"gui:list:0:enable", "gui:list:1:enable"},
+		{"gui:rule:0:enable", "gui:rule:1:enable"},
+	} {
+		a := mustFindLayout(t, w, root, pair[0])
+		b := mustFindLayout(t, w, root, pair[1])
+		if absF(a.Shape.X-b.Shape.X) > 1 {
+			t.Errorf("%s x=%.1f != %s x=%.1f: enable column drifts",
+				pair[0], a.Shape.X, pair[1], b.Shape.X)
 		}
-		if absF(ly.Shape.X-wantToggleX) > 1 {
-			t.Errorf("%s toggle x=%.1f != %.1f: enable column drifts", id, ly.Shape.X, wantToggleX)
+	}
+
+	for _, pair := range [][2]string{
+		{"gui:list:0:remove", "gui:list:1:remove"},
+		{"gui:rule:0:remove", "gui:rule:1:remove"},
+	} {
+		a := mustFindLayout(t, w, root, pair[0])
+		b := mustFindLayout(t, w, root, pair[1])
+		if ar, br := a.Shape.X+a.Shape.Width, b.Shape.X+b.Shape.Width; absF(ar-br) > 1 {
+			t.Errorf("%s remove right=%.1f != %s right=%.1f: remove column drifts",
+				pair[0], ar, pair[1], br)
+		}
+	}
+}
+
+// TestRuleRowsArePaneled proves each rule is its own contained panel — a
+// hairline border and a numbered header above its fields — so a stack of rules
+// reads as distinct units rather than one undifferentiated column.
+func TestRuleRowsArePaneled(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{
+		{domains: "a.example", enabled: true},
+		{domains: "b.example", enabled: true},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+	th := gogui.CurrentTheme()
+
+	for i, want := range []string{"Rule 1", "Rule 2"} {
+		panel := mustFindLayout(t, w, root, fmt.Sprintf("gui:rule:%d", i))
+		if panel.Shape.ColorBorder != th.ColorBorder || panel.Shape.SizeBorder == 0 {
+			t.Errorf("rule %d panel has no hairline border (color %v, size %.0f)",
+				i, panel.Shape.ColorBorder, panel.Shape.SizeBorder)
+		}
+		if !textSet(panel)[want] {
+			t.Errorf("rule %d panel does not carry its %q header", i, want)
+		}
+
+		title := mustFindLayout(t, w, root, fmt.Sprintf("gui:rule:%d:title", i))
+		domains := mustFindLayout(t, w, root, fmt.Sprintf("gui:rule:%d:domains", i))
+		if title.Shape.Y >= domains.Shape.Y {
+			t.Errorf("rule %d header y=%.0f is not above its fields y=%.0f",
+				i, title.Shape.Y, domains.Shape.Y)
 		}
 	}
 
-	var wantRemoveRight float32
-	for i, id := range []string{"gui:list:0:remove", "gui:list:1:remove", "gui:rule:0:remove"} {
-		ly := mustFindLayout(t, w, root, id)
-		r := ly.Shape.X + ly.Shape.Width
-		if i == 0 {
-			wantRemoveRight = r
-
-			continue
-		}
-		if absF(r-wantRemoveRight) > 1 {
-			t.Errorf("%s remove right=%.1f != %.1f: remove column drifts", id, r, wantRemoveRight)
-		}
+	// Each panel carries its own separator so the header reads as a header, not
+	// as the first field.
+	if n := len(w.ResolveID("gui:rule:1:sep")); n != 1 {
+		t.Errorf("gui:rule:1:sep rendered %d times, want 1", n)
 	}
+	assertNoFindings(t, w)
+}
+
+// TestAddRuleGuard proves "Add rule" is inert while any rule row has blank
+// domains — so empty rules cannot be stacked — and live once every rule is
+// filled or when there are none.
+func TestAddRuleGuard(t *testing.T) {
+	cases := []struct {
+		name  string
+		rules []ruleDraft
+		want  bool
+	}{
+		{"no rules", nil, false},
+		{"all filled", []ruleDraft{{domains: "a.example", enabled: true}}, false},
+		{"one blank", []ruleDraft{{enabled: true}}, true},
+		{"blank among filled", []ruleDraft{
+			{domains: "a.example", enabled: true},
+			{domains: "  ", enabled: true},
+		}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := rulesApp()
+			app.draft.name = "default"
+			app.draft.perDomain = tc.rules
+			app.draft.rulesKnown = true
+			app.seeded = true
+
+			w := newSettingsWindow(t, app)
+			root := w.TestRender(nil)
+			assertDisabled(t, root, w, "gui:rule:add", tc.want)
+		})
+	}
+}
+
+// TestAddRuleEnablesWhenFilled proves the Add rule guard clears as the user
+// fills the last blank row (the row handler already repaints).
+func TestAddRuleEnablesWhenFilled(t *testing.T) {
+	app := rulesApp()
+	app.draft.name = "default"
+	app.draft.perDomain = []ruleDraft{{enabled: true}}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+	assertDisabled(t, root, w, "gui:rule:add", true)
+
+	if err := w.TestType("gui:rule:0:domains", "a.example"); err != nil {
+		t.Fatalf("type domains: %v", err)
+	}
+	root = w.TestRender(nil)
+	assertDisabled(t, root, w, "gui:rule:add", false)
 }
 
 // TestNoticeCalmAndTitled proves the inline notice is a calm neutral panel with

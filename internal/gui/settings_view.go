@@ -70,7 +70,7 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 		card(t, "gui:card:rules", "Per-domain routing", []gogui.View{
 			ruleSection(t, app.draft, disabled),
 		}),
-		saveRow(t, app.draft, disabled, ""),
+		saveRow(app.draft, disabled),
 	)
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -475,7 +475,11 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 
 	providerFields := []gogui.View{
 		formSelect(gogui.SelectCfg{
-			ID: "gui:edit:provider", Label: "Provider",
+			ID: "gui:edit:provider",
+			// The group heading above already reads "Provider", so this field
+			// carries no visible label; it is named for assistive tech only,
+			// the same way the rule-row upstream input is.
+			A11YCfg: gogui.A11YCfg{A11YLabel: "Provider"},
 			Options: providerOptions(), Selected: one(d.provider),
 			Disabled: disabled, OnSelect: setDraftProvider,
 		}, floor),
@@ -517,7 +521,19 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			})
 		},
 	}))
-	if !idNeeded {
+
+	// The line under the Resolver ID field: a live field explains that a blank
+	// value keeps the stored id; an inert one says why it cannot be used.  The
+	// two are mutually exclusive, so only one ever shows.
+	if idNeeded {
+		providerFields = append(providerFields, gogui.Text(gogui.TextCfg{
+			ID:        "gui:edit:id:keep",
+			Text:      "Blank resolver ID keeps the current one.",
+			TextStyle: t.TextStyleCaption,
+			Sizing:    gogui.FillFit,
+			Mode:      gogui.TextModeWrap,
+		}))
+	} else {
 		providerFields = append(providerFields, gogui.Text(gogui.TextCfg{
 			ID:        "gui:edit:id:hint",
 			Text:      "This provider does not use a resolver ID.",
@@ -580,7 +596,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
 		groupDivider(t, 2),
 		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields...),
-		saveRow(t, d, disabled, "Blank resolver ID keeps the current one."),
+		saveRow(d, disabled),
 	})
 }
 
@@ -633,13 +649,10 @@ func fieldGroup(t gogui.Theme, id, title string, fields ...gogui.View) gogui.Vie
 // keeps it a button-sized target.
 const saveButtonMinWidth float32 = 140
 
-// saveRow is the Save button and its one-line hint.  Save is a content-width
-// button right-aligned to the field column, so the primary action reads as a
-// button rather than a full-column bar; hint, when non-empty, sits underneath.
-// The hint is caller-supplied because it annotates a field that only some
-// callers have (the resolver ID on the profile editor); an empty hint omits the
-// line entirely.
-func saveRow(t gogui.Theme, d profileDraft, disabled bool, hint string) gogui.View {
+// saveRow is the Save button, right-aligned to the field column.  Save is a
+// content-width button so the primary action reads as a button rather than a
+// full-column bar; any field annotation belongs beside its field, not here.
+func saveRow(d profileDraft, disabled bool) gogui.View {
 	content := []gogui.View{
 		gogui.Row(gogui.ContainerCfg{
 			Sizing:     gogui.FillFit,
@@ -654,14 +667,6 @@ func saveRow(t gogui.Theme, d profileDraft, disabled bool, hint string) gogui.Vi
 				}),
 			},
 		}),
-	}
-	if hint != "" {
-		content = append(content, gogui.Text(gogui.TextCfg{
-			Text:      hint,
-			TextStyle: t.TextStyleCaption,
-			Sizing:    gogui.FillFit,
-			Mode:      gogui.TextModeWrap,
-		}))
 	}
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -787,11 +792,18 @@ func refreshRow(t gogui.Theme, app *App, disabled bool) gogui.View {
 	})
 }
 
-// ruleSection is the per-domain routing editor: comma-separated domains and an
-// upstream per row, with an enable toggle, add/remove controls, and a one-line
-// note on how wildcard patterns match.  A blank upstream keeps the existing
-// rule's target (the stored one is never shown).  It is the body of the
-// "Per-domain routing" card, so the card title carries the heading.
+// The two per-domain rule kinds, as the SegmentedControl values.
+const (
+	ruleKindUpstream = "upstream"
+	ruleKindBypass   = "bypass"
+)
+
+// ruleSection is the per-domain routing editor: comma-separated domains, a
+// rule-kind choice (upstream or bypass), and — for an upstream rule — its
+// target, with an enable toggle, add/remove controls, and a one-line note on
+// how wildcard patterns match.  A blank upstream keeps the existing rule's
+// target (the stored one is never shown).  It is the body of the "Per-domain
+// routing" card, so the card title carries the heading.
 func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	children := []gogui.View{
 		caption(t, "*.example.com matches subdomains only; example.com matches the domain and its subdomains"),
@@ -804,7 +816,7 @@ func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	}
 	children = append(children, gogui.Button(gogui.ButtonCfg{
 		ID: "gui:rule:add", Variant: gogui.ButtonSecondary, Label: "Add rule",
-		Sizing: gogui.FillFit, Disabled: disabled, OnClick: addRule,
+		Sizing: gogui.FillFit, Disabled: disabled || addRuleDisabled(d), OnClick: addRule,
 	}))
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -814,61 +826,135 @@ func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	})
 }
 
-// ruleRow is one per-domain rule: its domain list, an enable toggle, and an
-// upstream input with a remove control.  The upstream starts blank and blank
-// means "keep"; the stored target is never seeded or shown.
+// addRuleDisabled reports whether "Add rule" must be inert: while any existing
+// rule still has blank domains, adding another would only stack another empty
+// row.  It reads the live draft, so filling the last blank row re-enables the
+// button on the next repaint (every row handler already requests one).  A blank
+// rule set leaves it enabled, as does a set whose every rule has domains.
+func addRuleDisabled(d profileDraft) (disabled bool) {
+	for _, r := range d.perDomain {
+		if strings.TrimSpace(r.domains) == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleRow is one per-domain rule, drawn as its own contained panel: a numbered
+// header over a hairline rule, then the domain list, a rule-kind selector
+// (Upstream / Bypass), the kind's target, an enable toggle, and a remove
+// control.  The panel and the numbering are what keep a stack of rules legible
+// — otherwise identical empty rows read as one undifferentiated column.  An
+// upstream row shows the target input (blank means "keep"; the stored target is
+// never seeded or shown); a bypass row replaces it with a plain caption,
+// because the domains resolve via the system resolver and there is no upstream
+// to type.
 //
-// The "Upstream" label is a sibling of the control row rather than the input's
-// own Label.  A labelled Input wraps label+field in a Column, so centring the
-// toggle and remove against that whole stack (VAlignMiddle) leaves them high of
-// the field's centreline; keeping the row to the bare field makes the centring
-// exact and stays correct however tall the field grows.
+// The kind control is its own row: with only two options, the selected segment
+// names the target, so the "Rule type" and "Upstream" text labels the first cut
+// carried are gone.  The upstream input keeps the name "Upstream" for assistive
+// tech through its A11Y label rather than a visible label — a labelled Input
+// wraps label+field in a Column, so centring the toggle and remove against that
+// whole stack (VAlignMiddle) would leave them high of the field's centreline.
 func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 	r := d.perDomain[i]
 
+	kind := ruleKindUpstream
+	if r.bypass {
+		kind = ruleKindBypass
+	}
+
+	// The target block follows the kind: an input for an upstream rule, a
+	// caption for a bypass rule.  Either way the enable/remove cluster sits
+	// beside it, so both controls keep working for both kinds and stay on the
+	// panel's inner right edge.
+	var target gogui.View
+	if r.bypass {
+		target = gogui.Row(gogui.ContainerCfg{
+			Sizing: gogui.FillFit, Spacing: gogui.SpacingMedium,
+			Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+			VAlign: gogui.VAlignMiddle,
+			Content: []gogui.View{
+				caption(t, "Resolved by the system's normal DNS, not by dns-client."),
+				ruleControls(t, i, r.enabled, disabled),
+			},
+		})
+	} else {
+		target = gogui.Row(gogui.ContainerCfg{
+			Sizing: gogui.FillFit, Spacing: gogui.SpacingMedium,
+			Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+			VAlign: gogui.VAlignMiddle,
+			Content: []gogui.View{
+				gogui.Input(gogui.InputCfg{
+					ID:     fmt.Sprintf("gui:rule:%d:upstream", i),
+					Sizing: gogui.FillFit, Text: r.upstream,
+					Placeholder: "leave blank to keep", Disabled: disabled,
+					A11YCfg:       gogui.A11YCfg{A11YLabel: "Upstream"},
+					OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleUpstream(i, text, ctx) },
+				}),
+				ruleControls(t, i, r.enabled, disabled),
+			},
+		})
+	}
+
 	return gogui.Column(gogui.ContainerCfg{
-		ID: fmt.Sprintf("gui:rule:%d", i), Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingSmall, Padding: gogui.PaddingNone,
-		SizeBorder: gogui.NoBorder,
+		ID:          fmt.Sprintf("gui:rule:%d", i),
+		Sizing:      gogui.FillFit,
+		Color:       t.ColorInterior,
+		ColorBorder: t.ColorBorder,
+		SizeBorder:  gogui.BorderThin,
+		Radius:      gogui.RadiusMedium,
+		Padding:     t.PaddingMedium,
+		Spacing:     gogui.SpacingSmall,
 		Content: []gogui.View{
+			ruleTitle(t, i),
+			gogui.Separator(gogui.SeparatorCfg{
+				ID:    fmt.Sprintf("gui:rule:%d:sep", i),
+				Color: t.ColorBorder,
+			}),
 			gogui.Input(gogui.InputCfg{
 				ID: fmt.Sprintf("gui:rule:%d:domains", i), Label: "Domains (comma-separated)",
 				Sizing: gogui.FillFit, Text: r.domains,
 				Placeholder: "example.com, *.example.com", Disabled: disabled,
 				OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleDomains(i, text, ctx) },
 			}),
-			gogui.Column(gogui.ContainerCfg{
-				Sizing: gogui.FillFit, Spacing: gogui.SpacingSmall,
-				Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
-				Content: []gogui.View{
-					gogui.Text(gogui.TextCfg{
-						Text: "Upstream", TextStyle: t.TextStyleLabel, Sizing: gogui.FillFit,
-					}),
-					gogui.Row(gogui.ContainerCfg{
-						Sizing: gogui.FillFit, Spacing: gogui.SpacingMedium,
-						Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
-						VAlign: gogui.VAlignMiddle,
-						Content: []gogui.View{
-							gogui.Input(gogui.InputCfg{
-								ID:     fmt.Sprintf("gui:rule:%d:upstream", i),
-								Sizing: gogui.FillFit, Text: r.upstream,
-								Placeholder: "leave blank to keep", Disabled: disabled,
-								OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleUpstream(i, text, ctx) },
-							}),
-							rowControlCluster(t,
-								gogui.Toggle(gogui.ToggleCfg{
-									ID: fmt.Sprintf("gui:rule:%d:enable", i), Label: "Enabled",
-									Selected: r.enabled, Disabled: disabled, OnClick: ruleToggle(i),
-								}),
-								dangerOutlineButton(t, fmt.Sprintf("gui:rule:%d:remove", i), "Remove",
-									disabled, removeRule(i)),
-							),
-						},
-					}),
+			gogui.SegmentedControl(gogui.SegmentedControlCfg{
+				ID:     fmt.Sprintf("gui:rule:%d:kind", i),
+				Sizing: gogui.FillFit, Value: kind, Disabled: disabled,
+				Options: []gogui.SegmentOption{
+					gogui.NewSegmentOption("Upstream", ruleKindUpstream),
+					gogui.NewSegmentOption("Bypass", ruleKindBypass),
 				},
+				OnSelect: func(v string, ctx gogui.EventCtx) { setRuleType(i, v, ctx) },
 			}),
+			target,
 		},
 	})
+}
+
+// ruleTitle is a rule panel's numbered header ("Rule 1"), so a stack of rules
+// is countable and each unit is named at a glance.
+func ruleTitle(t gogui.Theme, i int) gogui.View {
+	return gogui.Text(gogui.TextCfg{
+		ID:        fmt.Sprintf("gui:rule:%d:title", i),
+		Text:      fmt.Sprintf("Rule %d", i+1),
+		TextStyle: t.TextStyleLabel,
+		Sizing:    gogui.FillFit,
+	})
+}
+
+// ruleControls is the shared right-hand cluster of a rule row — an enable
+// toggle and a subordinate remove — identical for both rule kinds.
+func ruleControls(t gogui.Theme, i int, enabled, disabled bool) gogui.View {
+	return rowControlCluster(t,
+		gogui.Toggle(gogui.ToggleCfg{
+			ID: fmt.Sprintf("gui:rule:%d:enable", i), Label: "Enabled",
+			Selected: enabled, Disabled: disabled, OnClick: ruleToggle(i),
+		}),
+		dangerOutlineButton(t, fmt.Sprintf("gui:rule:%d:remove", i), "Remove",
+			disabled, removeRule(i)),
+	)
 }
 
 // notice is a calm inline banner for a blocking condition.  It is a neutral
@@ -1058,6 +1144,17 @@ func setRuleUpstream(i int, text string, ctx gogui.EventCtx) {
 	})
 }
 
+// setRuleType switches one rule between the upstream and bypass kinds.  A
+// bypass rule carries no upstream, so a typed value is simply not sent while
+// the rule is bypass (and is still there if the user switches back).
+func setRuleType(i int, kind string, ctx gogui.EventCtx) {
+	updateDraft(ctx, func(d *profileDraft) {
+		if i >= 0 && i < len(d.perDomain) {
+			d.perDomain[i].bypass = kind == ruleKindBypass
+		}
+	})
+}
+
 // ruleToggle flips one per-domain rule's enabled flag.
 func ruleToggle(i int) func(gogui.EventCtx) {
 	return func(ctx gogui.EventCtx) {
@@ -1096,6 +1193,7 @@ func setPage(ctx gogui.EventCtx, p pageKind) {
 		return
 	}
 	app.page = p
+	requestRefresh(app.refresh) // a newly shown page should show fresh data
 	ctx.Window.InvalidateLayout()
 }
 

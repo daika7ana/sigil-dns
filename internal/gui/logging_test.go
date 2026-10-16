@@ -132,7 +132,7 @@ func TestLogViewerUpdatesThroughPoller(t *testing.T) {
 	w.SetView(view)
 	w.TestRender(nil)
 
-	startPoller(w, fakeSource{snap: app.snap}, make(chan struct{}, 1), &app.logView)
+	startPoller(w, fakeSource{snap: app.snap}, make(chan struct{}, 1), &app.logView, alwaysFocused())
 
 	deadline := time.Now().Add(3 * time.Second)
 	for app.logText == "" && time.Now().Before(deadline) {
@@ -227,23 +227,53 @@ func TestLoggingNextStartNoteAboveApply(t *testing.T) {
 	assertNoFindings(t, w)
 }
 
-// TestRulesPageOmitsResolverIDHint proves the resolver-ID hint is shown by the
-// profile editor but not by the Rules page, which has no such field.
+// TestRulesPageOmitsResolverIDHint proves the resolver-ID lines live on the
+// profile editor's Resolver ID field, not on the Rules page (which has no such
+// field): a live field explains that a blank keeps the current id, and an inert
+// field says the provider uses none.
 func TestRulesPageOmitsResolverIDHint(t *testing.T) {
-	const hint = "Blank resolver ID keeps the current one."
+	const (
+		keepHint = "Blank resolver ID keeps the current one."
+		noIDHint = "This provider does not use a resolver ID."
+	)
 
-	t.Run("rules page omits it", func(t *testing.T) {
+	t.Run("rules page omits both", func(t *testing.T) {
 		w, root := layoutFor(t, rulesApp(), defaultWidth, defaultHeight)
-		if textSet(mustFindLayout(t, w, root, "gui:rules"))[hint] {
-			t.Fatalf("Rules page shows the profile-editor hint %q", hint)
+		text := textSet(mustFindLayout(t, w, root, "gui:rules"))
+		if text[keepHint] || text[noIDHint] {
+			t.Fatalf("Rules page shows a profile-editor resolver-ID hint")
 		}
 		assertNoFindings(t, w)
 	})
 
-	t.Run("profile editor keeps it", func(t *testing.T) {
+	t.Run("live id field keeps the hint", func(t *testing.T) {
+		app := settingsApp()
+		app.draft.provider = "nextdns" // a provider that uses a resolver id
+		app.draft.variant = "ultralow"
+		app.seeded = true // keep the hand-built draft; do not reseed
+
+		w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+		editor := textSet(mustFindLayout(t, w, root, "gui:card:editor"))
+		if !editor[keepHint] {
+			t.Fatalf("profile editor is missing the hint %q", keepHint)
+		}
+		if editor[noIDHint] {
+			t.Errorf("editor shows %q beside a live Resolver ID field", noIDHint)
+		}
+		if n := len(w.ResolveID("gui:edit:id:keep")); n != 1 {
+			t.Errorf("gui:edit:id:keep rendered %d times, want 1", n)
+		}
+		assertNoFindings(t, w)
+	})
+
+	t.Run("no-id field says why", func(t *testing.T) {
 		w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
-		if !textSet(mustFindLayout(t, w, root, "gui:card:editor"))[hint] {
-			t.Fatalf("profile editor is missing the hint %q", hint)
+		editor := textSet(mustFindLayout(t, w, root, "gui:card:editor"))
+		if !editor[noIDHint] {
+			t.Fatalf("profile editor is missing %q", noIDHint)
+		}
+		if editor[keepHint] {
+			t.Errorf("editor shows %q beside an inert Resolver ID field", keepHint)
 		}
 		assertNoFindings(t, w)
 	})

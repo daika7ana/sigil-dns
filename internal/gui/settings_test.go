@@ -66,6 +66,26 @@ func TestRuleDraftSeedsEnabled(t *testing.T) {
 	}
 }
 
+// TestRuleDraftSeedsBypass proves the editor's rule rows take their kind from
+// the sanitized per-domain summary, so draftDirty can see a kind change.
+func TestRuleDraftSeedsBypass(t *testing.T) {
+	d := draftForProfile(ipc.ProfileSummary{
+		Name: "default",
+		PerDomain: []ipc.PerDomainSummary{
+			{Domains: []string{"a.example"}, Bypass: true, Enabled: true},
+			{Domains: []string{"b.example"}},
+		},
+	})
+
+	if len(d.perDomain) != 2 {
+		t.Fatalf("rules = %d, want 2", len(d.perDomain))
+	}
+	if !d.perDomain[0].bypass || d.perDomain[1].bypass {
+		t.Errorf("seeded bypass = %v/%v, want true/false",
+			d.perDomain[0].bypass, d.perDomain[1].bypass)
+	}
+}
+
 // TestDraftFromProfiles seeds from the per-profile list, picking the named
 // profile and never the active one unless it was asked for.
 func TestDraftFromProfiles(t *testing.T) {
@@ -831,6 +851,67 @@ func TestResolverIDFieldEnablement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolverIDCaptions proves the two Resolver ID lines are mutually
+// exclusive and sit under the field: a live field carries "Blank resolver ID
+// keeps the current one."; an inert one carries "This provider does not use a
+// resolver ID."
+func TestResolverIDCaptions(t *testing.T) {
+	const (
+		keepID = "gui:edit:id:keep"
+		noID   = "gui:edit:id:hint"
+	)
+
+	tests := []struct {
+		name              string
+		provider, variant string
+		wantKeep, wantNo  bool
+	}{
+		{"needs id", "nextdns", "ultralow", true, false},
+		{"no id", "quad9", "secure", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := settingsApp()
+			app.draft.name = "work"
+			app.draft.provider = tt.provider
+			app.draft.variant = tt.variant
+			app.seeded = true // keep the hand-built draft; do not reseed
+
+			w := newSettingsWindow(t, app)
+			root := w.TestRender(nil)
+
+			if got := len(w.ResolveID(keepID)) > 0; got != tt.wantKeep {
+				t.Errorf("%s present = %v, want %v", keepID, got, tt.wantKeep)
+			}
+			if got := len(w.ResolveID(noID)) > 0; got != tt.wantNo {
+				t.Errorf("%s present = %v, want %v", noID, got, tt.wantNo)
+			}
+			if tt.wantKeep {
+				// The line sits directly under the Resolver ID input.
+				keep := mustFindLayout(t, w, root, keepID)
+				field := mustFindLayout(t, w, root, "gui:edit:id")
+				if keep.Shape.Y < field.Shape.Y {
+					t.Errorf("keep caption y=%.0f is above the id field y=%.0f", keep.Shape.Y, field.Shape.Y)
+				}
+			}
+			assertNoFindings(t, w)
+		})
+	}
+}
+
+// TestEditorProviderLabelNotDuplicated proves "Provider" is printed once in the
+// profile editor — the field-group heading only — now that the provider select
+// carries no visible label (it keeps a name for assistive tech instead).
+func TestEditorProviderLabelNotDuplicated(t *testing.T) {
+	w, root := layoutFor(t, settingsApp(), defaultWidth, defaultHeight)
+	card := mustFindLayout(t, w, root, "gui:card:editor")
+	if n := countText(card, "Provider"); n != 1 {
+		t.Fatalf(`"Provider" rendered %d times, want 1`, n)
+	}
+	assertNoFindings(t, w)
 }
 
 // TestSettingsPositionRoundTrip proves the remembered window position survives

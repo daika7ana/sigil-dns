@@ -56,7 +56,8 @@ upstream.
 
 ### `per_domain` (dnsmasq-style routing)
 
-Each rule has exactly two fields:
+Each rule is one of two kinds. An **upstream** rule routes its domains to a
+resolver:
 
 ```yaml
 per_domain:
@@ -64,10 +65,19 @@ per_domain:
     upstream: "tls://10.0.0.1"
 ```
 
+A **bypass** rule resolves its domains with the system's normal DNS:
+
+```yaml
+per_domain:
+  - domains: ["printer.lan"]
+    bypass: true
+```
+
 | Field | Type | Rules |
 |---|---|---|
 | `domains` | list of strings | Required, non-empty. A domain must not contain `/`. |
-| `upstream` | string | Required, non-empty. Any DoH/DoT/DoQ URL, or `#`. |
+| `upstream` | string | Required non-empty on an upstream rule: any DoH/DoT/DoQ URL, or `#`. Forbidden on a bypass rule. |
+| `bypass` | bool | Default `false`. Set `true` to resolve the domains via the system's normal DNS instead of dns-client. Forbids `upstream`. |
 
 Matching semantics (dnsproxy's dnsmasq parser):
 
@@ -76,6 +86,9 @@ Matching semantics (dnsproxy's dnsmasq parser):
 - `""` (empty string) matches **unqualified / single-label** names only.
 - `#` as `upstream` **excludes** those domains from any reserved upstream, so
   they fall back to the default `upstreams` pool.
+- A `bypass: true` rule sends its domains to the system's normal DNS — they are
+  not routed through dns-client's resolver and are not covered by its upstream,
+  filtering, or cache. See [LIMITATIONS](LIMITATIONS.md).
 - DS queries for a secure delegation (e.g. `secure.corp.example`) are resolved
   through the parent zone's upstream (`corp.example`).
 - A trailing dot is accepted and normalized (`example.com.` → `example.com`).
@@ -241,6 +254,8 @@ profiles:
         upstream: "tls://10.0.0.1"
       - domains: ["public.example"]
         upstream: "#"          # use the default pool for this one
+      - domains: ["printer.lan", "*.lan"]
+        bypass: true           # resolve via the system's normal DNS
     filtering:
       enabled: true
       block_response: nxdomain

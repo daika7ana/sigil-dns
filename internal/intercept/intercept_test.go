@@ -1,0 +1,76 @@
+package intercept
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNrptNamespace(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"example.com", ".example.com"},
+		{"*.sub.example.com", ".sub.example.com"},
+		{"example.com.", ".example.com"},
+		{"  *.sub.example.com.  ", ".sub.example.com"},
+		{"*", ""},
+		{"", ""},
+		{"   ", ""},
+		{"*.", ""},
+	}
+
+	for _, tc := range cases {
+		if got := nrptNamespace(tc.in); got != tc.want {
+			t.Errorf("nrptNamespace(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestNrptEnableScript(t *testing.T) {
+	script := nrptEnableScript([]string{".a.example", ".b.example"})
+
+	if !strings.Contains(script, "Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue") {
+		t.Errorf("script lacks the removal preamble:\n%s", script)
+	}
+	if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'dns-client'") {
+		t.Errorf("script lacks the catch-all:\n%s", script)
+	}
+	for _, ns := range []string{"'.a.example'", "'.b.example'"} {
+		if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace "+ns+" -DisplayName 'dns-client'") {
+			t.Errorf("script lacks exemption for %s:\n%s", ns, script)
+		}
+	}
+	if strings.Contains(script, "-Namespace '.a.example' -NameServers") {
+		t.Errorf("exemption must not set name servers:\n%s", script)
+	}
+	// A rejected exemption must not abort the script (verification/fallback runs).
+	if !strings.Contains(script, "try { Add-DnsClientNrptRule -Namespace '.a.example'") {
+		t.Errorf("exemption must be guarded so one rejection cannot abort enable:\n%s", script)
+	}
+	if !strings.Contains(script, "Write-Output ('rule=' + $_.Namespace)") {
+		t.Errorf("script lacks the rule= echo:\n%s", script)
+	}
+}
+
+func TestNrptVerify(t *testing.T) {
+	out := "rule=.a.example\nrule=sub.example\n"
+	missing := nrptVerify(out, []string{".a.example", ".b.example", ".sub.example"})
+
+	if len(missing) != 1 || missing[0] != ".b.example" {
+		t.Fatalf("missing = %v, want [.b.example]", missing)
+	}
+}
+
+func TestNrptFallbackScript(t *testing.T) {
+	script := nrptFallbackScript([]string{".a.example"}, []string{"9.9.9.9", "149.112.112.112"})
+
+	rm := strings.Index(script, "Remove-DnsClientNrptRule")
+	add := strings.Index(script, "Add-DnsClientNrptRule -Namespace '.a.example' -NameServers '9.9.9.9','149.112.112.112' -DisplayName 'dns-client'")
+	if rm < 0 || add < 0 {
+		t.Fatalf("fallback script missing remove or add:\n%s", script)
+	}
+	if rm > add {
+		t.Errorf("fallback must remove the old rule before adding:\n%s", script)
+	}
+	if !strings.Contains(script, "$_.Namespace -eq '.a.example'") {
+		t.Errorf("remove must target the exact namespace:\n%s", script)
+	}
+}

@@ -131,6 +131,12 @@ func TestApplyPerDomainPatch(t *testing.T) {
 			patches: []PerDomainPatch{{Domains: []string{"a.example"}, Keep: new(3)}},
 			wantErr: true,
 		},
+		{
+			name:    "bypass rule needs no upstream or keep",
+			pd:      old,
+			patches: []PerDomainPatch{{Domains: []string{"local.example"}, Bypass: true}},
+			want:    []config.PerDomain{{Domains: []string{"local.example"}, Bypass: true}},
+		},
 	}
 
 	for _, tc := range cases {
@@ -173,5 +179,34 @@ func TestApplyPerDomainPatchEnabled(t *testing.T) {
 	}
 	if !p.PerDomain[1].IsEnabled() {
 		t.Errorf("rule 1 IsEnabled = false, want true (nil enabled)")
+	}
+}
+
+// TestValidatePerDomainBypass proves a bypass patch must not also set an
+// upstream or a keep index.
+func TestValidatePerDomainBypass(t *testing.T) {
+	cases := []struct {
+		name    string
+		patch   PerDomainPatch
+		wantErr bool
+	}{
+		{"bypass ok", PerDomainPatch{Domains: []string{"local.example"}, Bypass: true}, false},
+		{"bypass with upstream rejected", PerDomainPatch{
+			Domains: []string{"local.example"}, Bypass: true, Upstream: "tls://10.0.0.1:853",
+		}, true},
+		{"bypass with keep rejected", PerDomainPatch{Domains: []string{"local.example"}, Bypass: true, Keep: new(0)}, true},
+		{"bypass without domains rejected", PerDomainPatch{Bypass: true}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePerDomainPatch([]PerDomainPatch{tc.patch})
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a validation error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validatePerDomainPatch: %v", err)
+			}
+		})
 	}
 }

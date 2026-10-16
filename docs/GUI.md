@@ -3,7 +3,8 @@
 `dns-client-gui.exe` is the full configuration client for the service. It has a
 **Status** page (banner + profile / filtering / cache cards), a **Settings** page
 (service Start / Stop and install / remove, profile management, and a
-per-profile editor), a **Rules** page (filter lists + per-domain routing), a
+per-profile editor), a **Rules** page (filter lists + per-domain routing with a
+per-rule Upstream / Bypass kind), a
 **Logging** page (level, location, and a live viewer), and an **About** page
 (version, IPC protocol, author, repository, license), without a console. The
 binary embeds an application
@@ -28,7 +29,7 @@ running.
 ## Pages
 
 The left nav rail switches between **Status**, **Settings**, **Rules**, **Logging**, and **About**.
-**Status** polls the service about every 1 second and shows:
+**Status** refreshes the live service state about every 1 second while the window is focused and shows:
 
 - A banner for the overall state.
 - A **Restore now** header action, shown only for a crash-leftover dirty state.
@@ -46,6 +47,16 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 - A **profile editor**: provider / variant / protocol, the resolver id (masked;
   leaving it blank keeps the existing one), a custom URL, bootstrap IPs,
   filtering + block response, and cache + size.
+
+**Rules** shows:
+
+- The filter-list editor and the per-domain routing rules in one scrollable
+  column.
+- Each per-domain rule row has a **Rule type** selector — **Upstream** or
+  **Bypass**. An **Upstream** row takes the target resolver; a **Bypass** row
+  resolves the domains via the system's normal DNS and replaces the input with
+  the caption *"Resolved by the system's normal DNS, not by dns-client."* The
+  Enable / Remove controls are identical for both kinds.
 
 **Logging** shows:
 
@@ -90,8 +101,12 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 | **Apply** | Logging | Save the log level / location for the next service start. |
 | **Theme** | always | Toggle Auto / Light / Dark. |
 
-The Status page polls the service about every 1 second; there is no manual
-**Refresh** button.
+The Status page reads the live service state (SCM state + status DTO only) about
+every 1 second while the window is focused, and pauses polling while the window
+is unfocused or minimized. The full configuration summary is refreshed at
+startup, after your own edits, on a page switch, and on a 30-second safety tick.
+An unchanged read repaints nothing, so an idle window costs nothing. There is no
+manual **Refresh** button.
 
 Because the window already runs elevated (one UAC prompt at launch, not per
 action), pressing an action does **not** raise a second UAC prompt: the write goes

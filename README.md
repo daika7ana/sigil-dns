@@ -43,7 +43,8 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 - **Providers** — Quad9, Cloudflare, NextDNS, ControlD, or any custom
   DoH/DoT/DoQ URL.
 - **Encrypted upstreams** — DoH, DoT, and DoQ (`quic://host:853`).
-- **Per-domain routing** — dnsmasq-style rules, applied before the upstream.
+- **Per-domain routing** — dnsmasq-style rules, applied before the upstream:
+  route a domain to an upstream, or bypass it to the system's normal DNS.
 - **Blocklists** — hosts-format and AdGuard/ABP lists, with `0.0.0.0`/`::` or
   NXDOMAIN block responses.
 - **Clean enable / disable / restore** — NRPT is added on enable and removed on

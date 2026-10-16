@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +23,16 @@ import (
 // be exercised with no service, pipe, or display.
 type fakeSource struct{ snap snapshot }
 
-func (f fakeSource) Read(context.Context) (snapshot, error) { return f.snap, nil }
+func (f fakeSource) Read(context.Context) (snapshot, error)     { return f.snap, nil }
+func (f fakeSource) ReadLive(context.Context) (snapshot, error) { return f.snap, nil }
+
+// alwaysFocused is a focused flag for tests that drive the poller.
+func alwaysFocused() *atomic.Bool {
+	f := &atomic.Bool{}
+	f.Store(true)
+
+	return f
+}
 
 // sampleSnapshot is a healthy, fully-populated read.  Dirty is deliberately
 // true: the lifecycle sets it for the duration of a normal enabled session, so

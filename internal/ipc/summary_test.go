@@ -239,6 +239,33 @@ profiles:
 	}
 }
 
+// TestPerDomainSummaryBypass proves the bypass flag is carried in the sanitized
+// view and still never exposes an upstream.
+func TestPerDomainSummaryBypass(t *testing.T) {
+	body := `schema_version: 1
+mode: on
+profile: default
+profiles:
+  default:
+    upstreams: [https://freedns.controld.com/p0]
+    cache: { enabled: true, size_bytes: 1048576 }
+    per_domain:
+      - domains: ["local.example"]
+        bypass: true
+      - domains: ["corp.example"]
+        upstream: "tls://10.0.0.1"
+`
+	sum := LoadSummary(writeConfigFile(t, body))
+	if !sum.ConfigValid {
+		t.Fatalf("config invalid: %+v", sum)
+	}
+
+	rules := sum.Profiles[0].PerDomain
+	if len(rules) != 2 || !rules[0].Bypass || rules[1].Bypass {
+		t.Errorf("per-domain = %+v, want a bypass then a forward rule", rules)
+	}
+}
+
 func TestConfigSummaryBrokenConfig(t *testing.T) {
 	path := writeConfigFile(t, "mode: [not,a,scalar]\n")
 	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)

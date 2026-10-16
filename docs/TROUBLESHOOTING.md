@@ -160,7 +160,12 @@ Config errors are reported on `enable`/`run`. Examples:
 | `profile "x" has no upstreams` | Add at least one `upstreams` entry. |
 | `profile "x": cache enabled with non-positive size_bytes` | Set `size_bytes > 0` or disable the cache. |
 | `profile "x": invalid block_response "y"` | Use `0.0.0.0` or `nxdomain`. |
-| `profile "x": per_domain N needs domains and an upstream` | Each rule needs both fields. |
+| `profile "x": per_domain N needs domains` | Add at least one domain to the rule. |
+| `profile "x": per_domain N needs an upstream` | An upstream rule needs a non-empty `upstream` (a bypass rule needs none). |
+| `profile "x": per_domain N is a bypass rule with an upstream` | A `bypass: true` rule must not set `upstream`. |
+
+A `bypass: true` rule is intentional: those domains are resolved by the system's
+normal DNS, not by `dns-client` — see [LIMITATIONS](LIMITATIONS.md).
 
 If a config file is unreadable at service start, the service **still starts in a
 degraded state** so `restore` and status work; enabling then fails with

@@ -5,6 +5,7 @@ package gui
 import (
 	"context"
 	_ "embed"
+	"sync/atomic"
 	"time"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
@@ -34,8 +35,14 @@ const (
 // process's window by it.
 const windowTitle = "dns-client"
 
-// pollInterval is the status refresh cadence (SPEC §15.4: 1 s).
+// pollInterval is the live status refresh cadence while the window is focused
+// (SPEC §15.4: 1 s).
 const pollInterval = 1 * time.Second
+
+// safetyInterval is the full-read cadence while focused: the live read only
+// refreshes the SCM state and status DTO, so this picks up a changed config (or
+// a missed service-state transition) without a manual refresh.
+const safetyInterval = 30 * time.Second
 
 // App is the window state the view reads each frame.  It is written only on the
 // main thread; the poller posts updates through Window.QueueCommand.
@@ -141,6 +148,11 @@ func Run() (err error) {
 	app.logView.interval.Store(logViewerDefaultInterval)
 	src := newSource()
 
+	// focused pauses the poller while the window is unfocused/minimized.  It is
+	// shared with the poller goroutine (atomic) and flipped from OnEvent.
+	var focused atomic.Bool
+	focused.Store(true)
+
 	// The position is captured on close, while the native window still exists
 	// (OnCloseRequest runs before destroy), and applied on open from OnInit.
 	var posX, posY int
@@ -160,10 +172,19 @@ func Run() (err error) {
 		MinWidth:  minWidth,
 		MinHeight: minHeight,
 		State:     app,
+		OnEvent: func(e *gogui.Event, _ *gogui.Window) {
+			switch e.Type {
+			case gogui.EventFocused:
+				focused.Store(true)
+				requestRefresh(app.refresh) // refetch at once; the data may be stale
+			case gogui.EventUnfocused:
+				focused.Store(false) // pause the poller while backgrounded
+			}
+		},
 		OnInit: func(w *gogui.Window) {
 			applyTheme(w, app.themePref)
 			w.SetView(view)
-			startPoller(w, src, app.refresh, &app.logView)
+			startPoller(w, src, app.refresh, &app.logView, &focused)
 			if restoring {
 				restoreWindowPosition(windowTitle, s.X, s.Y)
 			}
@@ -201,79 +222,143 @@ func Run() (err error) {
 	return nil
 }
 
-// startPoller reads the status immediately and then every pollInterval, posting
-// each snapshot to the main thread (SPEC §15.4).  It stops with the window.  It
-// also tails the log file for the Logging page's live viewer: the read happens
-// here, off the frame thread, and only appended bytes are read (an interval of
-// 0 reads nothing).
-func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *logViewCtl) {
+// startPoller reads the status immediately, then cheaply (SCM + status DTO)
+// every pollInterval while focused, with a full read every safetyInterval, on a
+// refresh signal, and once at start (SPEC §15.4).  An unchanged read pushes
+// nothing and requests no repaint, so an idle window leaves the on-demand render
+// loop asleep.  It stops with the window.  It also tails the log file for the
+// Logging page's live viewer, off the frame thread, while focused.
+func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *logViewCtl, focused *atomic.Bool) {
 	ctx := w.Ctx()
 
 	go func() {
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
+		live := time.NewTicker(pollInterval)
+		defer live.Stop()
+		safety := time.NewTicker(safetyInterval)
+		defer safety.Stop()
 
 		tail := &logTail{}
-		for {
-			snap := readOnce(ctx, src)
 
-			// Tail off the frame thread; the buffer is posted back and only
-			// rendered on the main thread.
-			if p := lv.path.Load(); p != nil {
-				if tail.read(*p, int(lv.interval.Load()), time.Now()) {
-					text := tail.text
-					w.QueueCommand(func(win *gogui.Window) {
-						a := gogui.State[App](win)
-						a.logText = text
-						// The viewer's text is declarative (Text: app.logText);
-						// only a layout rebuild re-reads it, so InvalidateRender
-						// alone never repaints it.  pinLogToBottom both asks for
-						// that rebuild and pins the box to the newest line.
-						// Gated to the Logging page so other pages are not
-						// re-laid-out every tick.
-						if a.page == pageLogging {
-							pinLogToBottom(win)
-						} else {
-							win.InvalidateRender()
-						}
-					})
-				}
+		// last is the most recent read: the merge baseline and the source of the
+		// heavy fields a live read does not fetch.  applied is what the UI
+		// currently shows, so only a change against it is worth a repaint.
+		var last, applied snapshot
+
+		// process folds one read into the UI.  A live read whose service state
+		// moved is replaced by a full read, because only that switches the
+		// summary source (live vs offline) and refetches the config.
+		process := func(snap snapshot, full bool) {
+			if !full && liveStateChanged(last, snap) {
+				snap = readOnce(ctx, src)
+				full = true
 			}
+			if !full {
+				snap.summary = last.summary
+				snap.info = last.info
+			}
+			last = snap
+
+			if samePoll(applied, snap) {
+				return // unchanged: push nothing, so the render loop stays idle
+			}
+			snap.updated = time.Now()
+			applied = snap
 
 			w.QueueCommand(func(win *gogui.Window) {
 				a := gogui.State[App](win)
-				changed := !samePoll(a.snap, snap)
 				a.snap = snap
 				a.seed(snap)
 				a.syncLogViewer()
 				a.cacheSummary(snap)
-				// Only relayout when the data actually changed; an unchanged
-				// poll still redraws (so the header clock ticks) but does not
-				// re-run layout, which would re-snap glyphs mid-scroll.
-				if changed {
-					win.InvalidateLayout()
+				win.InvalidateLayout()
+			})
+		}
+
+		// tailLog appends newly written log bytes and posts them to the viewer.
+		// The reader keeps its offset, so a pause while unfocused catches up.
+		tailLog := func() {
+			p := lv.path.Load()
+			if p == nil || !tail.read(*p, int(lv.interval.Load()), time.Now()) {
+				return
+			}
+			text := tail.text
+			w.QueueCommand(func(win *gogui.Window) {
+				a := gogui.State[App](win)
+				a.logText = text
+				// The viewer's text is declarative (Text: app.logText); only a
+				// layout rebuild re-reads it, so InvalidateRender alone never
+				// repaints it.  pinLogToBottom both asks for that rebuild and
+				// pins the box to the newest line.  Gated to the Logging page so
+				// other pages are not re-laid-out every tick.
+				if a.page == pageLogging {
+					pinLogToBottom(win)
 				} else {
 					win.InvalidateRender()
 				}
 			})
+		}
 
+		process(readOnce(ctx, src), true) // initial full read
+
+		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-live.C:
+				if !focused.Load() {
+					continue // paused: no read, no tail, no repaint
+				}
+				tailLog()
+				process(readLiveOnce(ctx, src), false)
+			case <-safety.C:
+				if !focused.Load() {
+					continue
+				}
+				tailLog()
+				process(readOnce(ctx, src), true)
 			case <-refresh:
+				tailLog()
+				process(readOnce(ctx, src), true)
 			}
 		}
 	}()
 }
 
-// readOnce performs one bounded read.  A read error becomes an empty snapshot
-// carrying a secret-free message rather than an error the poller would drop.
+// liveStateChanged reports whether a live read moved the service lifecycle
+// state, which needs a full read: only a full read refetches the summary (e.g.
+// the service just stopped, so offlineSummary must replace the live one).
+func liveStateChanged(a, b snapshot) bool {
+	return a.installed != b.installed || a.running != b.running || a.scmState != b.scmState
+}
+
+// requestRefresh asks the poller for an immediate full read without blocking:
+// the channel is buffered, and a request already pending covers this one.
+func requestRefresh(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// readOnce performs one bounded full read.  A read error becomes an empty
+// snapshot carrying a secret-free message rather than an error the poller would
+// drop.
 func readOnce(ctx context.Context, src statusSource) (snap snapshot) {
+	return readWith(ctx, src.Read)
+}
+
+// readLiveOnce performs one bounded live read (SCM state + status DTO only).
+func readLiveOnce(ctx context.Context, src statusSource) (snap snapshot) {
+	return readWith(ctx, src.ReadLive)
+}
+
+// readWith runs one read under a timeout, normalising an error and a missing
+// timestamp so the callers never drop a read.
+func readWith(ctx context.Context, read func(context.Context) (snapshot, error)) (snap snapshot) {
 	rctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 
-	snap, err := src.Read(rctx)
+	snap, err := read(rctx)
 	if err != nil {
 		return snapshot{trust: trustVerified, updated: time.Now()}
 	}

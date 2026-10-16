@@ -56,10 +56,13 @@ type listDraft struct {
 	idx     int // original config index of an existing list; -1 for a new one
 }
 
-// ruleDraft is one editable per-domain routing rule.
+// ruleDraft is one editable per-domain routing rule.  A rule is one of two
+// kinds: upstream (routed to the typed target) or bypass (resolved by the
+// system resolver, no upstream).
 type ruleDraft struct {
 	domains  string // comma-separated domains, as typed
-	upstream string // blank = keep the existing rule's upstream
+	bypass   bool   // bypass kind: resolved by the system resolver, no upstream
+	upstream string // upstream kind only; blank = keep the existing target
 	enabled  bool   // the rule's active state (a disabled rule is skipped)
 	idx      int    // original config index of an existing rule; -1 for a new one
 }
@@ -125,11 +128,18 @@ func listDrafts(seeded []ipc.ListSummary) (out []listDraft) {
 
 // ruleDrafts maps per-domain summaries into editable rows.  The upstream is
 // never seeded: the editor never reads a stored target, and a blank input means
-// "keep" (SPEC §15.2).  Each row keeps its original index so a kept rule's
-// target is inherited by that index, not by its position in the edited list.
+// "keep" (SPEC §15.2).  Only the bypass flag is seeded, so a rule's kind is
+// carried into the editor (and into draftDirty's comparison).  Each row keeps
+// its original index so a kept rule's target is inherited by that index, not by
+// its position in the edited list.
 func ruleDrafts(rules []ipc.PerDomainSummary) (out []ruleDraft) {
 	for i, r := range rules {
-		out = append(out, ruleDraft{domains: strings.Join(r.Domains, ", "), enabled: r.Enabled, idx: i})
+		out = append(out, ruleDraft{
+			domains: strings.Join(r.Domains, ", "),
+			bypass:  r.Bypass,
+			enabled: r.Enabled,
+			idx:     i,
+		})
 	}
 
 	return out

@@ -171,10 +171,15 @@ type ListEntry struct {
 // PerDomainPatch is one per-domain routing rule.  Domains are always
 // re-specified; a blank Upstream keeps the existing rule's upstream, named by
 // Keep (the source rule's original index), so a configured target never has to
-// travel and a deletion elsewhere in the list cannot shift the source.
+// travel and a deletion elsewhere in the list cannot shift the source.  A
+// bypass patch (Bypass) carries no Upstream and no Keep: its domains resolve
+// via the system resolver.
 type PerDomainPatch struct {
 	// Domains is the rule's domain list (dnsmasq conventions).
 	Domains []string `json:"domains"`
+
+	// Bypass routes the domains via the system resolver instead of Upstream.
+	Bypass bool `json:"bypass,omitempty"`
 
 	// Upstream is the routing target; blank keeps the existing rule's target
 	// named by Keep.
@@ -461,6 +466,13 @@ func validatePerDomainPatch(rules []PerDomainPatch) (err error) {
 	for _, r := range rules {
 		if len(r.Domains) == 0 {
 			return errors.New("a per-domain rule needs at least one domain")
+		}
+		if r.Bypass {
+			if r.Upstream != "" || r.Keep != nil {
+				return errors.New("a bypass per-domain rule must not set an upstream or keep index")
+			}
+
+			continue
 		}
 		if r.Keep != nil && *r.Keep < 0 {
 			return errors.New("a per-domain keep index must not be negative")
@@ -882,6 +894,16 @@ func applyPerDomainPatch(p *config.Profile, patches []PerDomainPatch) (err error
 	out := make([]config.PerDomain, 0, len(patches))
 
 	for _, rp := range patches {
+		if rp.Bypass {
+			out = append(out, config.PerDomain{
+				Domains: append([]string(nil), rp.Domains...),
+				Bypass:  true,
+				Enabled: rp.Enabled,
+			})
+
+			continue
+		}
+
 		up := strings.TrimSpace(rp.Upstream)
 		if up == "" {
 			if rp.Keep == nil || *rp.Keep < 0 || *rp.Keep >= len(old) ||

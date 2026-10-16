@@ -258,10 +258,12 @@ func listAt(lists []listDraft, idx int) (l listDraft, ok bool) {
 }
 
 // perDomainPatch builds the full per-domain rule array from the editor rows.
-// Domains are always sent; a blank upstream names the existing rule to inherit
-// from by its original index (Keep), so deleting another row cannot shift the
-// source (replace-only, SPEC §15.2).  A row with no domains is dropped.  The
-// result is always non-nil so a removed rule is actually cleared.
+// Domains are always sent; a bypass row carries Bypass and no Upstream and no
+// Keep (its domains resolve via the system resolver).  For an upstream row a
+// blank upstream names the existing rule to inherit from by its original index
+// (Keep), so deleting another row cannot shift the source (replace-only,
+// SPEC §15.2).  A row with no domains is dropped.  The result is always
+// non-nil so a removed rule is actually cleared.
 func perDomainPatch(rules []ruleDraft) *[]elevate.PerDomainPatch {
 	out := make([]elevate.PerDomainPatch, 0, len(rules))
 	for _, r := range rules {
@@ -271,12 +273,15 @@ func perDomainPatch(rules []ruleDraft) *[]elevate.PerDomainPatch {
 		}
 
 		p := elevate.PerDomainPatch{
-			Domains:  domains,
-			Upstream: strings.TrimSpace(r.upstream),
-			Enabled:  new(r.enabled),
+			Domains: domains,
+			Bypass:  r.bypass,
+			Enabled: new(r.enabled),
 		}
-		if p.Upstream == "" && r.idx >= 0 {
-			p.Keep = new(r.idx)
+		if !r.bypass {
+			p.Upstream = strings.TrimSpace(r.upstream)
+			if p.Upstream == "" && r.idx >= 0 {
+				p.Keep = new(r.idx)
+			}
 		}
 
 		out = append(out, p)

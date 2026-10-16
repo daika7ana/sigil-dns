@@ -111,7 +111,7 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 
 ## CI & releases
 - `.github/workflows/ci.yml`: ubuntu+windows matrix (`go build`, `-tags tray`, `-tags gui`, `vet`, `test`;
-  GUI smoke test on ubuntu) plus `integration-windows` (real NRPT via `scripts/ci-windows-integration.ps1`).
+  GUI smoke test on both runners) plus `integration-windows` (real NRPT via `scripts/ci-windows-integration.ps1`).
 - `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; signs with
   `signtool` only when `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` secrets exist (else skip +
   `::warning::`); zips and creates the GitHub Release. **The GUI exists only with `-tags gui`**, so any

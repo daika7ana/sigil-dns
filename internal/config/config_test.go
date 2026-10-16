@@ -423,6 +423,65 @@ func TestPerDomainIsEnabled(t *testing.T) {
 	}
 }
 
+// TestPerDomainBypass pins the two rule kinds: a bypass rule needs no upstream,
+// serializes without an upstream key and round-trips, while a forward rule still
+// requires one and a bypass rule must not carry one.
+func TestPerDomainBypass(t *testing.T) {
+	t.Run("bypass rule is valid and round-trips", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		c := Default()
+		c.Profiles[DefaultProfileName] = Profile{
+			Upstreams: []string{"https://dns.quad9.net/dns-query"},
+			Cache:     &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes},
+			PerDomain: []PerDomain{{Domains: []string{"local.example"}, Bypass: true}},
+		}
+		if err := c.Save(path); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if strings.Contains(string(data), "upstream:") {
+			t.Errorf("bypass rule serialized an upstream key:\n%s", data)
+		}
+
+		got, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		pd := got.Profiles[DefaultProfileName].PerDomain
+		if len(pd) != 1 || !pd[0].Bypass || pd[0].Upstream != "" {
+			t.Errorf("per_domain = %+v, want one bypass rule with no upstream", pd)
+		}
+	})
+
+	t.Run("bypass rule with an upstream is rejected", func(t *testing.T) {
+		c := Default()
+		c.Profiles[DefaultProfileName] = Profile{
+			Upstreams: []string{"https://dns.quad9.net/dns-query"},
+			Cache:     &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes},
+			PerDomain: []PerDomain{{Domains: []string{"local.example"}, Bypass: true, Upstream: "tls://10.0.0.1"}},
+		}
+		if err := c.Validate(); err == nil {
+			t.Error("a bypass rule with an upstream should be rejected")
+		}
+	})
+
+	t.Run("non-bypass rule with a blank upstream is rejected", func(t *testing.T) {
+		c := Default()
+		c.Profiles[DefaultProfileName] = Profile{
+			Upstreams: []string{"https://dns.quad9.net/dns-query"},
+			Cache:     &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes},
+			PerDomain: []PerDomain{{Domains: []string{"corp.example"}}},
+		}
+		if err := c.Validate(); err == nil {
+			t.Error("a non-bypass rule with a blank upstream should be rejected")
+		}
+	})
+}
+
 // TestApplySelection checks Expand results plus the display-only metadata.
 func TestApplySelection(t *testing.T) {
 	t.Run("nextdns", func(t *testing.T) {

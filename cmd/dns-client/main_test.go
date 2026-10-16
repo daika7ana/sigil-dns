@@ -356,6 +356,28 @@ func TestResolverSecrets(t *testing.T) {
 	}
 }
 
+// TestPlanPerDomain splits bypass rules from routing rules and drops disabled
+// rules.
+func TestPlanPerDomain(t *testing.T) {
+	off := false
+
+	pd := []config.PerDomain{
+		{Domains: []string{"a.example"}, Upstream: "tls://a:853"},
+		{Domains: []string{"local.example"}, Bypass: true},
+		{Domains: []string{"skip.example"}, Upstream: "tls://s:853", Enabled: &off},
+		{Domains: []string{"*.corp.example"}, Bypass: true},
+	}
+
+	rules, bypass := planPerDomain(pd)
+
+	if len(rules) != 1 || rules[0].Upstream != "tls://a:853" || rules[0].Domains[0] != "a.example" {
+		t.Fatalf("rules = %+v", rules)
+	}
+	if len(bypass) != 2 || bypass[0] != "local.example" || bypass[1] != "*.corp.example" {
+		t.Fatalf("bypass = %v", bypass)
+	}
+}
+
 // TestServiceConfigSanitizesErrors asserts a raw YAML/validation error that
 // quotes a config value (possibly an id) never escapes serviceConfig.
 func TestServiceConfigSanitizesErrors(t *testing.T) {

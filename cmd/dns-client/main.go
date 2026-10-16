@@ -204,7 +204,9 @@ func resolverSecrets(r config.Resolved) (secrets []string) {
 	ups := make([]string, 0, len(r.Upstreams)+len(r.PerDomain))
 	ups = append(ups, r.Upstreams...)
 	for _, pd := range r.PerDomain {
-		ups = append(ups, pd.Upstream)
+		if pd.Upstream != "" {
+			ups = append(ups, pd.Upstream)
+		}
 	}
 
 	proto := providers.Protocol(strings.TrimSpace(r.Protocol))
@@ -235,17 +237,29 @@ func (o options) listenAddrs() (listen []string) {
 	return nil
 }
 
+// planPerDomain splits the enabled per-domain rules into resolver routing rules
+// and the bypass domains that must be resolved by the system's own DNS.
+func planPerDomain(pd []config.PerDomain) (rules []resolver.Rule, bypass []string) {
+	for _, p := range pd {
+		if !p.IsEnabled() {
+			continue
+		}
+		if p.Bypass {
+			bypass = append(bypass, p.Domains...)
+
+			continue
+		}
+		rules = append(rules, resolver.Rule{Domains: p.Domains, Upstream: p.Upstream})
+	}
+
+	return rules, bypass
+}
+
 // lifecycleFor builds a Lifecycle using resolved settings and the given logger.
 // The service passes its durable file logger; CLI commands pass the stderr
 // logger (only the service writes the log, LOGGING_PLAN §1.1).
 func (o options) lifecycleFor(r config.Resolved, l *slog.Logger) (lc *lifecycle.Lifecycle) {
-	rules := make([]resolver.Rule, 0, len(r.PerDomain))
-	for _, pd := range r.PerDomain {
-		if !pd.IsEnabled() {
-			continue
-		}
-		rules = append(rules, resolver.Rule{Domains: pd.Domains, Upstream: pd.Upstream})
-	}
+	rules, bypass := planPerDomain(r.PerDomain)
 
 	lists := make([]filter.List, 0, len(r.Filtering.Lists))
 	for _, l := range r.Filtering.Lists {
@@ -262,6 +276,7 @@ func (o options) lifecycleFor(r config.Resolved, l *slog.Logger) (lc *lifecycle.
 		Upstreams:   r.Upstreams,
 		Bootstrap:   r.Bootstrap,
 		Rules:       rules,
+		Bypass:      bypass,
 		Filter: resolver.FilterConfig{
 			Enabled:       r.Filtering.Enabled,
 			Lists:         lists,

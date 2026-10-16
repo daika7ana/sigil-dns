@@ -104,6 +104,8 @@ Caveats (must handle):
   we can find/remove exactly ours.
 - VPN/clients may install equal-or-more-specific NRPT rules that take precedence (VPN DNS may
   hard-break). Detect conflicting rules; surface a warning in the tray.
+- Per-domain **bypass** rules are more-specific NRPT rules with **no name servers** (an exemption),
+  so those names fall back to the interface's normal DNS (see docs/LIMITATIONS.md).
 - **Must be verified on Win11 24H2 during phase 1** before committing; if unreliable, fall back.
 
 ### 4.2 FALLBACK mechanism: per-adapter loopback
@@ -448,7 +450,7 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   + cache settings, `config_valid` with a secret-free error, a revision token, and a `profiles` list —
   one sanitized `ProfileSummary` per profile: name, active flag, provider/variant/protocol labels,
   `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals, per-list **hosts** (+
-  enabled) and per-domain rule **domains** (+ enabled); never ids or upstream URLs). `id_set` is
+  enabled) and per-domain rule **domains** (+ enabled, `bypass` flag); never ids or upstream URLs). `id_set` is
   provider-aware (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only
   the DoH-path heuristic. The provider catalog is rendered **locally** from `internal/providers` (no
   IPC, no secrets).
@@ -459,7 +461,8 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   **whole config surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches
   (provider / variant / protocol / id / custom URL / bootstrap / filtering / cache, plus **per-list
   operations** — toggle/add/remove existing lists by index — and **per-domain rules** with a per-rule
-  `enabled` flag), the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service
+  `enabled` flag and a kind (an upstream rule, or a **bypass** rule that carries no upstream / keep)),
+  the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service
   actions `service_install` / `service_uninstall` / `service_start` / `service_stop` / `refresh_lists`.
   Every field is validated (bootstrap as IP literals, provider / variant / protocol against the
   registry, id charset + length, explicit-zero rejection); ids travel only inside the DPAPI-sealed
@@ -550,7 +553,7 @@ Status: **phases 0–7 are implemented.**
    profile metadata (`provider`/`variant`/`protocol`).
 1. **IPC extension** — DONE: `info` + `config_summary` (status pipe, now with the `profiles` list),
    `reload` (control pipe), privilege table + tests.
-2. **go-gui shell** — DONE: window, ~2 s status polling, identity check, degraded/stopped/unverified
+2. **go-gui shell** — DONE: window, status polling, identity check, degraded/stopped/unverified
    states, `gui.json`, and the `gui.lock` single-instance guard.
 3. **Profile view + draft editing** — DONE: local catalog, masked id, local validation — and the
    editor now writes through the elevated helper (superseding the original "no elevation" scope).
@@ -558,8 +561,9 @@ Status: **phases 0–7 are implemented.**
    with DPAPI staging, the `--apply` helper, per-launch UAC UX, and revision-conflict abort.
 5. **Rules/lists editing + `refresh_lists`** — DONE: a dedicated scrollable **Rules** page holds the
    filter-list editor (add / remove / per-list enable, addressed by index so list URLs never round-trip)
-   and the per-domain routing rules (domains, replace-only upstream by `Keep` index, per-rule `enabled`
-   toggle, `*.` wildcard hint); the admin `refresh_lists` method re-downloads lists live, exposed in the
+   and the per-domain routing rules (domains, a rule kind of upstream or bypass, replace-only upstream
+   by `Keep` index for an upstream rule, per-rule `enabled` toggle, `*.` wildcard hint); the admin
+   `refresh_lists` method re-downloads lists live, exposed in the
    GUI as "Update blocklists" and in the CLI as `refresh`.
 6. **Enable/disable/degrade UX** — DONE: a **Start / Stop** control in the Settings service card,
    service management via the helper, the dirty/"Restore now" banner, and the five-page (Status /
@@ -567,6 +571,12 @@ Status: **phases 0–7 are implemented.**
 7. **Packaging** — DONE: go-gui binary (no cgo), installer ships the GUI + Start-Menu shortcut, and a
    protocol-version mismatch is surfaced from `info` (`source.go`). Code signing stays optional, gated
    on the repository secrets.
+
+**Polling model (CPU/power):** while the window is focused the Status page reads the live service
+state — SCM state + status DTO only, never `config.yaml` — about every 1 s, and polling pauses while
+the window is unfocused/minimized. The full config summary is fetched at startup, after the user's own
+edits, on a page switch, and on a 30 s safety tick. An unchanged read pushes nothing and requests no
+repaint, so the on-demand render loop stays asleep when idle.
 
 Build: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build` (no cgo anywhere). The GUI lives behind a
 `gui` build tag (like `tray`) so the Linux `go build ./...` stays lean; the `--apply` helper mode is

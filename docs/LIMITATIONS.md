@@ -48,6 +48,30 @@ A VPN can install an equal-or-more-specific NRPT rule (for example a catch-all
 fighting them**. It does not rewrite the VPN's rules. If VPN DNS stops working,
 remove the VPN or stop `dns-client`.
 
+### Per-domain bypass rules
+
+A `per_domain` rule with `bypass: true` deliberately sends its domains to the
+system's normal DNS instead of the resolver. On Windows this is a more-specific
+NRPT rule with no name servers (an exemption), so the DNS client uses its normal
+interface DNS for those names.
+
+- **They leave the encrypted path.** Bypassed names are not covered by the
+  encrypted upstream, the blocklists/filtering, or the cache; they go out however
+  the machine's normal DNS is configured (often plaintext UDP/TCP 53).
+- **The exemption is verified and has a fallback.** The empty-name-server NRPT
+  encoding is not first-class in the Windows DnsClient cmdlets, so `dns-client`
+  verifies the exemption after enabling. If it did not take effect, it pins the
+  interface's current non-loopback DNS servers for that namespace instead; if
+  even that cannot be verified it logs a warning and the domain keeps being
+  resolved by `dns-client` normally. An enable never fails because one bypass
+  could not be applied.
+- **Multi-homed fallback.** The fallback uses the union of non-loopback DNS
+  servers across interfaces, which is not necessarily Windows' normal
+  per-interface choice, and a DHCP renewal can overwrite it.
+- **A domain GPO overrides local rules.** A machine-wide domain GPO NRPT policy
+  takes precedence over all local NRPT rules, so do not use bypass where such a
+  policy exists.
+
 ### Captive portals (pre-auth)
 
 Before you authenticate to a Wi-Fi captive portal, the portal works by

@@ -45,6 +45,8 @@ profiles:
     #   - "*.sub.example" matches subdomains only (not sub.example itself)
     #   - "" (empty) matches unqualified/single-label names only
     #   - upstream "#" excludes the domains, falling back to the default pool
+    #   - "bypass: true" resolves the domains via the system's normal DNS
+    #     (a bypass rule sets no upstream)
     #   - DS queries for "secure.corp.example" are resolved via the parent zone
     #     ("corp.example"), i.e. the upstream of the delegation's parent
     per_domain:
@@ -56,6 +58,8 @@ profiles:
       #   upstream: "tls://10.0.0.3"
       # - domains: ["public.example"]
       #   upstream: "#"
+      # - domains: ["printer.lan", "*.lan"]
+      #   bypass: true          # resolve via the system's normal DNS
     filtering:
       enabled: false
       lists: []

@@ -57,10 +57,29 @@ func samePoll(a, b snapshot) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// liveOutcome is what a live probe found before any payload is read.  It keeps
+// the shared SCM + pipe logic in one place while letting Read and ReadLive
+// decide separately what (if anything) to fetch.
+type liveOutcome int
+
+const (
+	// liveRunning: the service is running and the status pipe is verified, so
+	// a conn is open and carries the sanitized reads.
+	liveRunning liveOutcome = iota
+	// liveStopped: the service is installed-but-stopped or not installed, so
+	// the full read falls back to the on-disk config (offlineSummary).
+	liveStopped
+	// liveUnavailable: the SCM query, dial, or identity check failed, so no
+	// data is shown and the config is not read.
+	liveUnavailable
+)
+
 // statusSource reads the sanitized status.  The real source speaks the status
-// pipe; tests inject a fake.
+// pipe; tests inject a fake.  Read fetches everything; ReadLive is the cheap
+// hot-path read (SCM state + status DTO only; never config.yaml).
 type statusSource interface {
 	Read(ctx context.Context) (snapshot, error)
+	ReadLive(ctx context.Context) (snapshot, error)
 }
 
 // pipeSource reads the status pipe/socket at endpoint.

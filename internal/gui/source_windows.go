@@ -15,52 +15,85 @@ import (
 	"github.com/daika7ana/dns-client/internal/service"
 )
 
-// Read verifies the status pipe server is the dns-client service before
-// trusting any read (SPEC §15.1/§15.3.12).  The check is
+// liveBase performs the SCM query and, when the service is running, the dial and
+// the pipe-identity check shared by Read and ReadLive.  The check is
 // GetNamedPipeServerProcessId(conn) == the SCM-reported ProcessId, performed on
-// the same connection the reads use.  A service that is not installed or not
-// running yields a stopped snapshot; a PID mismatch yields unverified.
-func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
+// the same connection the reads use (SPEC §15.1/§15.3.12).  A verified result
+// returns the open conn for the caller to read and close.
+func (s *pipeSource) liveBase(ctx context.Context) (snapshot, net.Conn, liveOutcome) {
 	pid, running, installed, state, err := serviceProcess()
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now()}, nil
+		return snapshot{trust: trustVerified, updated: time.Now()}, nil, liveUnavailable
 	}
 	if !installed {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			scmState: "not installed", summary: offlineSummary()}, nil
+			scmState: "not installed"}, nil, liveStopped
 	}
 	if !running {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			installed: true, scmState: state, summary: offlineSummary()}, nil
+			installed: true, scmState: state}, nil, liveStopped
 	}
 
 	conn, err := ipc.Dial(ctx, s.endpoint)
 	if err != nil {
 		return snapshot{trust: trustVerified, updated: time.Now(),
-			installed: true, scmState: state}, nil
+			installed: true, scmState: state}, nil, liveUnavailable
 	}
-	defer func() { _ = conn.Close() }()
+	unverified := func() (snapshot, net.Conn, liveOutcome) {
+		_ = conn.Close()
+
+		return snapshot{trust: trustUnverified, running: true, installed: true,
+			scmState: state, updated: time.Now()}, nil, liveUnavailable
+	}
 
 	fd, ok := connFD(conn)
 	if !ok {
-		return snapshot{trust: trustUnverified, running: true, installed: true,
-			scmState: state, updated: time.Now()}, nil
+		return unverified()
 	}
 
 	var serverPID uint32
 	if err = windows.GetNamedPipeServerProcessId(windows.Handle(fd), &serverPID); err != nil {
-		return snapshot{trust: trustUnverified, running: true, installed: true,
-			scmState: state, updated: time.Now()}, nil
+		return unverified()
 	}
 	if serverPID == 0 || serverPID != pid {
 		// Pipe squatted, or the server is not the service: refuse the data.
-		return snapshot{trust: trustUnverified, running: true, installed: true,
-			scmState: state, updated: time.Now()}, nil
+		return unverified()
 	}
 
-	snap := snapshot{trust: trustVerified, running: true, installed: true,
-		scmState: state, updated: time.Now()}
-	snap.status, snap.summary, snap.info = readPayload(conn)
+	return snapshot{trust: trustVerified, running: true, installed: true,
+		scmState: state, updated: time.Now()}, conn, liveRunning
+}
+
+// Read is the full read: the SCM state plus the status DTO, the config summary,
+// and the service info.  While the service is not running it falls back to the
+// on-disk config (offlineSummary).
+func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
+	snap, conn, outcome := s.liveBase(ctx)
+	switch outcome {
+	case liveStopped:
+		snap.summary = offlineSummary()
+	case liveRunning:
+		defer func() { _ = conn.Close() }()
+		snap.status, snap.summary, snap.info = readPayload(conn)
+	}
+
+	return snap, nil
+}
+
+// ReadLive is Read without the heavy config data: just the SCM state and, when
+// the service is running, the single status DTO.  It never reads config.yaml —
+// the poller calls it on the hot path.
+func (s *pipeSource) ReadLive(ctx context.Context) (snapshot, error) {
+	snap, conn, outcome := s.liveBase(ctx)
+	if outcome != liveRunning {
+		return snap, nil
+	}
+	defer func() { _ = conn.Close() }()
+
+	var st ipc.StatusDTO
+	if exchange(conn, ipc.MethodStatus, &st) == nil {
+		snap.status = &st
+	}
 
 	return snap, nil
 }
