@@ -23,8 +23,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vet (gui)
+        run: go vet -tags gui ./...
+
       - name: Test
         run: go test ./...
+
+      # GUI headless smoke test (software renderer; no GPU/display needed).
+      - name: Test (gui)
+        run: go test -tags gui -timeout 120s ./internal/gui/
 
       - name: Build (windows/amd64)
         shell: pwsh

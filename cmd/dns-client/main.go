@@ -499,7 +499,9 @@ func cmdService(args []string) (err error) {
 	case "install":
 		return service.Install()
 	case "uninstall":
-		return service.Uninstall()
+		// Fail-closed: elevate.ServiceUninstall restores interception, stops
+		// and confirms the service, proves interception is down, then deletes.
+		return elevate.ServiceUninstall()
 	case "start":
 		return service.Start()
 	case "stop":
@@ -667,6 +669,18 @@ func serviceConfig(configPath, profile, upstream, bootstrap string) (sum ipc.Con
 func cmdServiceHost(args []string) (err error) {
 	o, err := parseFlags("service", args)
 	if err != nil {
+		return err
+	}
+
+	// Pre-flight single-instance guard: take and immediately release the state
+	// lock before opening the log file, so a second --service instance exits
+	// before it can overlap the first instance's file logger.  The lifecycle
+	// re-acquires the lock lazily on its first operation.
+	lock, lockErr := state.AcquireLock(o.statePath + ".lock")
+	if lockErr != nil {
+		return lockErr
+	}
+	if err = lock.Release(); err != nil {
 		return err
 	}
 

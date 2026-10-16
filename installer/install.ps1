@@ -131,8 +131,10 @@ if (-not (Test-Path -LiteralPath $configPath)) {
 }
 
 # Belt-and-suspenders: the data dir holds config + state, which may contain
-# resolver ids.  Restrict it to SYSTEM + Administrators (inheritable).
-icacls $DataDir /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' /grant:r 'Administrators:(OI)(CI)F' | Out-Null
+# resolver ids.  Restrict it to SYSTEM + Administrators (inheritable).  Use the
+# locale-independent SID form (*S-1-5-18 = SYSTEM, *S-1-5-32-544 = Administrators)
+# so the grant does not depend on the OS display language.
+icacls $DataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to set ACLs on $DataDir (exit $LASTEXITCODE)."
 }

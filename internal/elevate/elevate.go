@@ -1050,6 +1050,44 @@ func uninstallSequence(
 	return del()
 }
 
+// stagingRequestExt is the extension of the request file Apply creates.
+const stagingRequestExt = ".req"
+
+// validateStagingRequest rejects a --apply path that is not a request file the
+// helper itself creates: it must live directly in dir and carry the .req
+// extension.  The comparison is lexical (the staging dir is user-only ACL'd), and
+// runs before any read or delete so a rejected path leaves the filesystem alone.
+func validateStagingRequest(reqPath, dir string) (err error) {
+	if !strings.EqualFold(filepath.Clean(filepath.Dir(reqPath)), filepath.Clean(dir)) {
+		return errors.New("request path is outside the staging directory")
+	}
+
+	base := filepath.Base(reqPath)
+	if filepath.Ext(base) != stagingRequestExt || strings.TrimSuffix(base, stagingRequestExt) == "" {
+		return errors.New("request path is not a staging request")
+	}
+
+	return nil
+}
+
+// readStagingRequest validates reqPath against dir, then reads and removes it.
+// The containment check runs first, so a rejected path is never read or deleted.
+func readStagingRequest(reqPath, dir string) (data []byte, err error) {
+	if err = validateStagingRequest(reqPath, dir); err != nil {
+		return nil, err
+	}
+
+	data, err = os.ReadFile(reqPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading request: %w", err)
+	}
+	// Delete immediately: it may carry settings, and the elevated admin token
+	// must not leave it behind.
+	_ = os.Remove(reqPath)
+
+	return data, nil
+}
+
 // restoreInterceptionWith tries the verified control-pipe restore when a
 // service pid is known, then falls back to the local config-independent
 // restore.  It is injected so the fallback contract (including a lock-held

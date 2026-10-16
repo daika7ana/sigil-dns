@@ -39,10 +39,17 @@ if (Test-Path -LiteralPath $targetExe) {
     # Stop first: the service's shutdown restores interception and releases the
     # single-instance lock.
     & $targetExe service stop 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "'$serviceName' service stop returned exit $LASTEXITCODE; relying on the fail-closed 'service uninstall' below to clear interception."
+    }
 
     # Belt-and-suspenders: clear any dirty/leftover interception from a crashed
-    # run, now that the lock is free.  Best-effort.
+    # run, now that the lock is free.  Best-effort; the fail-closed uninstall
+    # below re-verifies interception is down before it deletes.
     & $targetExe restore 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "'$serviceName' restore returned exit $LASTEXITCODE; relying on the fail-closed 'service uninstall' below to clear interception."
+    }
 
     if ($null -ne $existingService) {
         & $targetExe service uninstall

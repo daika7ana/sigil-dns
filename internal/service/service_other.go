@@ -11,9 +11,6 @@ func Install() (err error) { return ErrUnsupported }
 // InstallExe registers the service against exe.  Off Windows there is no SCM.
 func InstallExe(exe string) (err error) { return ErrUnsupported }
 
-// Uninstall removes the service.  Off Windows there is no SCM.
-func Uninstall() (err error) { return ErrUnsupported }
-
 // Delete removes the service registration.  Off Windows there is no SCM.
 func Delete() (err error) { return ErrUnsupported }
 

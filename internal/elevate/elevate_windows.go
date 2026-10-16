@@ -186,13 +186,14 @@ func HelperMain(reqPath string) (err error) {
 		return errors.New("--apply must run elevated")
 	}
 
-	data, err := os.ReadFile(reqPath)
+	dir, err := stagingDir()
 	if err != nil {
-		return fmt.Errorf("reading request: %w", err)
+		return err
 	}
-	// Delete the request immediately: it may carry settings, and the elevated
-	// admin token must not leave it behind.
-	_ = os.Remove(reqPath)
+	data, err := readStagingRequest(reqPath, dir)
+	if err != nil {
+		return err
+	}
 
 	plain, err := dpapiUnprotect(data)
 	if err != nil {
@@ -208,6 +209,22 @@ func HelperMain(reqPath string) (err error) {
 	defer cancel()
 
 	return writeResult(reqPath, runAction(ctx, req))
+}
+
+// ServiceUninstall runs the same ordered, fail-closed uninstall the elevated
+// helper drives (restore -> stop -> verify interception down -> delete) so the
+// `service uninstall` CLI command cannot delete a registration while
+// interception is still live.  It lives here because internal/elevate already
+// imports internal/service; the reverse would be an import cycle.
+func ServiceUninstall() (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
+	defer cancel()
+
+	if res := uninstallService(ctx); res.Err != "" {
+		return errors.New(res.Err)
+	}
+
+	return nil
 }
 
 // runAction performs the (elevated) work and returns a verdict.

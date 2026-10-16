@@ -13,3 +13,8 @@ func Apply(context.Context, Request) (Result, error) {
 func HelperMain(string) error {
 	return ErrUnsupported
 }
+
+// ServiceUninstall is unsupported off Windows.
+func ServiceUninstall() error {
+	return ErrUnsupported
+}

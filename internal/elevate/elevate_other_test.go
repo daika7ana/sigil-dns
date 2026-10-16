@@ -16,4 +16,8 @@ func TestApplyUnsupportedOffWindows(t *testing.T) {
 	if err := HelperMain("ignored"); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("HelperMain = %v, want ErrUnsupported", err)
 	}
+
+	if err := ServiceUninstall(); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("ServiceUninstall = %v, want ErrUnsupported", err)
+	}
 }

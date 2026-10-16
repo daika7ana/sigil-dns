@@ -155,14 +155,6 @@ func InstallExe(exe string) (err error) {
 	return nil
 }
 
-// Uninstall stops the service (best-effort) and then removes it, so a dangling
-// NRPT rule can never point at a service that no longer exists.
-func Uninstall() (err error) {
-	_ = Stop()
-
-	return Delete()
-}
-
 // Delete removes the service registration without stopping it.  Callers that
 // need interception cleared first must run the ordered uninstall themselves.
 func Delete() (err error) {

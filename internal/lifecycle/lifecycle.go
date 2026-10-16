@@ -41,14 +41,31 @@ type Config struct {
 	CacheDisabled  bool
 }
 
+// resolverHandle is the lifecycle's view of the running resolver.  The
+// production *resolver.Resolver satisfies it; the interface exists so tests can
+// inject a stub without binding sockets.
+type resolverHandle interface {
+	Start(ctx context.Context) error
+	Shutdown(ctx context.Context) error
+	SyntheticName() string
+	UDPAddrs() []string
+	RefreshLists(ctx context.Context) error
+}
+
 // Lifecycle owns the resolver, state store, and interception controller.
 type Lifecycle struct {
 	lock   *state.Lock
-	res    *resolver.Resolver
+	res    resolverHandle
 	store  *state.Store
 	ic     intercept.Controller
 	logger *slog.Logger
 	cfg    Config
+
+	// newResolver, checkHealth and flushDNS are the injectable dependencies;
+	// New points them at production and tests replace them to stay hermetic.
+	newResolver func(cfg resolver.Config) (resolverHandle, error)
+	checkHealth func(ctx context.Context, t health.Target) health.Result
+	flushDNS    func(ctx context.Context)
 }
 
 // New returns a Lifecycle for cfg.
@@ -58,12 +75,17 @@ func New(cfg Config) (l *Lifecycle) {
 		logger = slog.Default().With("component", "lifecycle")
 	}
 
-	return &Lifecycle{
-		cfg:    cfg,
-		store:  state.NewStore(cfg.StatePath),
-		ic:     intercept.New(logger),
-		logger: logger,
+	l = &Lifecycle{
+		cfg:         cfg,
+		store:       state.NewStore(cfg.StatePath),
+		ic:          intercept.New(logger),
+		logger:      logger,
+		newResolver: func(c resolver.Config) (resolverHandle, error) { return resolver.New(c) },
+		checkHealth: health.Check,
 	}
+	l.flushDNS = l.flush
+
+	return l
 }
 
 // Enable binds the resolver, runs the health check, snapshots state, and
@@ -87,7 +109,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 1. Bind listeners.
-	res, err := l.newResolver()
+	res, err := l.newResolver(l.resolverConfig())
 	if err != nil {
 		return err
 	}
@@ -132,7 +154,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 5. Flush DNS.
-	l.flush(ctx)
+	l.flushDNS(ctx)
 	// Never log upstreams: a DoT/DoQ URL carries the resolver id as a hostname
 	// label, so even redacted scheme+host leaks it.  Log the profile name and
 	// the upstream count instead.
@@ -166,7 +188,7 @@ func (l *Lifecycle) disable(ctx context.Context) (err error) {
 	}
 
 	// 3. Flush.
-	l.flush(ctx)
+	l.flushDNS(ctx)
 
 	// 4. Clear dirty marker.
 	errs = append(errs, l.markClean(ctx))
@@ -191,6 +213,11 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 	st, lErr := l.store.Load()
 	dirty := lErr == nil && st.Dirty
 	if lErr != nil && !errors.Is(lErr, state.ErrNoState) {
+		// A corrupt state file must not block cleanup (M2): make a best-effort
+		// attempt to undo any partial interception, then surface the original
+		// load error.  Missing state keeps its existing behaviour below.
+		_ = l.ic.Disable(ctx)
+
 		return lErr
 	}
 	if onlyIfDirty && !dirty {
@@ -201,7 +228,7 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 		return fmt.Errorf("restoring interception (state kept dirty): %w", err)
 	}
 
-	l.flush(ctx)
+	l.flushDNS(ctx)
 
 	if dirty {
 		st.Mode = state.ModeOff
@@ -251,7 +278,7 @@ func (l *Lifecycle) Run(ctx context.Context) (err error) {
 	}
 	defer l.release()
 
-	res, err := l.newResolver()
+	res, err := l.newResolver(l.resolverConfig())
 	if err != nil {
 		return err
 	}
@@ -283,9 +310,9 @@ func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
 	return l.res.RefreshLists(ctx)
 }
 
-// newResolver builds a resolver from the config.
-func (l *Lifecycle) newResolver() (res *resolver.Resolver, err error) {
-	return resolver.New(resolver.Config{
+// resolverConfig builds the resolver configuration from the lifecycle config.
+func (l *Lifecycle) resolverConfig() (cfg resolver.Config) {
+	return resolver.Config{
 		Logger:         l.logger,
 		Upstreams:      l.upstreamsOrDefault(),
 		Bootstrap:      l.bootstrapOrDefault(),
@@ -294,16 +321,16 @@ func (l *Lifecycle) newResolver() (res *resolver.Resolver, err error) {
 		Listen:         l.cfg.Listen,
 		CacheSizeBytes: l.cfg.CacheSizeBytes,
 		CacheDisabled:  l.cfg.CacheDisabled,
-	})
+	}
 }
 
 // healthCheck runs the two-stage health check against res.
-func (l *Lifecycle) healthCheck(ctx context.Context, res *resolver.Resolver) (r health.Result) {
+func (l *Lifecycle) healthCheck(ctx context.Context, res resolverHandle) (r health.Result) {
 	timeout := 10 * time.Second
 	c, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return health.Check(c, health.Target{
+	return l.checkHealth(c, health.Target{
 		Synthetic: res.SyntheticName(),
 		UDPAddrs:  res.UDPAddrs(),
 		Timeout:   5 * time.Second,
