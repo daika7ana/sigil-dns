@@ -376,6 +376,53 @@ func TestExtractID(t *testing.T) {
 	}
 }
 
+// TestExtractIDs covers the never-abort collector: all candidates are kept
+// (H2), metadata may be absent, the protocol comes from the scheme, and
+// public/id-less tokens are never seeded.
+func TestExtractIDs(t *testing.T) {
+	cases := []struct {
+		name      string
+		provider  string
+		proto     Protocol
+		upstreams []string
+		want      []string
+	}{
+		{"ambiguous kept", NextDNS, DoH, []string{
+			"https://dns.nextdns.io/aaa111",
+			"https://dns.nextdns.io/bbb222",
+		}, []string{"aaa111", "bbb222"}},
+		{"metadata absent doh", "", "", []string{"https://dns.nextdns.io/abc123"}, []string{"abc123"}},
+		{"metadata absent dot", "", "", []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
+		{"scheme overrides wrong proto", NextDNS, DoH, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
+		{"custom provider known dot host", Custom, DoT, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
+		{"mismatched provider cross dot host", NextDNS, DoT, []string{"tls://xyz789.dns.controld.com:853"}, []string{"xyz789"}},
+		{"custom host doh path", NextDNS, DoH, []string{"https://custom.example.com/secret42"}, []string{"secret42"}},
+		{"freedns not seeded", ControlD, DoH, []string{"https://freedns.controld.com/p0"}, nil},
+		{"public endpoint not seeded", "", "", []string{"https://dns.quad9.net/dns-query"}, nil},
+		{"deduped", NextDNS, DoH, []string{
+			"https://dns.nextdns.io/dup123",
+			"tls://dup123.dns.nextdns.io:853",
+		}, []string{"dup123"}},
+		{"short provider id not seeded", NextDNS, DoH, []string{"https://dns.nextdns.io/a"}, nil},
+		{"three char provider id not seeded", NextDNS, DoT, []string{"tls://abc.dns.nextdns.io:853"}, nil},
+		{"six char provider id seeded", NextDNS, DoH, []string{"https://dns.nextdns.io/abcdef"}, []string{"abcdef"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractIDs(tc.provider, tc.proto, tc.upstreams)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ExtractIDs = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("ExtractIDs = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryECSMarked(t *testing.T) {
 	p, ok := Lookup(Quad9)
 	if !ok {

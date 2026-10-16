@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/elevate"
 	"github.com/daika7ana/dns-client/internal/providers"
 )
@@ -82,6 +83,22 @@ func buildElevateRequest(req applyRequest) (er elevate.Request, ok bool) {
 
 	case actionSetActive:
 		// Covered by the shared activeSwitch handling below.
+
+	case actionSaveLog:
+		// The level is always sent as chosen (an empty one falls back to
+		// off).  The path is always sent too, including an explicit empty
+		// string: a blank field means "use the default location", which the
+		// helper's apply expresses by clearing cfg.Log.Path (validate accepts an
+		// empty value).  A log-only patch never triggers a service reload
+		// (LOGGING_PLAN §1.6).
+		if req.log != nil {
+			level := strings.TrimSpace(req.log.level)
+			if level == "" {
+				level = config.LogLevelOff
+			}
+			er.Patch.LogLevel = new(level)
+			er.Patch.LogPath = new(strings.TrimSpace(req.log.path))
+		}
 	}
 
 	if req.activeSwitch != nil {
@@ -96,17 +113,17 @@ func elevateActionFor(a guiAction) (elevate.Action, bool) {
 	switch a {
 	case actionEnable:
 		return elevate.ActionEnable, true
-	case actionDisable:
-		return elevate.ActionDisable, true
 	case actionRestore:
 		return elevate.ActionRestore, true
 	case actionInstall:
 		return elevate.ActionServiceInstall, true
 	case actionUninstall:
 		return elevate.ActionServiceUninstall, true
+	case actionServiceStop:
+		return elevate.ActionServiceStop, true
 	case actionRefreshLists:
 		return elevate.ActionRefreshLists, true
-	case actionSaveProfile, actionAddProfile, actionRenameProfile, actionDeleteProfile, actionSetActive:
+	case actionSaveProfile, actionAddProfile, actionRenameProfile, actionDeleteProfile, actionSetActive, actionSaveLog:
 		return elevate.ActionApply, true
 	default:
 		return "", false

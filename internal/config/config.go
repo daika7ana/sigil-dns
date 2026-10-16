@@ -38,6 +38,105 @@ const DefaultCacheSizeBytes = resolver.DefaultCacheSizeBytes
 // DefaultProfileName is the name of the default profile.
 const DefaultProfileName = "default"
 
+// Logging levels.
+const (
+	LogLevelOff   = "off"
+	LogLevelError = "error"
+	LogLevelInfo  = "info"
+	LogLevelDebug = "debug"
+)
+
+// Default log rotation sizes, in MiB.
+const (
+	DefaultLogMaxSizeMB = 10
+	DefaultLogKeepMB    = 3
+
+	// MaxLogSizeMB bounds rotation sizes so converting MiB to bytes cannot
+	// overflow an int64 left shift.
+	MaxLogSizeMB = 1 << 20 // 1 TiB
+)
+
+// LogConfig is the optional file-logging block.  Only the service writes the
+// log; the level/path take effect at the next service start.
+type LogConfig struct {
+	Level     string `yaml:"level"`
+	Path      string `yaml:"path"`
+	MaxSizeMB int    `yaml:"max_size_mb"`
+	KeepMB    int    `yaml:"keep_mb"`
+}
+
+// normalize fills the log-block defaults and clamps the keep window.
+func (l *LogConfig) normalize() {
+	l.Level = strings.TrimSpace(l.Level)
+	if l.Level == "" {
+		l.Level = LogLevelOff
+	}
+	if l.MaxSizeMB <= 0 {
+		l.MaxSizeMB = DefaultLogMaxSizeMB
+	}
+	if l.MaxSizeMB > MaxLogSizeMB {
+		l.MaxSizeMB = MaxLogSizeMB
+	}
+	if l.KeepMB <= 0 {
+		l.KeepMB = DefaultLogKeepMB
+	}
+	if l.KeepMB > l.MaxSizeMB {
+		l.KeepMB = l.MaxSizeMB
+	}
+}
+
+// validate checks the log block.  The keep/max relation is clamped by normalize,
+// not rejected here.
+func (l LogConfig) validate() (err error) {
+	if err = ValidateLogLevel(l.Level); err != nil {
+		return err
+	}
+	if l.MaxSizeMB <= 0 {
+		return errors.New("log.max_size_mb must be positive")
+	}
+	if l.KeepMB <= 0 {
+		return errors.New("log.keep_mb must be positive")
+	}
+	if l.Path == "" {
+		return nil
+	}
+
+	return ValidateLogPath(l.Path)
+}
+
+// ValidateLogLevel reports whether level is one of off/error/info/debug.
+func ValidateLogLevel(level string) (err error) {
+	switch level {
+	case LogLevelOff, LogLevelError, LogLevelInfo, LogLevelDebug:
+		return nil
+	default:
+		return fmt.Errorf("invalid log level %q (want off, error, info, or debug)", level)
+	}
+}
+
+// ValidateLogPath rejects a non-empty log path that is not a clean absolute
+// file path.  It never echoes the path in its error, which can reach an
+// unelevated caller through Result.Err.
+func ValidateLogPath(path string) (err error) {
+	if strings.ContainsRune(path, 0) {
+		return errors.New("log path must not contain NUL")
+	}
+	if strings.HasPrefix(path, `\\.\`) || strings.HasPrefix(path, `\\?\`) {
+		return errors.New("log path must not name a device")
+	}
+	if !filepath.IsAbs(path) {
+		return errors.New("log path must be absolute")
+	}
+	if filepath.Clean(path) != path {
+		return errors.New("log path must be clean")
+	}
+	if filepath.Dir(path) == path {
+		return errors.New("log path must name a file")
+	}
+
+	return nil
+}
+
 // ErrNoConfig is returned by Load when the config file does not exist.
 var ErrNoConfig = errors.New("no config file")
 
@@ -105,6 +204,7 @@ type Config struct {
 	Mode          string             `yaml:"mode"`
 	Profile       string             `yaml:"profile"`
 	SchemaVersion int                `yaml:"schema_version"`
+	Log           LogConfig          `yaml:"log"`
 }
 
 // Default returns the default configuration: mode off, one "default" profile,
@@ -114,6 +214,7 @@ func Default() (c *Config) {
 		SchemaVersion: SchemaVersion,
 		Mode:          ModeOff,
 		Profile:       DefaultProfileName,
+		Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
 		Profiles: map[string]Profile{
 			DefaultProfileName: {
 				Upstreams: []string{resolver.DefaultUpstream},
@@ -215,6 +316,8 @@ func (c *Config) normalize() {
 		c.Profile = DefaultProfileName
 	}
 
+	c.Log.normalize()
+
 	for name, p := range c.Profiles {
 		if p.Cache == nil {
 			p.Cache = &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes}
@@ -264,7 +367,7 @@ func (c *Config) Validate() (err error) {
 		}
 	}
 
-	return nil
+	return c.Log.validate()
 }
 
 // validate checks a single profile.
@@ -500,6 +603,22 @@ func cloneProfile(p Profile) (q Profile) {
 	return q
 }
 
+// Clone returns a deep copy of c so a caller can snapshot it before mutating.
+func (c *Config) Clone() (out *Config) {
+	if c == nil {
+		return nil
+	}
+
+	out = new(Config)
+	*out = *c
+	out.Profiles = make(map[string]Profile, len(c.Profiles))
+	for name, p := range c.Profiles {
+		out.Profiles[name] = cloneProfile(p)
+	}
+
+	return out
+}
+
 // Overrides are explicit CLI values that take precedence over the config file.
 type Overrides struct {
 	Profile   string
@@ -518,6 +637,7 @@ type Resolved struct {
 	Provider    string
 	Variant     string
 	Protocol    string
+	Log         LogConfig
 }
 
 // Resolve applies the precedence flags > config > defaults.  A nil cfg means no
@@ -549,6 +669,10 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	r.Provider = strings.TrimSpace(p.Provider)
 	r.Variant = strings.TrimSpace(p.Variant)
 	r.Protocol = strings.TrimSpace(p.Protocol)
+
+	logCfg := cfg.Log
+	logCfg.normalize()
+	r.Log = logCfg
 
 	if ov.Upstream != "" {
 		r.Upstreams = splitList(ov.Upstream)

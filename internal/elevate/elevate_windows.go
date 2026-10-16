@@ -216,14 +216,11 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return Result{Err: err.Error()}
 	}
 
-	// enable/disable force the mode; only apply takes the caller's patch.
+	// enable forces the mode; only apply takes the caller's patch.
 	switch req.Action {
 	case ActionEnable:
 		on := config.ModeOn
 		req.Patch = Patch{Mode: &on}
-	case ActionDisable:
-		off := config.ModeOff
-		req.Patch = Patch{Mode: &off}
 	case ActionServiceInstall:
 		return installService()
 	case ActionServiceUninstall:
@@ -236,6 +233,7 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	}
 
 	changed := false
+	reload := false
 
 	if req.Action != ActionRestore && req.Action != ActionRefreshLists {
 		// Resolve the config path from the ProgramData KnownFolder inside the
@@ -259,6 +257,10 @@ func runAction(ctx context.Context, req Request) (res Result) {
 			cfg = config.Default()
 		}
 
+		// Snapshot the pre-apply config so a log-only edit can be told apart
+		// from a reload-worthy change (LOGGING_PLAN §1.6).
+		snapshot := cfg.Clone()
+
 		if err = applyRequest(cfg, req, ipc.Revision(path)); err != nil {
 			return Result{Err: err.Error()}
 		}
@@ -276,6 +278,7 @@ func runAction(ctx context.Context, req Request) (res Result) {
 
 		after, rErr := os.ReadFile(path)
 		changed = rErr == nil && !bytes.Equal(before, after)
+		reload = reloadRelevant(snapshot, cfg)
 	}
 
 	// Enable/disable/restore always require a running service (enable starts
@@ -295,7 +298,7 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return Result{OK: true, Message: msg}
 	}
 
-	msg, err := applyConfigChanged(ctx, changed)
+	msg, err := applyConfigChanged(ctx, changed, reload)
 	if err != nil {
 		return Result{Err: err.Error()}
 	}
@@ -305,12 +308,13 @@ func runAction(ctx context.Context, req Request) (res Result) {
 
 // applyConfigChanged reloads a running service after a config-only apply.  It
 // never starts the service: if it is stopped or not installed the saved config
-// simply takes effect on the next enable.
-func applyConfigChanged(ctx context.Context, changed bool) (msg string, err error) {
+// simply takes effect on the next enable.  reload carries the reload-relevant
+// change (Log excluded), so a log-only edit is saved without a reload.
+func applyConfigChanged(ctx context.Context, changed, reload bool) (msg string, err error) {
 	st, pid, qErr := queryService()
 	running := qErr == nil && st == svc.Running && pid != 0
 
-	if !applyShouldReload(running, changed) {
+	if !applyShouldReload(running, reload) {
 		if !changed {
 			return "config unchanged", nil
 		}
@@ -575,13 +579,6 @@ func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (m
 		}
 
 		return "interception enabled", nil
-
-	case ActionDisable:
-		if err = client.Disable(ctx); err != nil {
-			return "", err
-		}
-
-		return "interception disabled", nil
 
 	case ActionRefreshLists:
 		if err = client.RefreshLists(ctx); err != nil {

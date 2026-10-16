@@ -44,7 +44,7 @@ single-instance lock) · `intercept` (NRPT via PowerShell, primary; per-adapter 
 (embedded dnsproxy + filter + per-domain rules) · `filter` (urlfilter wrapper) · `providers` (presets) ·
 `config` (YAML) · `ipc` (dual named pipes) · `service` (SCM host) · `drift` (registry watch + reconcile) ·
 `elevate` (one-shot UAC helper + allowlisted config patch) · `gui` (`gui` tag, go-gui **config client**,
-full-parity Status + Settings) · plus `winacl`/`redact`/`version`/`health`.
+full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`health`.
 
 - **Import cycle:** `internal/config` imports `internal/resolver`, so `internal/resolver` must NOT import
   `internal/config` (use the local `resolver.Rule` type).
@@ -77,6 +77,14 @@ full-parity Status + Settings) · plus `winacl`/`redact`/`version`/`health`.
   labels / `id_set` / filtering+cache flags+sizes / counts / bootstrap literals) — never ids or URLs.
   `id_set` is provider-aware (`providers.ExtractID`), fixing the old DoH-path-only false negative for
   DoT/DoQ.
+- **Logging** (`internal/logging` + `redact.Handler`): opt-in service-owned file log from the top-level
+  `log:` config block (default `off`; `level` off|error|info|debug; `path` defaults beside `config.yaml`;
+  10 MB cap, newest 3 MB kept). `cmd/dns-client` `serviceLogger()` is the single choke point; the
+  redacting handler (seeded via `providers.ExtractIDs`, **re-seeded on every reload**) scrubs resolver
+  ids (DoH-path and DoT/DoQ hostname label), URL userinfo/query and `sdns://` at all levels, while
+  `debug` exposes query names. The GUI **tails the file directly** — no IPC method. The file is opened
+  **without `O_APPEND`** so the handle keeps `FILE_WRITE_DATA`; rotation truncates through that open
+  handle (`file.Truncate(0)` + seek/write). `os.Truncate` **by path** is only the GUI's "Clear log file".
 
 ## Invariants — do not break
 - **Enable order:** bind listeners → two-stage health check → persist snapshot + dirty marker → apply
@@ -91,8 +99,9 @@ full-parity Status + Settings) · plus `winacl`/`redact`/`version`/`health`.
 - `disable`/`restore`/`status` deliberately use a **config-independent** lifecycle.
 
 ## Security rules (SPEC §15.3)
-- Resolver ids live only in the admin-only config. **Never** log them, put them on argv/env, or send them
-  over IPC. Use `internal/redact`; the status pipe carries only sanitized DTOs.
+- Resolver ids live only in the admin-only config. **Never** put them on argv/env or send them over IPC;
+  the redacting `redact.Handler` keeps them out of logs at every level. `debug` is the deliberate
+  exception for query names (not credentials). The status pipe carries only sanitized DTOs.
 - Control pipe `\\.\pipe\dns-client` = SYSTEM + Administrators only. Status pipe
   `\\.\pipe\dns-client-status` = read-only, sanitized. Never grant `AU` access to the control pipe.
 - Elevation is explicit (`elevate.Apply` → `ShellExecuteExW runas` → `--apply`). The shipped exe also

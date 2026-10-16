@@ -23,6 +23,7 @@ A running config file is optional: with no file, built-in defaults are used
 | `mode` | string | `off` | `on` or `off`. With `on`, the service re-enables interception on start. |
 | `profile` | string | `default` | Must name an entry in `profiles`. |
 | `profiles` | map | one `default` profile | Map of profile name → profile block. |
+| `log` | block | `off` | Optional service file logging. See below. |
 
 Precedence overrides: `--upstream`, `--bootstrap`, and `--profile` replace the
 resolved profile's values at runtime.
@@ -111,6 +112,32 @@ filtering:
 
 Lists are hosts-format and AdGuard/ABP syntax, loaded manually (no scheduled
 updater in v1). Changing rules or lists flushes the resolver cache.
+
+## `log`
+
+Optional service-owned file logging (the GUI **Logging** page writes this). Off
+by default, and applied at the **next service start** — changing the level or path
+does not restart the service.
+
+```yaml
+log:
+  level: off          # off | error | info | debug
+  path: ""            # empty = %ProgramData%\dns-client\dns-client.log
+  max_size_mb: 10
+  keep_mb: 3
+```
+
+| Field | Type | Default | Rules |
+|---|---|---|---|
+| `level` | string | `off` | `off`, `error`, `info`, or `debug`. |
+| `path` | string | empty | Empty = `%ProgramData%\dns-client\dns-client.log`. A custom path must be absolute and not a `\\.\` device path. |
+| `max_size_mb` | integer | `10` | Rotate when the file reaches this size (clamped). |
+| `keep_mb` | integer | `3` | After rotation keep the newest this many MB (clamped to `max_size_mb`). |
+
+Resolver ids and URL credentials (userinfo, query strings, `sdns://`) are
+**redacted at every level**. The `debug` level additionally records DNS query
+names and upstream traffic, so treat a `debug` log as sensitive; the log itself
+stays ACLed to SYSTEM + Administrators beside `config.yaml`.
 
 ## Worked examples
 

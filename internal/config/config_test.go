@@ -83,6 +83,7 @@ func TestValidationErrors(t *testing.T) {
 			SchemaVersion: SchemaVersion,
 			Mode:          ModeOff,
 			Profile:       "default",
+			Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
 			Profiles: map[string]Profile{
 				"default": {
 					Upstreams: []string{"https://dns.quad9.net/dns-query"},
@@ -528,5 +529,95 @@ func TestProfileMetadataRoundTrip(t *testing.T) {
 	bare := Default()
 	if bare.Profiles[DefaultProfileName].Provider != "" {
 		t.Fatal("default profile should have empty metadata")
+	}
+}
+
+// TestLogConfigDefaultsAndParse covers the log block (LOGGING_PLAN §2): absent
+// block defaults to off, a block parses, and KeepMB is clamped.
+func TestLogConfigDefaultsAndParse(t *testing.T) {
+	if d := Default(); d.Log.Level != LogLevelOff || d.Log.MaxSizeMB != DefaultLogMaxSizeMB ||
+		d.Log.KeepMB != DefaultLogKeepMB {
+		t.Fatalf("default log = %+v", d.Log)
+	}
+
+	// A block parses.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "schema_version: 1\nmode: off\nprofile: default\n" +
+		"log:\n  level: debug\n  max_size_mb: 5\n  keep_mb: 2\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Log.Level != LogLevelDebug || c.Log.MaxSizeMB != 5 || c.Log.KeepMB != 2 {
+		t.Fatalf("parsed log = %+v", c.Log)
+	}
+
+	// An absent block defaults to off.
+	bare := filepath.Join(t.TempDir(), "config.yaml")
+	body = "schema_version: 1\nmode: off\nprofile: default\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+	if err = os.WriteFile(bare, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	bc, err := Load(bare)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if bc.Log.Level != LogLevelOff || bc.Log.MaxSizeMB != DefaultLogMaxSizeMB {
+		t.Fatalf("absent log block = %+v", bc.Log)
+	}
+
+	// KeepMB > MaxSizeMB is clamped by normalize.
+	clamp := LogConfig{Level: LogLevelInfo, MaxSizeMB: 4, KeepMB: 9}
+	clamp.normalize()
+	if clamp.KeepMB != 4 {
+		t.Fatalf("clamped KeepMB = %d, want 4", clamp.KeepMB)
+	}
+
+	// An overflowing MaxSizeMB is clamped so the MiB->bytes shift cannot wrap.
+	overflow := LogConfig{Level: LogLevelInfo, MaxSizeMB: 1 << 62, KeepMB: 9}
+	overflow.normalize()
+	if overflow.MaxSizeMB != MaxLogSizeMB || overflow.KeepMB != 9 {
+		t.Fatalf("overflow clamp = %+v", overflow)
+	}
+}
+
+// TestLogConfigValidate covers the invalid cases (LOGGING_PLAN §2).
+func TestLogConfigValidate(t *testing.T) {
+	badLevel := Default()
+	badLevel.Log.Level = "verbose"
+	if err := badLevel.Validate(); err == nil {
+		t.Fatal("unknown log level accepted")
+	}
+
+	badPath := Default()
+	badPath.Log.Path = "relative.log"
+	if err := badPath.Validate(); err == nil {
+		t.Fatal("relative log path accepted")
+	}
+
+	dirOnly := Default()
+	dirOnly.Log.Path = string(filepath.Separator)
+	if err := dirOnly.Validate(); err == nil {
+		t.Fatal("directory log path accepted")
+	}
+
+	for _, dev := range []string{`\\.\PhysicalDrive0`, `\\?\C:\dns-client.log`} {
+		device := Default()
+		device.Log.Path = dev
+		if err := device.Validate(); err == nil {
+			t.Fatalf("device log path %q accepted", dev)
+		}
+	}
+
+	good := Default()
+	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(t.TempDir(), "dns-client.log"), MaxSizeMB: 5, KeepMB: 2}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("valid log config rejected: %v", err)
 	}
 }

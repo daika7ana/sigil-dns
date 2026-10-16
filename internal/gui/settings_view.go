@@ -70,7 +70,7 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 		card(t, "gui:card:rules", "Per-domain routing", []gogui.View{
 			ruleSection(t, app.draft, disabled),
 		}),
-		saveRow(t, app.draft, disabled),
+		saveRow(t, app.draft, disabled, ""),
 	)
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -189,41 +189,92 @@ func (a *App) refreshProfiles() {
 	}
 }
 
-// serviceCard is the one-time service lifecycle: Install when absent,
-// Uninstall when present.  Routine Start/Stop lives behind the Status page's
-// single Protection control (Enable starts the service), so it is not exposed
-// here.  Writes are gated by the unverified-trust rule and the busy flag.
+// serviceCard is the service lifecycle: a single Start/Stop control, then the
+// one-time Install/Uninstall.  The Start/Stop choice follows the INTERCEPTION
+// state, not the service process: Start runs Enable (which starts the service
+// and turns protection on, no-opping the install when it is already running),
+// and Stop stops the service — protection goes off with it, but the service
+// stays installed.  Keying on interception means a running-but-off state (a
+// failed Enable, a `dns-client disable`, or a degraded boot) still offers Start
+// so the user can turn protection back on.  The SCM state badge lives in the
+// header beside the app name.  Writes are gated by the unverified-trust rule and
+// the busy flag.
 func serviceCard(t gogui.Theme, app *App) gogui.View {
 	disabled := app.busy || !canEdit(app.snap)
 
-	action := actionInstall
+	controls := []gogui.View{}
 	if app.snap.installed {
-		action = actionUninstall
+		// One Start/Stop control, wearing the palette the old header power
+		// button did: the actionable Start is the success green, Stop is a calm
+		// neutral, and either reads inert while a write is not allowed.  Start
+		// only shows for an installed service — a control that cannot work is
+		// not offered.
+		action := actionEnable
+		label := "Start"
+		id := "gui:service:start"
+		if enabled(app.snap) {
+			action = actionServiceStop
+			label = "Stop"
+			id = "gui:service:stop"
+		}
+
+		startCfg := gogui.ButtonCfg{
+			ID: id, Variant: gogui.ButtonSecondary, Label: label,
+			Disabled: disabled,
+			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, action) },
+		}
+		switch {
+		case disabled:
+			startCfg.Colors = disabledNeutralColors(t)
+		case action == actionEnable:
+			startCfg.Variant = gogui.ButtonPrimary
+			startCfg.Colors = successButtonColors(t)
+		}
+		controls = append(controls, gogui.Button(startCfg))
 	}
 
-	control := gogui.Row(gogui.ContainerCfg{
-		Sizing:     gogui.FitFit,
-		Spacing:    gogui.SpacingSmall,
-		Padding:    gogui.PaddingNone,
-		SizeBorder: gogui.NoBorder,
-		VAlign:     gogui.VAlignMiddle,
-		Content: []gogui.View{
-			serviceBadge(app.snap),
-			gogui.Button(gogui.ButtonCfg{
-				ID:       "gui:" + string(action),
-				Variant:  actionVariant(action),
-				Label:    actionLabel(action) + " service",
-				Disabled: disabled,
-				OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, action) },
-			}),
-		},
-	})
+	lifecycle := actionInstall
+	if app.snap.installed {
+		lifecycle = actionUninstall
+	}
+	btn := gogui.ButtonCfg{
+		ID:       "gui:" + string(lifecycle),
+		Variant:  actionVariant(lifecycle),
+		Label:    actionLabel(lifecycle) + " service",
+		Disabled: disabled,
+	}
+	if lifecycle == actionUninstall {
+		btn.OnClick = confirmUninstall
+	} else {
+		btn.OnClick = func(ctx gogui.EventCtx) { runAction(ctx, actionInstall) }
+	}
+	controls = append(controls, gogui.Button(btn))
 
-	// The badge carries the installed/not-installed state, so there is no
+	// The header badge carries the installed/not-installed state, so there is no
 	// separate "Installed" row: one source of truth for the service state.
 	return card(t, "gui:card:service", "Service", []gogui.View{
 		settingRow(t, "Background service",
-			"Runs the local resolver and applies the system DNS settings.", control),
+			"Runs the local resolver and applies the system DNS settings.",
+			gogui.Row(gogui.ContainerCfg{
+				Sizing:     gogui.FitFit,
+				Spacing:    gogui.SpacingSmall,
+				Padding:    gogui.PaddingNone,
+				SizeBorder: gogui.NoBorder,
+				VAlign:     gogui.VAlignMiddle,
+				Content:    controls,
+			})),
+	})
+}
+
+// confirmUninstall asks before removing the service.  Removing it stops
+// protection and deletes the service registration, so it confirms first.
+func confirmUninstall(ctx gogui.EventCtx) {
+	ctx.Window.Dialog(gogui.DialogCfg{
+		DialogType: gogui.DialogConfirm,
+		Title:      "Uninstall service",
+		Body:       "Removing the service stops protection and deletes the service registration.",
+		FocusID:    "gui:service:uninstall:confirm",
+		OnOkYes:    func(w *gogui.Window) { runAction(gogui.EventCtx{Window: w}, actionUninstall) },
 	})
 }
 
@@ -529,7 +580,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
 		groupDivider(t, 2),
 		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields...),
-		saveRow(t, d, disabled),
+		saveRow(t, d, disabled, "Blank resolver ID keeps the current one."),
 	})
 }
 
@@ -584,34 +635,41 @@ const saveButtonMinWidth float32 = 140
 
 // saveRow is the Save button and its one-line hint.  Save is a content-width
 // button right-aligned to the field column, so the primary action reads as a
-// button rather than a full-column bar; the hint sits underneath.
-func saveRow(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
+// button rather than a full-column bar; hint, when non-empty, sits underneath.
+// The hint is caller-supplied because it annotates a field that only some
+// callers have (the resolver ID on the profile editor); an empty hint omits the
+// line entirely.
+func saveRow(t gogui.Theme, d profileDraft, disabled bool, hint string) gogui.View {
+	content := []gogui.View{
+		gogui.Row(gogui.ContainerCfg{
+			Sizing:     gogui.FillFit,
+			HAlign:     gogui.HAlignEnd,
+			Padding:    gogui.PaddingNone,
+			SizeBorder: gogui.NoBorder,
+			Content: []gogui.View{
+				gogui.Button(gogui.ButtonCfg{
+					ID: "gui:profile:save", Variant: gogui.ButtonPrimary, Label: "Save",
+					Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
+					OnClick: func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) },
+				}),
+			},
+		}),
+	}
+	if hint != "" {
+		content = append(content, gogui.Text(gogui.TextCfg{
+			Text:      hint,
+			TextStyle: t.TextStyleCaption,
+			Sizing:    gogui.FillFit,
+			Mode:      gogui.TextModeWrap,
+		}))
+	}
+
 	return gogui.Column(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
 		Spacing:    gogui.SpacingTight,
 		Padding:    gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
-		Content: []gogui.View{
-			gogui.Row(gogui.ContainerCfg{
-				Sizing:     gogui.FillFit,
-				HAlign:     gogui.HAlignEnd,
-				Padding:    gogui.PaddingNone,
-				SizeBorder: gogui.NoBorder,
-				Content: []gogui.View{
-					gogui.Button(gogui.ButtonCfg{
-						ID: "gui:profile:save", Variant: gogui.ButtonPrimary, Label: "Save",
-						Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
-						OnClick: func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) },
-					}),
-				},
-			}),
-			gogui.Text(gogui.TextCfg{
-				Text:      "Blank resolver ID keeps the current one.",
-				TextStyle: t.TextStyleCaption,
-				Sizing:    gogui.FillFit,
-				Mode:      gogui.TextModeWrap,
-			}),
-		},
+		Content:    content,
 	})
 }
 

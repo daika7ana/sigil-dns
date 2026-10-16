@@ -17,6 +17,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,7 +32,9 @@ import (
 	"github.com/daika7ana/dns-client/internal/gui"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
+	"github.com/daika7ana/dns-client/internal/logging"
 	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/dns-client/internal/redact"
 	"github.com/daika7ana/dns-client/internal/resolver"
 	"github.com/daika7ana/dns-client/internal/service"
 	"github.com/daika7ana/dns-client/internal/state"
@@ -167,6 +170,48 @@ func logger() (l *slog.Logger) {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
+// serviceLogger builds the service's durable, redacting file logger from the
+// config's log block.  It is fail-open: a broken config or an unusable file
+// yields a stderr logger (LOGGING_PLAN §1.5/§4.5).  The closer is nil when no
+// file was opened.
+func (o options) serviceLogger() (l *slog.Logger, closer io.Closer) {
+	resolved, err := o.resolveSettings()
+	if err != nil {
+		// Fail open, but still scrub URLs/stamps from the stderr fallback.
+		return slog.New(redact.Handler(logger().Handler(), nil)), nil
+	}
+
+	l, closer, err = logging.Open(logging.Options{
+		Level:     resolved.Log.Level,
+		Path:      resolved.Log.Path,
+		MaxSizeMB: resolved.Log.MaxSizeMB,
+		KeepMB:    resolved.Log.KeepMB,
+		Secrets:   resolverSecrets(resolved),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dns-client: file logging unavailable, using stderr:", err)
+	}
+
+	return l, closer
+}
+
+// resolverSecrets collects every resolver id recoverable from the active
+// profile and its per-domain rules, to seed the redacting handler.  A miss on
+// one upstream never drops the others, and absent provider metadata falls back
+// to URL path/host-label extraction.  The ids are scrub seeds only; they are
+// never logged themselves.
+func resolverSecrets(r config.Resolved) (secrets []string) {
+	ups := make([]string, 0, len(r.Upstreams)+len(r.PerDomain))
+	ups = append(ups, r.Upstreams...)
+	for _, pd := range r.PerDomain {
+		ups = append(ups, pd.Upstream)
+	}
+
+	proto := providers.Protocol(strings.TrimSpace(r.Protocol))
+
+	return providers.ExtractIDs(strings.TrimSpace(r.Provider), proto, ups)
+}
+
 // resolveSettings applies flag > config > default precedence.
 func (o options) resolveSettings() (r config.Resolved, err error) {
 	cfg, err := config.Load(o.configPath)
@@ -190,8 +235,10 @@ func (o options) listenAddrs() (listen []string) {
 	return nil
 }
 
-// lifecycleFor builds a Lifecycle using resolved settings.
-func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
+// lifecycleFor builds a Lifecycle using resolved settings and the given logger.
+// The service passes its durable file logger; CLI commands pass the stderr
+// logger (only the service writes the log, LOGGING_PLAN §1.1).
+func (o options) lifecycleFor(r config.Resolved, l *slog.Logger) (lc *lifecycle.Lifecycle) {
 	rules := make([]resolver.Rule, 0, len(r.PerDomain))
 	for _, pd := range r.PerDomain {
 		if !pd.IsEnabled() {
@@ -209,7 +256,7 @@ func (o options) lifecycleFor(r config.Resolved) (lc *lifecycle.Lifecycle) {
 	}
 
 	return lifecycle.New(lifecycle.Config{
-		Logger:      logger(),
+		Logger:      l,
 		StatePath:   o.statePath,
 		ProfileName: r.ProfileName,
 		Upstreams:   r.Upstreams,
@@ -251,7 +298,7 @@ func cmdEnable(args []string) (err error) {
 	ctx, stop := signalContext()
 	defer stop()
 
-	lc := o.lifecycleFor(resolved)
+	lc := o.lifecycleFor(resolved, logger())
 	if err = lc.Enable(ctx); err != nil {
 		return err
 	}
@@ -391,7 +438,7 @@ func cmdRun(args []string) (err error) {
 	ctx, stop := signalContext()
 	defer stop()
 
-	return o.lifecycleFor(resolved).Run(ctx)
+	return o.lifecycleFor(resolved, logger()).Run(ctx)
 }
 
 func cmdConfig(args []string) (err error) {
@@ -466,6 +513,10 @@ type serviceLifecycle struct {
 	inner     svcDaemon
 	build     func() (lc svcDaemon, sum ipc.ConfigSummary, err error)
 	enableErr error
+
+	// logger is the service's redacting logger; Reload re-seeds it on rollback
+	// so the restored profile's id stays scrubbed.
+	logger *slog.Logger
 }
 
 // Status implements service.Lifecycle.
@@ -502,17 +553,28 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 		return ipc.ConfigSummary{}, errors.New("reload is not configured")
 	}
 
+	// Capture the active profile's seeds before build swaps to the new profile.
+	oldSecrets := logging.Secrets(s.logger)
+
 	newInner, sum, err := s.build()
 	if err != nil {
 		// Keep the current lifecycle; the summary carries the secret-free error.
 		return sum, err
 	}
 
+	// build replaced the seeds with the new profile's.  Install the union while
+	// the old lifecycle still serves, so no line logged in the swap window
+	// (e.g. a DoT/DoQ upstream timeout) carries an unscrubbed old id.
+	newSecrets := logging.Secrets(s.logger)
+	logging.UpdateSecrets(s.logger, append(append([]string{}, oldSecrets...), newSecrets...))
+
 	st, sErr := s.inner.Status()
 	enabled := sErr == nil && st != nil && st.Mode == state.ModeOn
 
 	if !enabled {
-		// Idle: just replace the in-memory config.
+		// Idle: just replace the in-memory config; only the new profile is live.
+		logging.UpdateSecrets(s.logger, newSecrets)
+
 		s.inner = newInner
 		s.enableErr = nil
 
@@ -526,6 +588,10 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 		return sum, fmt.Errorf("reload: disable: %w", err)
 	}
 	if err = newInner.Enable(ctx); err != nil {
+		// The old profile is active again after rollback, so restore its seeds
+		// (dropping the new profile's) before re-enabling.
+		logging.UpdateSecrets(s.logger, oldSecrets)
+
 		if rErr := old.Enable(ctx); rErr != nil {
 			// Leave the dirty marker set for crash recovery.
 			return sum, fmt.Errorf("reload: enable failed (%v); rollback also failed: %w", err, rErr)
@@ -533,6 +599,9 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 
 		return sum, fmt.Errorf("reload: enable failed, rolled back: %w", err)
 	}
+
+	// Swap is final: keep only the new profile's seeds.
+	logging.UpdateSecrets(s.logger, newSecrets)
 
 	s.inner = newInner
 	s.enableErr = nil
@@ -586,6 +655,12 @@ func cmdServiceHost(args []string) (err error) {
 		return err
 	}
 
+	// Durable, redacting file logger from the config's log block (fail-open).
+	l, closer := o.serviceLogger()
+	if closer != nil {
+		defer func() { _ = closer.Close() }()
+	}
+
 	// build loads the config and constructs a lifecycle + sanitized summary.
 	build := func() (lc svcDaemon, sum ipc.ConfigSummary, err error) {
 		sum, resolved, cfgErr := serviceConfig(o.configPath, o.profile, o.upstream, o.bootstrap)
@@ -593,17 +668,21 @@ func cmdServiceHost(args []string) (err error) {
 			return nil, sum, cfgErr
 		}
 
-		return o.lifecycleFor(resolved), sum, nil
+		// Track the active profile on every (re)build so redaction seeds never
+		// go stale after a reload.
+		logging.UpdateSecrets(l, resolverSecrets(resolved))
+
+		return o.lifecycleFor(resolved, l), sum, nil
 	}
 
 	// Never refuse to boot on a bad config: always start the host so crash
 	// recovery (restore) and IPC status work, and degrade enable until the
 	// config loads.
-	slc := &serviceLifecycle{build: build}
+	slc := &serviceLifecycle{build: build, logger: l}
 
 	inner, _, bErr := build()
 	if bErr != nil {
-		logger().Error("config unavailable; service starts degraded", "err", ipc.SanitizedConfigError(bErr))
+		l.Error("config unavailable; service starts degraded", "err", ipc.SanitizedConfigError(bErr))
 
 		slc.inner = o.lifecycleForState()
 		slc.enableErr = fmt.Errorf("configuration unavailable: %w", bErr)
@@ -611,10 +690,10 @@ func cmdServiceHost(args []string) (err error) {
 		slc.inner = inner
 	}
 
-	agent := service.NewAgent(slc, logger(), "")
+	agent := service.NewAgent(slc, l, "")
 	agent.SetConfigPath(o.configPath)
 	agent.SetReloader(slc.Reload)
-	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, logger()))
+	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l))
 
 	return service.Run(agent)
 }

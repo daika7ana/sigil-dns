@@ -13,10 +13,10 @@ import (
 func TestElevateActionFor(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
 		actionEnable:        elevate.ActionEnable,
-		actionDisable:       elevate.ActionDisable,
 		actionRestore:       elevate.ActionRestore,
 		actionInstall:       elevate.ActionServiceInstall,
 		actionUninstall:     elevate.ActionServiceUninstall,
+		actionServiceStop:   elevate.ActionServiceStop,
 		actionRefreshLists:  elevate.ActionRefreshLists,
 		actionSaveProfile:   elevate.ActionApply,
 		actionAddProfile:    elevate.ActionApply,
@@ -44,6 +44,7 @@ func TestServiceRequestHasEmptyPatch(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
 		actionInstall:      elevate.ActionServiceInstall,
 		actionUninstall:    elevate.ActionServiceUninstall,
+		actionServiceStop:  elevate.ActionServiceStop,
 		actionRefreshLists: elevate.ActionRefreshLists,
 	}
 

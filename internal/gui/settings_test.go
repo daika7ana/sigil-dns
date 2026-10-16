@@ -169,7 +169,7 @@ func TestSettingsPageRenders(t *testing.T) {
 
 	for _, id := range []string{
 		"gui:nav:status", "gui:nav:settings", "gui:nav:rules", "gui:nav:about",
-		"gui:service:uninstall",
+		"gui:service:stop", "gui:service:uninstall",
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",
 		"gui:edit:bootstrap", "gui:edit:filtering", "gui:edit:block", "gui:edit:cache",
@@ -180,34 +180,37 @@ func TestSettingsPageRenders(t *testing.T) {
 		}
 	}
 
-	// The lifecycle controls are Install OR Uninstall, never both, and there
-	// is no Start/Stop anywhere.
+	// Running service: the Stop control and Uninstall show; Install and Start
+	// do not.
 	if len(w.ResolveID("gui:service:install")) != 0 {
 		t.Error("Install must not render when the service is already installed")
 	}
-	for _, id := range []string{"gui:service:start", "gui:service:stop"} {
-		if len(w.ResolveID(id)) != 0 {
-			t.Errorf("Settings must not render %q", id)
-		}
+	if len(w.ResolveID("gui:service:start")) != 0 {
+		t.Error("Start must not render while the service is running")
 	}
 
 	assertNoFindings(t, w)
 }
 
-// TestServiceSectionEnablement moves the lifecycle buttons to Settings and
-// checks Install shows only when absent and Uninstall only when present, both
-// gated by the unverified-trust write rule.
+// TestServiceSectionEnablement checks the Settings lifecycle controls: Install
+// shows only when absent, Uninstall only when present, Start only when installed
+// and stopped, Stop only when installed and running — all gated by the
+// unverified-trust write rule.
 func TestServiceSectionEnablement(t *testing.T) {
 	tests := []struct {
 		name         string
 		snap         snapshot
 		wantInstall  bool
 		wantUninst   bool
-		wantDisabled bool // for whichever button is shown
+		wantStart    bool
+		wantStop     bool
+		wantDisabled bool // for whichever controls are shown
 	}{
-		{"absent-trusted", snapshot{trust: trustVerified, updated: time.Now()}, true, false, false},
-		{"present-trusted", sampleSnapshot(), false, true, false},
-		{"absent-unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()}, true, false, true},
+		{"absent-trusted", snapshot{trust: trustVerified, updated: time.Now()}, true, false, false, false, false},
+		{"present-running", sampleSnapshot(), false, true, false, true, false},
+		{"present-stopped", stoppedInstalledSnapshot(), false, true, true, false, false},
+		{"absent-unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()}, true, false, false, false, true},
+		{"present-unverified", snapshot{trust: trustUnverified, installed: true, running: true, updated: time.Now()}, false, true, true, false, true},
 	}
 
 	for _, tt := range tests {
@@ -219,20 +222,90 @@ func TestServiceSectionEnablement(t *testing.T) {
 			w := newSettingsWindow(t, app)
 			root := w.TestRender(nil)
 
-			if got := len(w.ResolveID("gui:service:install")) > 0; got != tt.wantInstall {
-				t.Errorf("install present = %v, want %v", got, tt.wantInstall)
+			checks := map[string]bool{
+				"gui:service:install":   tt.wantInstall,
+				"gui:service:uninstall": tt.wantUninst,
+				"gui:service:start":     tt.wantStart,
+				"gui:service:stop":      tt.wantStop,
 			}
-			if got := len(w.ResolveID("gui:service:uninstall")) > 0; got != tt.wantUninst {
-				t.Errorf("uninstall present = %v, want %v", got, tt.wantUninst)
+			for id, want := range checks {
+				present := len(w.ResolveID(id)) > 0
+				if present != want {
+					t.Errorf("%s present = %v, want %v", id, present, want)
+				}
+				if want {
+					assertDisabled(t, root, w, id, tt.wantDisabled)
+				}
 			}
-
-			shown := "gui:service:install"
-			if tt.wantUninst {
-				shown = "gui:service:uninstall"
-			}
-			assertDisabled(t, root, w, shown, tt.wantDisabled)
 		})
 	}
+}
+
+// TestUninstallConfirm proves the Uninstall service button asks first: the
+// confirm dialog appears and the action only runs from the confirm.
+func TestUninstallConfirm(t *testing.T) {
+	t.Run("yes runs the uninstall action", func(t *testing.T) {
+		got := make(chan guiAction, 1)
+		app := settingsApp()
+		app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
+			got <- req.action
+
+			return applyResult{ok: true, message: "Service removed."}, nil
+		}
+
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+
+		if err := w.TestClick("gui:service:uninstall"); err != nil {
+			t.Fatalf("click uninstall: %v", err)
+		}
+		w.TestRender(nil)
+		if n := len(w.ResolveID("gui:service:uninstall:confirm")); n != 1 {
+			t.Fatalf("confirm dialog missing (%d)", n)
+		}
+
+		if err := w.TestClick("gui:service:uninstall:confirm:1"); err != nil {
+			t.Fatalf("click confirm yes: %v", err)
+		}
+
+		select {
+		case action := <-got:
+			if action != actionUninstall {
+				t.Fatalf("action = %q, want %q", action, actionUninstall)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("apply was not invoked")
+		}
+		waitIdle(t, w, app)
+	})
+
+	t.Run("no runs nothing", func(t *testing.T) {
+		got := make(chan guiAction, 1)
+		app := settingsApp()
+		app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
+			got <- req.action
+
+			return applyResult{ok: true}, nil
+		}
+
+		w := newSettingsWindow(t, app)
+		w.TestRender(nil)
+
+		if err := w.TestClick("gui:service:uninstall"); err != nil {
+			t.Fatalf("click uninstall: %v", err)
+		}
+		w.TestRender(nil)
+		if err := w.TestClick("gui:service:uninstall:confirm"); err != nil {
+			t.Fatalf("click confirm no: %v", err)
+		}
+		w.TestRender(nil)
+
+		select {
+		case action := <-got:
+			t.Fatalf("apply ran on cancel: %q", action)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
 }
 
 // TestProfileOpEnablement renders Settings and checks Delete is inert for the
@@ -309,8 +382,8 @@ func TestNavSwitchesPage(t *testing.T) {
 	w := newSettingsWindow(t, app)
 	w.TestRender(nil)
 
-	if len(w.ResolveID("gui:power")) == 0 {
-		t.Fatal("Status page did not render the power control")
+	if len(w.ResolveID("gui:banner")) == 0 {
+		t.Fatal("Status page did not render the status banner")
 	}
 	if len(w.ResolveID("gui:profile:save")) != 0 {
 		t.Fatal("Settings content must not render on the Status page")
@@ -777,5 +850,50 @@ func TestSettingsPositionRoundTrip(t *testing.T) {
 	}
 	if got.Width != want.Width || got.Height != want.Height || got.Theme != want.Theme {
 		t.Fatalf("settings = %+v, want %+v", got, want)
+	}
+}
+
+// TestServiceControlFollowsInterception proves the Start/Stop control follows the
+// INTERCEPTION state, not the service process: a running service with
+// interception off offers Start (so Enable can turn protection back on), and an
+// on state offers Stop.
+func TestServiceControlFollowsInterception(t *testing.T) {
+	tests := []struct {
+		name     string
+		mk       func() snapshot
+		wantStop bool
+	}{
+		{"interception on", sampleSnapshot, true},
+		{"running but off", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Enabled = false
+			s.status.Mode = "off"
+
+			return s
+		}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+			app.snap = tt.mk()
+			app.page = pageSettings
+
+			w := newSettingsWindow(t, app)
+			w.TestRender(nil)
+
+			want := "gui:service:start"
+			unwanted := "gui:service:stop"
+			if tt.wantStop {
+				want, unwanted = unwanted, want
+			}
+			if n := len(w.ResolveID(want)); n != 1 {
+				t.Errorf("%s rendered %d times, want 1", want, n)
+			}
+			if n := len(w.ResolveID(unwanted)); n != 0 {
+				t.Errorf("%s rendered %d times, want 0", unwanted, n)
+			}
+			assertNoFindings(t, w)
+		})
 	}
 }

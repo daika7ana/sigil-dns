@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/dns-client/internal/logging"
 	"github.com/daika7ana/dns-client/internal/providers"
 	"github.com/daika7ana/dns-client/internal/redact"
 )
@@ -144,6 +145,20 @@ type ConfigSummary struct {
 
 	// Profiles is the sanitized per-profile list, sorted by name.
 	Profiles []ProfileSummary `json:"profiles,omitempty"`
+
+	// LogLevel is the configured file-logging level (off/error/info/debug).
+	LogLevel string `json:"log_level,omitempty"`
+
+	// LogPath is the effective log file path: the configured value, or the
+	// platform default the service resolves when none is set.  It is the path a
+	// viewer tails.  It is not secret.
+	LogPath string `json:"log_path,omitempty"`
+
+	// LogPathSet reports whether the log path is explicitly configured.  A
+	// false value means LogPath is the resolved platform default, so an editor
+	// can show a blank field (blank = use the default) while still knowing the
+	// effective path.
+	LogPathSet bool `json:"log_path_set,omitempty"`
 }
 
 // Summarize builds a sanitized summary from a valid config.  It is shared by the
@@ -156,6 +171,14 @@ func Summarize(cfg *config.Config) (sum ConfigSummary) {
 
 	sum.Profile = cfg.Profile
 	sum.Profiles = summarizeProfiles(cfg)
+	sum.LogLevel = cfg.Log.Level
+	sum.LogPathSet = cfg.Log.Path != ""
+	sum.LogPath = cfg.Log.Path
+	if sum.LogPath == "" {
+		// Report the effective default so a viewer can tail the file without
+		// resolving it itself (LOGGING_PLAN §4.6).
+		sum.LogPath = logging.DefaultPath()
+	}
 
 	p, ok := cfg.Profiles[cfg.Profile]
 	if !ok {

@@ -30,6 +30,7 @@ const (
 	pageStatus pageKind = iota
 	pageSettings
 	pageRules
+	pageLogging
 	pageAbout
 )
 
@@ -160,6 +161,8 @@ func pageContent(t gogui.Theme, app *App, windowWidth int) gogui.View {
 		return settingsPage(t, app, windowWidth)
 	case pageRules:
 		return rulesPage(t, app)
+	case pageLogging:
+		return loggingPage(t, app, windowWidth)
 	case pageAbout:
 		return aboutPage(t)
 	default:
@@ -183,6 +186,7 @@ func navRail(t gogui.Theme, app *App) gogui.View {
 			navItem(t, app, pageStatus, "Status", gogui.IconActivity),
 			navItem(t, app, pageSettings, "Settings", gogui.IconGear),
 			navItem(t, app, pageRules, "Rules", gogui.IconFilter),
+			navItem(t, app, pageLogging, "Logging", gogui.IconDocument),
 			navItem(t, app, pageAbout, "About", gogui.IconInfo),
 		},
 	})
@@ -273,6 +277,8 @@ func pageName(p pageKind) (name string) {
 		return "settings"
 	case pageRules:
 		return "rules"
+	case pageLogging:
+		return "logging"
 	case pageAbout:
 		return "about"
 	default:
@@ -364,7 +370,8 @@ func linkButton(t gogui.Theme, id, text, url string) gogui.View {
 // statusPage is the status screen: a banner and the read-only card stack, all
 // in ONE scrollable column.  Keeping the banner in the same column as the
 // cards means they share the scroll region's inset, so the banner is exactly as
-// wide as the cards below it.  The power control lives in the header.
+// wide as the cards below it.  The Start/Stop control lives in the Settings
+// service card; the state badge lives in the header.
 func statusPage(t gogui.Theme, app *App) gogui.View {
 	v := statusVisualFor(app.snap, t)
 
@@ -383,18 +390,13 @@ func statusPage(t gogui.Theme, app *App) gogui.View {
 	})
 }
 
-// header is the app's identity band: the app mark and title on the left, the
-// window actions (theme, Restore, Protection) on the right.  It takes the
-// background tone — chrome is background, cards are panel — so neutral buttons
-// and the theme control read against it.
+// header is the app's identity band: the app mark, the title with its service
+// state badge, and the status caption on the left, and the window actions
+// (theme, and Restore when a crash leftover needs cleaning up) on the right.  It
+// takes the background tone — chrome is background, cards are panel — so neutral
+// buttons and the theme control read against it.
 func header(t gogui.Theme, app *App) gogui.View {
 	ps := powerStateFor(t, app)
-
-	// The Protection button runs the existing enable/disable path.
-	power := actionEnable
-	if ps.on {
-		power = actionDisable
-	}
 
 	caption := updatedText(app)
 	switch {
@@ -425,29 +427,6 @@ func header(t gogui.Theme, app *App) gogui.View {
 		}))
 	}
 
-	// The power control is the right-most action.  ONLY the enabled, actionable
-	// Enable wears the success green; every other state — the protected Disable,
-	// and an Enable that cannot run yet (not installed, unverified, busy) — is a
-	// calm neutral secondary, so a disabled control reads inert instead of a
-	// washed success block.  A healthy "protected" session is never danger-red.
-	powerCfg := gogui.ButtonCfg{
-		ID:       "gui:power",
-		Variant:  gogui.ButtonSecondary,
-		Label:    actionLabel(power),
-		Disabled: !ps.canToggle,
-		OnClick:  togglePower,
-	}
-	switch {
-	case !ps.canToggle:
-		// Inert: a neutral control fill, never a washed success block.
-		powerCfg.Colors = disabledNeutralColors(t)
-	case !ps.on:
-		powerCfg.Variant = gogui.ButtonPrimary
-		powerCfg.Colors = successButtonColors(t)
-	}
-
-	controls = append(controls, gogui.Button(powerCfg))
-
 	return gogui.Row(gogui.ContainerCfg{
 		ID:         "gui:header",
 		Sizing:     gogui.FillFit,
@@ -457,13 +436,14 @@ func header(t gogui.Theme, app *App) gogui.View {
 		Spacing:    gogui.SpacingMedium,
 		VAlign:     gogui.VAlignMiddle,
 		SizeBorder: gogui.NoBorder,
-		Content:    append([]gogui.View{brand(t, caption)}, controls...),
+		Content:    append([]gogui.View{brand(t, app, caption)}, controls...),
 	})
 }
 
-// brand is the app identity block: a mark, the title, and the status caption.
-// It fills the header's free space so the actions land on the right.
-func brand(t gogui.Theme, caption string) gogui.View {
+// brand is the app identity block: a mark, the title with its service state
+// badge, and the status caption below.  It fills the header's free space so the
+// actions land on the right.
+func brand(t gogui.Theme, app *App, caption string) gogui.View {
 	return gogui.Row(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
 		Padding:    gogui.PaddingNone,
@@ -478,10 +458,21 @@ func brand(t gogui.Theme, caption string) gogui.View {
 				Spacing:    gogui.SpacingTight,
 				SizeBorder: gogui.NoBorder,
 				Content: []gogui.View{
-					gogui.Text(gogui.TextCfg{
-						Text:      "dns-client",
-						TextStyle: t.TextStyleTitle,
-						Sizing:    gogui.FitFit,
+					gogui.Row(gogui.ContainerCfg{
+						ID:         "gui:brand:title",
+						Sizing:     gogui.FitFit,
+						Padding:    gogui.PaddingNone,
+						Spacing:    gogui.SpacingSmall,
+						SizeBorder: gogui.NoBorder,
+						VAlign:     gogui.VAlignMiddle,
+						Content: []gogui.View{
+							gogui.Text(gogui.TextCfg{
+								Text:      "dns-client",
+								TextStyle: t.TextStyleTitle,
+								Sizing:    gogui.FitFit,
+							}),
+							serviceBadge(app.snap),
+						},
 					}),
 					gogui.Text(gogui.TextCfg{
 						Text:      caption,
@@ -523,10 +514,11 @@ func brandMark(t gogui.Theme) gogui.View {
 	})
 }
 
-// powerStateFor resolves the single power control for the current snapshot.
+// powerStateFor resolves the header's Restore affordance and guidance note for
+// the current snapshot.
 func powerStateFor(t gogui.Theme, app *App) powerState {
 	return planPower(statusVisualFor(app.snap, t).kind,
-		app.snap.installed, app.snap.running, enabled(app.snap), app.busy, canEdit(app.snap))
+		app.snap.installed, app.snap.running, app.busy, canEdit(app.snap))
 }
 
 // successButtonColors paints a button in the theme's success tone.  The toolkit
@@ -702,19 +694,6 @@ func statusIndicator(v statusVisual) gogui.View {
 		Padding:     gogui.PaddingNone,
 		Shadow:      glow,
 	})
-}
-
-// togglePower flips protection through the existing enable/disable actions:
-// turning on runs Enable (which starts the service and applies interception),
-// turning off runs Disable (which removes interception; the service stays
-// installed).  The header button calls it.
-func togglePower(ctx gogui.EventCtx) {
-	app := gogui.State[App](ctx.Window)
-	if enabled(app.snap) {
-		runAction(ctx, actionDisable)
-	} else {
-		runAction(ctx, actionEnable)
-	}
 }
 
 // sections is the Status page's read-only card stack, built from the effective

@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/daika7ana/dns-client/internal/config"
 	"github.com/daika7ana/dns-client/internal/ipc"
 	"github.com/daika7ana/dns-client/internal/lifecycle"
+	"github.com/daika7ana/dns-client/internal/logging"
 	"github.com/daika7ana/dns-client/internal/state"
 )
 
@@ -48,6 +50,7 @@ type fakeDaemon struct {
 	disableErr   error
 	enableCalls  int
 	disableCalls int
+	disableHook  func()
 }
 
 func (f *fakeDaemon) Status() (st *state.State, err error) { return f.st, nil }
@@ -62,6 +65,9 @@ func (f *fakeDaemon) Enable(context.Context) (err error) {
 
 func (f *fakeDaemon) Disable(context.Context) (err error) {
 	f.disableCalls++
+	if f.disableHook != nil {
+		f.disableHook()
+	}
 
 	return f.disableErr
 }
@@ -142,6 +148,88 @@ func TestReloadRollsBackOnEnableFailure(t *testing.T) {
 	}
 }
 
+// TestReloadRollbackReseeds verifies N2: when the new config fails to enable,
+// the old profile's redaction seeds are restored, not left on the new profile.
+func TestReloadRollbackReseeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns-client.log")
+
+	l, closer, err := logging.Open(logging.Options{Level: "error", Path: path, Secrets: []string{"OLDID12"}})
+	if err != nil {
+		t.Fatalf("logging.Open: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new config bad")}
+
+	lc := &serviceLifecycle{
+		inner:  old,
+		logger: l,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) {
+			logging.UpdateSecrets(l, []string{"NEWID99"})
+			return next, ipc.ConfigSummary{}, nil
+		},
+	}
+
+	if _, err = lc.Reload(context.Background()); err == nil {
+		t.Fatal("Reload should fail when the new config cannot be enabled")
+	}
+
+	seeds := strings.Join(logging.Secrets(l), ",")
+	if !strings.Contains(seeds, "OLDID12") {
+		t.Fatalf("old seeds not restored after rollback: %v", seeds)
+	}
+	if strings.Contains(seeds, "NEWID99") {
+		t.Fatalf("new seeds left after rollback: %v", seeds)
+	}
+}
+
+// TestReloadUnionSeedsDuringSwap verifies both the old and the new profile's
+// ids are seeded while the old lifecycle is still serving, and only the new one
+// remains after a successful swap.
+func TestReloadUnionSeedsDuringSwap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns-client.log")
+
+	l, closer, err := logging.Open(logging.Options{Level: "error", Path: path, Secrets: []string{"OLDID12"}})
+	if err != nil {
+		t.Fatalf("logging.Open: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	var during []string
+
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, disableHook: func() {
+		during = logging.Secrets(l)
+	}}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+
+	lc := &serviceLifecycle{
+		inner:  old,
+		logger: l,
+		build: func() (svcDaemon, ipc.ConfigSummary, error) {
+			logging.UpdateSecrets(l, []string{"NEWID99"})
+			return next, ipc.ConfigSummary{}, nil
+		},
+	}
+
+	if _, err = lc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	seedDuring := strings.Join(during, ",")
+	if !strings.Contains(seedDuring, "OLDID12") || !strings.Contains(seedDuring, "NEWID99") {
+		t.Fatalf("swap-window seeds = %v, want both OLDID12 and NEWID99", during)
+	}
+
+	seeds := strings.Join(logging.Secrets(l), ",")
+	if strings.Contains(seeds, "OLDID12") {
+		t.Fatalf("old seed left after a successful swap: %v", seeds)
+	}
+	if !strings.Contains(seeds, "NEWID99") {
+		t.Fatalf("new seed missing after a successful swap: %v", seeds)
+	}
+}
+
 func TestReloadRollbackFailure(t *testing.T) {
 	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("rollback bad")}
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new bad")}
@@ -182,6 +270,89 @@ func TestReloadBuildErrorKeepsCurrent(t *testing.T) {
 	}
 	if lc.inner != svcDaemon(old) {
 		t.Fatal("inner should be unchanged")
+	}
+}
+
+// TestResolverSecrets covers H2/M2: seeds survive absent metadata, mixed or
+// ambiguous upstreams, and per-domain-only ids.
+func TestResolverSecrets(t *testing.T) {
+	tests := []struct {
+		name string
+		in   config.Resolved
+		want []string
+	}{
+		{
+			name: "metadata absent DoH path id",
+			in: config.Resolved{
+				Upstreams: []string{"https://dns.nextdns.io/abc123"},
+			},
+			want: []string{"abc123"},
+		},
+		{
+			name: "metadata absent DoT host label",
+			in: config.Resolved{
+				Upstreams: []string{"tls://abc123.dns.nextdns.io:853"},
+			},
+			want: []string{"abc123"},
+		},
+		{
+			name: "ambiguous upstreams both seeded",
+			in: config.Resolved{
+				Provider:  "nextdns",
+				Protocol:  "doh",
+				Upstreams: []string{"https://dns.nextdns.io/idA123", "https://dns.nextdns.io/idB456"},
+			},
+			want: []string{"idA123", "idB456"},
+		},
+		{
+			name: "short id not seeded",
+			in: config.Resolved{
+				Provider:  "nextdns",
+				Protocol:  "doh",
+				Upstreams: []string{"https://dns.nextdns.io/a"},
+			},
+			want: nil,
+		},
+		{
+			name: "mixed extractable and miss",
+			in: config.Resolved{
+				Provider:  "controld",
+				Protocol:  "doh",
+				Upstreams: []string{"https://dns.controld.com/xyz789", "https://freedns.controld.com/p0"},
+			},
+			want: []string{"xyz789"},
+		},
+		{
+			name: "per-domain-only id",
+			in: config.Resolved{
+				Provider:  "nextdns",
+				Protocol:  "doh",
+				Upstreams: []string{"https://dns.quad9.net/dns-query"},
+				PerDomain: []config.PerDomain{{Domains: []string{"corp.example"}, Upstream: "https://dns.nextdns.io/corp99"}},
+			},
+			want: []string{"corp99"},
+		},
+		{
+			name: "no id yields no seeds",
+			in: config.Resolved{
+				Upstreams: []string{"https://dns.quad9.net/dns-query"},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolverSecrets(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("resolverSecrets = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("resolverSecrets = %v, want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 

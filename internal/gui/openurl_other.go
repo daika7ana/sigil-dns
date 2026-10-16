@@ -9,3 +9,8 @@ import "errors"
 func openURLPlatform(rawURL string) error {
 	return errors.New("opening a URL is only supported on Windows")
 }
+
+// openPathPlatform is a no-op that reports the platform has no file opener.
+func openPathPlatform(path string) error {
+	return errors.New("opening a file is only supported on Windows")
+}

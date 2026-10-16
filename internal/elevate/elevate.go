@@ -17,6 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -32,9 +35,6 @@ type Action string
 const (
 	// ActionEnable persists mode=on, reloads, then enables interception.
 	ActionEnable Action = "enable"
-
-	// ActionDisable persists mode=off, then disables interception.
-	ActionDisable Action = "disable"
 
 	// ActionRestore restores interception from persisted state.  It does not
 	// touch the config and works even when the config is broken.
@@ -65,7 +65,7 @@ const (
 // valid reports whether a is a known action.
 func (a Action) valid() (ok bool) {
 	switch a {
-	case ActionEnable, ActionDisable, ActionRestore, ActionApply,
+	case ActionEnable, ActionRestore, ActionApply,
 		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop,
 		ActionRefreshLists:
 		return true
@@ -102,6 +102,13 @@ type Patch struct {
 	AddProfile    *string                 `json:"add_profile,omitempty"`
 	RenameProfile *RenameProfile          `json:"rename_profile,omitempty"`
 	DeleteProfile *string                 `json:"delete_profile,omitempty"`
+
+	// Logging (LOGGING_PLAN).  A log-only change is saved but never triggers a
+	// service reload (see reloadRelevant).
+	LogLevel     *string `json:"log_level,omitempty"`
+	LogPath      *string `json:"log_path,omitempty"`
+	LogMaxSizeMB *int    `json:"log_max_size_mb,omitempty"`
+	LogKeepMB    *int    `json:"log_keep_mb,omitempty"`
 }
 
 // RenameProfile names the profile rename pair.
@@ -195,7 +202,11 @@ func (p Patch) empty() (ok bool) {
 		len(p.Profiles) == 0 &&
 		p.AddProfile == nil &&
 		p.RenameProfile == nil &&
-		p.DeleteProfile == nil
+		p.DeleteProfile == nil &&
+		p.LogLevel == nil &&
+		p.LogPath == nil &&
+		p.LogMaxSizeMB == nil &&
+		p.LogKeepMB == nil
 }
 
 // Request is the staged request body.  It is untrusted input: Validate and the
@@ -279,6 +290,10 @@ func (p Patch) validateShape() (err error) {
 		return errors.New("only one of add_profile, rename_profile, delete_profile may be set")
 	}
 
+	if err = p.validateLog(); err != nil {
+		return err
+	}
+
 	names := make([]string, 0, len(p.Profiles))
 	for name := range p.Profiles {
 		names = append(names, name)
@@ -289,6 +304,31 @@ func (p Patch) validateShape() (err error) {
 		if err = p.Profiles[name].validateShape(); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// validateLog enforces the logging patch constraints.  A blank path means "use
+// the default"; errors never echo the path value.
+func (p Patch) validateLog() (err error) {
+	if p.LogLevel != nil {
+		if err = config.ValidateLogLevel(strings.TrimSpace(*p.LogLevel)); err != nil {
+			return err
+		}
+	}
+	if p.LogPath != nil {
+		if path := strings.TrimSpace(*p.LogPath); path != "" {
+			if err = config.ValidateLogPath(path); err != nil {
+				return err
+			}
+		}
+	}
+	if p.LogMaxSizeMB != nil && *p.LogMaxSizeMB <= 0 {
+		return errors.New("log max size must be greater than zero")
+	}
+	if p.LogKeepMB != nil && *p.LogKeepMB <= 0 {
+		return errors.New("log keep size must be greater than zero")
 	}
 
 	return nil
@@ -500,7 +540,35 @@ func applyRequest(cfg *config.Config, req Request, actualRevision string) (err e
 		cfg.Mode = *req.Patch.Mode
 	}
 
+	// 5. Logging.
+	applyLogPatch(&cfg.Log, req.Patch)
+
+	// A non-blank log path must have an existing parent directory: otherwise
+	// the service silently fails open to stderr and the user gets no file.
+	// Blank means "use the default", which the logger resolves itself.
+	if path := cfg.Log.Path; path != "" {
+		if info, statErr := os.Stat(filepath.Dir(path)); statErr != nil || !info.IsDir() {
+			return errors.New("the log directory does not exist")
+		}
+	}
+
 	return cfg.Validate()
+}
+
+// applyLogPatch merges the allowlisted logging fields.
+func applyLogPatch(l *config.LogConfig, p Patch) {
+	if p.LogLevel != nil {
+		l.Level = strings.TrimSpace(*p.LogLevel)
+	}
+	if p.LogPath != nil {
+		l.Path = strings.TrimSpace(*p.LogPath)
+	}
+	if p.LogMaxSizeMB != nil {
+		l.MaxSizeMB = *p.LogMaxSizeMB
+	}
+	if p.LogKeepMB != nil {
+		l.KeepMB = *p.LogKeepMB
+	}
 }
 
 // applyStructural performs the single structural profile operation, if any.
@@ -881,6 +949,17 @@ func serviceBinaryMatches(binPath, exe string) (ok bool) {
 // never started, and the config takes effect on the next enable.  Pure so the
 // policy is unit-testable.
 func applyShouldReload(running, changed bool) bool { return running && changed }
+
+// reloadRelevant reports whether before->after changed in a way that requires a
+// service reload.  A log-only edit is persisted but takes effect on the next
+// service start (LOGGING_PLAN §1.6), so the Log block is excluded; every other
+// field still reloads.  Pure so the policy is unit-testable.
+func reloadRelevant(before, after *config.Config) (changed bool) {
+	b, a := *before, *after
+	b.Log, a.Log = config.LogConfig{}, config.LogConfig{}
+
+	return !reflect.DeepEqual(b, a)
+}
 
 // uninstallPlan decides whether uninstall must first clear interception.  It is
 // pure so the policy is unit-testable off Windows.

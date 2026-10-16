@@ -65,6 +65,10 @@ type applyRequest struct {
 
 	// activeSwitch names a profile to make active, nil when unchanged.
 	activeSwitch *string
+
+	// log is the Logging page's edited level and path, nil when the action
+	// carries no log patch (LOGGING_PLAN §4.7).
+	log *logDraft
 }
 
 // applyFunc performs one elevated action and returns its outcome.  The

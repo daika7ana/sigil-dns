@@ -10,6 +10,14 @@ schema_version: 1
 mode: off          # on | off
 profile: default   # which entry under profiles is active
 
+# Optional service file logging.  Off by default.  Applies at the next service
+# start (the GUI Logging page writes these).  See docs/CONFIG.md.
+log:
+  level: off          # off | error | info | debug
+  path: ""            # empty = %ProgramData%\dns-client\dns-client.log
+  max_size_mb: 10     # rotate when the file reaches this size
+  keep_mb: 3          # after rotation keep the newest this many MB
+
 profiles:
   default:
     # Quad9 "Secure" (malware blocking, DNSSEC-validating), dual-stack.

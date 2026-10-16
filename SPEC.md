@@ -301,6 +301,11 @@ User-entered DoH/DoT URL + optional bootstrap (v4/v6). Raw upstream escape hatch
 ```yaml
 mode: on              # on | off
 profile: default      # active profile (many stored, one active at a time)
+log:                  # optional; off by default
+  level: off          # off | error | info | debug
+  path: ""            # empty = <ProgramData>\dns-client\dns-client.log
+  max_size_mb: 10
+  keep_mb: 3
 profiles:
   default:
     upstreams: ["https://dns.quad9.net/dns-query"]
@@ -374,7 +379,7 @@ snapshot, dirty marker, active profile, last health result.
 
 ### Cut from v1 (YAGNI — add on demand)
 optimistic cache · concurrent multi-profile resolution (many profiles are stored, one active at a
-time) · scheduled list updates · ARM64 · log-viewer UI ·
+time) · scheduled list updates · ARM64 ·
 rule-editor UI beyond the GUI forms · `$dnsrewrite` UX.
 
 ---
@@ -463,16 +468,20 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   rejects it). No persistent broker and no second privileged surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
   so a write no longer raises its own UAC prompt — consent is per **launch**, not per action — but the
   helper remains the sole writer and the only path that touches staged input.
-- **Surface** — three pages (left nav rail). **Status**: a banner plus a single header power control
-  (Enable / Disable, and Restore only for a crash-leftover dirty state) and profile / filtering /
-  cache cards. **Settings**: a service card (install / remove + state), a profile list with add /
-  rename / delete / set-active, and a per-profile editor (provider / variant / protocol, masked id,
-  custom URL, bootstrap, filtering + block response, cache + size). **Rules**: the filter-list editor
-  and the per-domain routing rules in one **scrollable** column — per-list and per-rule enable
-  toggles, add / remove, a `*.` wildcard hint, and an "Update blocklists" action that drives the admin
-  `refresh_lists` method (offered only while the service is running). Enable starts the service and
-  applies interception; Disable removes it. A `gui.lock` beside `gui.json` enforces a single GUI
-  instance.
+- **Surface** — five pages (left nav rail: Status, Settings, Rules, Logging, About). **Status**: a
+  banner plus profile / filtering / cache cards; the header keeps only the **Restore now** action for a
+  crash-leftover dirty state. **Settings**: a service card — a **Start / Stop** control (Start runs the
+  service and applies interception, Stop removes it; the installed/running state is the header badge)
+  plus install / remove — a profile list with add / rename / delete / set-active, and a per-profile
+  editor (provider / variant / protocol, masked id, custom URL, bootstrap, filtering + block response,
+  cache + size). **Rules**: the filter-list editor and the per-domain routing rules in one
+  **scrollable** column — per-list and per-rule enable toggles, add / remove, a `*.` wildcard hint, and
+  an "Update blocklists" action that drives the admin `refresh_lists` method (offered only while the
+  service is running). **Logging**: opt-in service file logging — a level selector (off / errors only /
+  normal / verbose) and a file path (blank = default beside `config.yaml`) with a **Browse** picker and
+  an **Apply** that takes effect at the **next service start**, plus a live read-only tail of the log
+  file with a 0–30 s refresh slider (0 = off) and **Open log file** / **Clear log file** actions.
+  A `gui.lock` beside `gui.json` enforces a single GUI instance.
 - **Identity** — before trusting reads or sending writes, verify the pipe server *is* the service:
   `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
   untrusted and refuse writes (kills pipe-squatting without a nonce).
@@ -505,6 +514,11 @@ while the helper's re-validation, field allowlist, and ACL-enforced atomic write
   (no id) and a cached last status — never secrets, never an authorization input.
 - Concurrency: `config_summary` carries a revision token (**mtime + size**, *not* a file hash — ids
   are low-entropy and a hash is brute-forceable); the helper aborts on a revision mismatch.
+- **Logs** (opt-in, default off): the file lives beside `config.yaml` (SYSTEM + Administrators). A
+  redacting `slog.Handler`, seeded from the active profile's resolver ids (`providers.ExtractIDs`,
+  refreshed on every reload), scrubs DoH-path and DoT/DoQ hostname-label ids, URL userinfo/query and
+  `sdns://` at **every** level; `debug` additionally records query names and upstream traffic — a
+  deliberate decision (see §15.3.10), not a leak. Level/path changes apply at the next service start.
 
 ### 15.3 Security red lines
 1. Control pipe stays `D:P(A;;GA;;;SY)(A;;GA;;;BA)` — **never** `AU`.
@@ -522,7 +536,10 @@ while the helper's re-validation, field allowlist, and ACL-enforced atomic write
    embeds a `requireAdministrator` manifest, so it is elevated for its lifetime; the manifest still
    prompts UAC on every launch — elevation stays explicit, never silent.*
 9. `config.yaml` and `state.json` remain SYSTEM+Administrators; user-scope files never hold secrets.
-10. Never log secrets (see the Phase-0 redaction fix); audit new log sites.
+10. Never log credentials: the redacting `slog.Handler` (seeded from `providers.ExtractIDs`, re-seeded
+    on reload) scrubs resolver ids, URL userinfo/query and `sdns://` at every level; it is the audited
+    choke point. *User decision:* `debug` intentionally records query names and upstream traffic (the
+    log file stays ACLed SYSTEM + Administrators; the GUI labels `debug` as sensitive).
 11. All config writes go through `internal/config`; `restore` stays config-independent so a corrupt
     config can never brick recovery.
 12. Verify service identity before trusting reads or sending actions.
@@ -544,8 +561,9 @@ Status: **phases 0–7 are implemented.**
    and the per-domain routing rules (domains, replace-only upstream by `Keep` index, per-rule `enabled`
    toggle, `*.` wildcard hint); the admin `refresh_lists` method re-downloads lists live, exposed in the
    GUI as "Update blocklists" and in the CLI as `refresh`.
-6. **Enable/disable/degrade UX** — DONE: a single header power control, service management via the
-   helper, and the dirty/"Restore now" banner.
+6. **Enable/disable/degrade UX** — DONE: a **Start / Stop** control in the Settings service card,
+   service management via the helper, the dirty/"Restore now" banner, and the five-page (Status /
+   Settings / Rules / Logging / About) surface.
 7. **Packaging** — DONE: go-gui binary (no cgo), installer ships the GUI + Start-Menu shortcut, and a
    protocol-version mismatch is surfaced from `info` (`source.go`). Code signing stays optional, gated
    on the repository secrets.

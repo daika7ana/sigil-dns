@@ -467,6 +467,157 @@ func ExtractID(provider string, proto Protocol, upstreams []string) (id string, 
 	return "", ErrNoID
 }
 
+// ExtractIDs returns every resolver id recoverable from upstreams, in order,
+// with duplicates removed.  Unlike ExtractID it never aborts on a miss or a
+// disagreement, so a mixed profile still contributes each id as a redaction
+// seed.  When provider is empty it is inferred from the URL host, and the
+// protocol is always taken from the URL scheme, so absent or mismatched
+// metadata still yields the id.  When no provider applies, a DoH path segment
+// is used as a last-resort candidate.  The ids are seeds only and must never be
+// logged.
+func ExtractIDs(provider string, proto Protocol, upstreams []string) (ids []string) {
+	seen := map[string]struct{}{}
+
+	// A very short id (even a provider-extracted one) would rewrite nearly
+	// every occurrence of those characters in the log, so it is never seeded;
+	// real NextDNS/ControlD ids are >= 6 chars.
+	add := func(id string) {
+		if len(id) < minGenericIDLen || isPublicEndpoint(id) {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	for _, raw := range upstreams {
+		u := strings.TrimSpace(raw)
+		if u == "" {
+			continue
+		}
+
+		p := provider
+		pr := proto
+		host, scheme := upstreamParts(u)
+		if p == "" {
+			p = providerForHost(host)
+		}
+		if s := protoForScheme(scheme); s != "" {
+			pr = s
+		}
+
+		if id, ok := extractOne(p, pr, u); ok {
+			add(id)
+
+			continue
+		}
+
+		// The caller's provider metadata can disagree with the URL (e.g. a
+		// custom or per-domain DoT/DoQ upstream on a known provider's host).
+		// Retry with the host-derived provider, but only for a host some
+		// provider actually owns, so nothing new is over-scrubbed.
+		if hp := providerForHost(host); p != "" && hp != "" && hp != p {
+			if id, ok := extractOne(hp, pr, u); ok {
+				add(id)
+
+				continue
+			}
+		}
+
+		// No provider matched: a custom DoH endpoint may still hide its id in
+		// the path.  Shared/public hosts (e.g. ControlD freedns presets) carry
+		// no private id.
+		if schemeIsDoH(scheme) && !isSharedDoHHost(host) {
+			add(doHPathID(u))
+		}
+	}
+
+	return ids
+}
+
+// upstreamParts returns the lowercased host and scheme of u.
+func upstreamParts(u string) (host, scheme string) {
+	p, err := url.Parse(u)
+	if err != nil {
+		return "", ""
+	}
+
+	return strings.ToLower(p.Hostname()), strings.ToLower(p.Scheme)
+}
+
+// providerForHost infers a provider from a generated upstream hostname.
+func providerForHost(host string) (provider string) {
+	switch {
+	case host == "nextdns.io" || strings.HasSuffix(host, ".nextdns.io"):
+		return NextDNS
+	case host == "controld.com" || strings.HasSuffix(host, ".controld.com"):
+		return ControlD
+	default:
+		return ""
+	}
+}
+
+// protoForScheme maps a URL scheme to a transport, or "" when unknown.
+func protoForScheme(scheme string) (proto Protocol) {
+	switch scheme {
+	case "tls", "dot":
+		return DoT
+	case "quic", "doq":
+		return DoQ
+	case "http", "https":
+		return DoH
+	default:
+		return ""
+	}
+}
+
+// schemeIsDoH reports whether scheme is a plain HTTP(S) DoH scheme.
+func schemeIsDoH(scheme string) (ok bool) { return scheme == "http" || scheme == "https" }
+
+// isSharedDoHHost reports hosts whose DoH path is a shared public preset
+// rather than a user's private id (ControlD freedns).
+func isSharedDoHHost(host string) (ok bool) {
+	return host == "freedns.controld.com" || strings.HasSuffix(host, ".freedns.controld.com")
+}
+
+// minGenericIDLen is the shortest id accepted as a seed, provider-extracted or
+// not.  A 1-3 character seed would scrub ordinary log text (and query names)
+// far beyond the credential it represents.
+const minGenericIDLen = 4
+
+// doHPathID returns the last path segment of a DoH URL, the location a private
+// id occupies for e.g. NextDNS/ControlD.
+func doHPathID(u string) (id string) {
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+
+	path := strings.Trim(p.Path, "/")
+	if path == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		path = path[i+1:]
+	}
+
+	return path
+}
+
+// publicEndpoints are shared, id-less resolver tokens that must never become
+// scrub seeds (scrubbing them would corrupt ordinary log lines).
+func isPublicEndpoint(s string) (ok bool) {
+	switch strings.ToLower(s) {
+	case "dns-query", "resolve", "query", "dns":
+		return true
+	default:
+		return false
+	}
+}
+
 // extractOne recovers the id from a single upstream URL, or ok=false when the
 // provider/protocol/host combination carries none.
 func extractOne(provider string, proto Protocol, upstream string) (id string, ok bool) {

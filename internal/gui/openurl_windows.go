@@ -22,3 +22,20 @@ func openURLPlatform(rawURL string) error {
 
 	return cmd.Process.Release()
 }
+
+// openPathPlatform opens an already-validated local file with the Windows shell.
+// rundll32's FileProtocolHandler is the same "open this with whatever is
+// registered" verb the URL opener uses, and it opens a file path too; the
+// process is released immediately and HideWindow keeps a console-less GUI from
+// flashing a console.  The path is passed as one argv element, never a shell
+// string.
+func openPathPlatform(path string) error {
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	return cmd.Process.Release()
+}

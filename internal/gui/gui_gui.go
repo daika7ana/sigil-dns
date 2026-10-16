@@ -65,6 +65,16 @@ type App struct {
 	// and it never holds a value read from the config.
 	listInput string
 
+	// log is the Logging page's edit buffer (level + path), seeded once from
+	// the summary; logSeeded guards that seeding so a poll never clobbers a
+	// pending edit.  logView is the cross-thread live-viewer control and
+	// logText is the tail the poller has read (written and read on the main
+	// thread only).
+	log       logDraft
+	logSeeded bool
+	logView   logViewCtl
+	logText   string
+
 	// cached is the last sanitized summary, persisted to gui.json so the
 	// editor still works while the service is stopped.  cachedRev is the
 	// revision token that produced it (compared to avoid rewriting the file
@@ -128,6 +138,7 @@ func Run() (err error) {
 		settings:  s,
 		cached:    s.Summary,
 	}
+	app.logView.interval.Store(logViewerDefaultInterval)
 	src := newSource()
 
 	// The position is captured on close, while the native window still exists
@@ -152,7 +163,7 @@ func Run() (err error) {
 		OnInit: func(w *gogui.Window) {
 			applyTheme(w, app.themePref)
 			w.SetView(view)
-			startPoller(w, src, app.refresh)
+			startPoller(w, src, app.refresh, &app.logView)
 			if restoring {
 				restoreWindowPosition(windowTitle, s.X, s.Y)
 			}
@@ -191,21 +202,50 @@ func Run() (err error) {
 }
 
 // startPoller reads the status immediately and then every pollInterval, posting
-// each snapshot to the main thread (SPEC §15.4).  It stops with the window.
-func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}) {
+// each snapshot to the main thread (SPEC §15.4).  It stops with the window.  It
+// also tails the log file for the Logging page's live viewer: the read happens
+// here, off the frame thread, and only appended bytes are read (an interval of
+// 0 reads nothing).
+func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *logViewCtl) {
 	ctx := w.Ctx()
 
 	go func() {
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 
+		tail := &logTail{}
 		for {
 			snap := readOnce(ctx, src)
+
+			// Tail off the frame thread; the buffer is posted back and only
+			// rendered on the main thread.
+			if p := lv.path.Load(); p != nil {
+				if tail.read(*p, int(lv.interval.Load()), time.Now()) {
+					text := tail.text
+					w.QueueCommand(func(win *gogui.Window) {
+						a := gogui.State[App](win)
+						a.logText = text
+						// The viewer's text is declarative (Text: app.logText);
+						// only a layout rebuild re-reads it, so InvalidateRender
+						// alone never repaints it.  pinLogToBottom both asks for
+						// that rebuild and pins the box to the newest line.
+						// Gated to the Logging page so other pages are not
+						// re-laid-out every tick.
+						if a.page == pageLogging {
+							pinLogToBottom(win)
+						} else {
+							win.InvalidateRender()
+						}
+					})
+				}
+			}
+
 			w.QueueCommand(func(win *gogui.Window) {
 				a := gogui.State[App](win)
 				changed := !samePoll(a.snap, snap)
 				a.snap = snap
 				a.seed(snap)
+				a.syncLogViewer()
 				a.cacheSummary(snap)
 				// Only relayout when the data actually changed; an unchanged
 				// poll still redraws (so the header clock ticks) but does not

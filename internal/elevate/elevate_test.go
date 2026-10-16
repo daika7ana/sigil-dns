@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -25,7 +26,6 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"enable", Request{Action: ActionEnable, UUID: "u"}, false},
-		{"disable", Request{Action: ActionDisable, UUID: "u"}, false},
 		{"restore", Request{Action: ActionRestore, UUID: "u"}, false},
 		{"apply mode", Request{Action: ActionApply, UUID: "u", Patch: Patch{Mode: &on}}, false},
 		{"unknown action", Request{Action: "frobnicate", UUID: "u"}, true},
@@ -888,5 +888,75 @@ func TestServiceBinaryMatches(t *testing.T) {
 				t.Fatalf("serviceBinaryMatches(%q) = %v, want %v", tc.binPath, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestApplyLogPatch covers the logging patch surface (LOGGING_PLAN §4.4).
+func TestApplyLogPatch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "dns-client.log")
+
+	cfg := config.Default()
+	req := Request{Action: ActionApply, UUID: "u", Patch: Patch{
+		LogLevel:     ptr("debug"),
+		LogPath:      ptr(logPath),
+		LogMaxSizeMB: ptr(20),
+		LogKeepMB:    ptr(5),
+	}}
+	if err := applyRequest(cfg, req, "rev"); err != nil {
+		t.Fatalf("applyRequest(log): %v", err)
+	}
+	if cfg.Log.Level != "debug" || cfg.Log.Path != logPath ||
+		cfg.Log.MaxSizeMB != 20 || cfg.Log.KeepMB != 5 {
+		t.Fatalf("log patch not applied: %+v", cfg.Log)
+	}
+
+	// Invalid level rejected.
+	bad := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogLevel: ptr("verbose")}}
+	if err := applyRequest(config.Default(), bad, "rev"); err == nil {
+		t.Fatal("invalid log level accepted")
+	}
+
+	// Relative path rejected.
+	rel := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: ptr("relative.log")}}
+	if err := applyRequest(config.Default(), rel, "rev"); err == nil {
+		t.Fatal("relative log path accepted")
+	}
+
+	// Missing parent directory rejected: otherwise the service silently fails
+	// open to stderr and the user gets no file.
+	missing := filepath.Join(t.TempDir(), "absent", "dns-client.log")
+	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: ptr(missing)}}
+	if err := applyRequest(config.Default(), missReq, "rev"); err == nil {
+		t.Fatal("log path with a missing parent directory accepted")
+	}
+
+	// Explicit zero size rejected.
+	zero := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogMaxSizeMB: ptr(0)}}
+	if err := applyRequest(config.Default(), zero, "rev"); err == nil {
+		t.Fatal("explicit zero log size accepted")
+	}
+}
+
+// TestReloadRelevant pins reload suppression: a log-only edit must not reload,
+// every other field still does (LOGGING_PLAN §1.6).
+func TestReloadRelevant(t *testing.T) {
+	base := config.Default()
+
+	logOnly := base.Clone()
+	logOnly.Log.Level = config.LogLevelDebug
+	if reloadRelevant(base, logOnly) {
+		t.Fatal("log-only change must not reload")
+	}
+
+	modeChange := base.Clone()
+	modeChange.Mode = config.ModeOn
+	if !reloadRelevant(base, modeChange) {
+		t.Fatal("mode change must reload")
+	}
+
+	logAndMode := logOnly.Clone()
+	logAndMode.Mode = config.ModeOn
+	if !reloadRelevant(base, logAndMode) {
+		t.Fatal("mixed log+non-log change must reload")
 	}
 }

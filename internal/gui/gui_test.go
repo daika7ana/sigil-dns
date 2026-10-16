@@ -68,12 +68,10 @@ func sampleSnapshot() snapshot {
 	}
 }
 
-// stateCase is one render-state case: whether the Restore button is offered
-// and whether the power control is disabled.
+// stateCase is one render-state case: whether the Restore button is offered.
 type stateCase struct {
-	mk            func() snapshot
-	restore       bool
-	powerDisabled bool
+	mk      func() snapshot
+	restore bool
 }
 
 // TestWindowRendersEachState renders every UI state headlessly and asserts the
@@ -115,8 +113,7 @@ func TestWindowRendersEachState(t *testing.T) {
 			restore: true,
 		},
 		"stopped-not-installed": {
-			mk:            func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
-			powerDisabled: true, // Enable would fail; install first
+			mk: func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
 		},
 		"stopped-installed": {
 			mk: func() snapshot {
@@ -128,8 +125,7 @@ func TestWindowRendersEachState(t *testing.T) {
 			},
 		},
 		"unverified": {
-			mk:            func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
-			powerDisabled: true,
+			mk: func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
 		},
 	}
 
@@ -166,13 +162,11 @@ func TestWindowRendersEachState(t *testing.T) {
 
 			root := w.TestRender(nil)
 
-			// Exactly one power control; no Enable/Disable buttons, and the
-			// Start/Stop and Install/Uninstall lifecycle controls are not on
-			// the Status page.
-			if n := len(w.ResolveID("gui:power")); n != 1 {
-				t.Errorf("expected exactly one power control, got %d", n)
-			}
+			// No lifecycle control lives on the Status page: Start/Stop and
+			// Install/Uninstall are in Settings, and the header no longer
+			// carries a power button.
 			for _, id := range []string{
+				"gui:power",
 				"gui:action:enable", "gui:action:disable",
 				"gui:service:install", "gui:service:uninstall",
 				"gui:service:start", "gui:service:stop",
@@ -186,7 +180,10 @@ func TestWindowRendersEachState(t *testing.T) {
 				t.Errorf("restore present = %v, want %v", !tc.restore, tc.restore)
 			}
 
-			assertDisabled(t, root, w, "gui:power", tc.powerDisabled)
+			// The SCM state badge now sits in the header, beside the app name.
+			if !textSet(mustFindLayout(t, w, root, "gui:header"))[displayState(snap.scmState)] {
+				t.Errorf("header does not show the service state badge %q", displayState(snap.scmState))
+			}
 
 			// ID and event findings: duplicates, missing IDs, unknown focus,
 			// stamp drift, unconsumed events.
@@ -261,48 +258,41 @@ func TestStatusVisualPrecedence(t *testing.T) {
 	}
 }
 
-// TestPlanPower covers the single power-control state matrix as data.
+// TestPlanPower covers the header's Restore/note state matrix as data.
 func TestPlanPower(t *testing.T) {
 	tests := []struct {
 		name      string
 		kind      statusKind
 		installed bool
 		running   bool
-		on        bool
 		busy      bool
 		trusted   bool
-		canToggle bool
 		restore   bool
 		wantNote  bool
 	}{
-		{"running", kindRunning, true, true, true, false, true, true, false, false},
-		{"stopped-not-installed", kindStopped, false, false, false, false, true, false, false, true},
-		{"stopped-installed", kindStopped, true, false, false, false, true, true, false, true},
-		{"interception-off", kindStopped, true, true, false, false, true, true, false, true},
-		{"dirty-leftover", kindDirty, true, true, false, false, true, true, true, true},
-		{"degraded", kindDegraded, true, true, true, false, true, true, false, true},
-		{"unverified", kindUnverified, true, true, false, false, false, false, false, true},
-		{"busy", kindRunning, true, true, true, true, true, false, false, false},
+		{"running", kindRunning, true, true, false, true, false, false},
+		{"stopped-not-installed", kindStopped, false, false, false, true, false, true},
+		{"stopped-installed", kindStopped, true, false, false, true, false, true},
+		{"interception-off", kindStopped, true, true, false, true, false, true},
+		{"dirty-leftover", kindDirty, true, true, false, true, true, true},
+		{"degraded", kindDegraded, true, true, false, true, false, true},
+		{"unverified", kindUnverified, true, true, false, false, false, true},
+		{"busy", kindRunning, true, true, true, true, false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planPower(tt.kind, tt.installed, tt.running, tt.on, tt.busy, tt.trusted)
-			if got.on != tt.on {
-				t.Errorf("on = %v, want %v", got.on, tt.on)
-			}
-			if got.canToggle != tt.canToggle {
-				t.Errorf("canToggle = %v, want %v", got.canToggle, tt.canToggle)
-			}
+			got := planPower(tt.kind, tt.installed, tt.running, tt.busy, tt.trusted)
 			if got.restore != tt.restore {
 				t.Errorf("restore = %v, want %v", got.restore, tt.restore)
 			}
 			if tt.wantNote != (got.note != "") {
 				t.Errorf("note = %q, wantNote = %v", got.note, tt.wantNote)
 			}
-			// Restore must never be offered while protection is on.
-			if tt.on && got.restore {
-				t.Fatal("on state must never offer Restore")
+			// Restore is offered only for the crash leftover, never for a
+			// healthy running state.
+			if tt.kind == kindRunning && got.restore {
+				t.Fatal("a healthy running state must never offer Restore")
 			}
 		})
 	}
@@ -331,7 +321,17 @@ func TestNoticeForOutcome(t *testing.T) {
 			kind: noticeError, title: "Could not enable", bodyHas: "access denied",
 		},
 		{
-			name: "cancel-as-error", action: actionDisable,
+			name: "stop-service-success", action: actionServiceStop,
+			res:  applyResult{ok: true, message: "Service stopped."},
+			kind: noticeSuccess, title: "Service stopped", bodyHas: "Service stopped.",
+		},
+		{
+			name: "stop-service-failure", action: actionServiceStop,
+			res:  applyResult{ok: false, errText: "the service did not stop"},
+			kind: noticeError, title: "Could not stop the service", bodyHas: "did not stop",
+		},
+		{
+			name: "cancel-as-error", action: actionServiceStop,
 			err:  errors.New("UAC declined"),
 			kind: noticeWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
 		},
@@ -389,42 +389,59 @@ func TestNoticePaletteOpaque(t *testing.T) {
 	}
 }
 
-// TestActionClickInvokesApply drives a click on the single power control
-// through real dispatch and asserts the injected apply func runs with the
-// Enable action, off the frame thread.
-func TestActionClickInvokesApply(t *testing.T) {
-	got := make(chan guiAction, 1)
-
-	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
-	app.snap = snapshot{trust: trustVerified, installed: true, updated: time.Now()} // installed+stopped, protection off
-	app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
-		got <- req.action
-
-		return applyResult{ok: true, message: "Resolver enabled."}, nil
+// TestServiceActionClickInvokesApply drives a click on the Settings Start/Stop
+// control through real dispatch and asserts the injected apply func runs with
+// the mapped action, off the frame thread: Start maps to Enable (start service
+// + protection), Stop to the service's graceful shutdown.
+func TestServiceActionClickInvokesApply(t *testing.T) {
+	tests := []struct {
+		name string
+		snap snapshot
+		id   string
+		want guiAction
+	}{
+		{"start", snapshot{trust: trustVerified, installed: true, updated: time.Now()}, "gui:service:start", actionEnable},
+		{"stop", sampleSnapshot(), "gui:service:stop", actionServiceStop},
 	}
 
-	w := gogui.NewTestWindow(t, gogui.WindowCfg{
-		Width: defaultWidth, Height: defaultHeight, State: app,
-	})
-	w.SetView(view)
-	w.TestRender(nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := make(chan guiAction, 1)
 
-	if err := w.TestClick("gui:power"); err != nil {
-		t.Fatalf("click power: %v", err)
+			app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+			app.snap = tt.snap
+			app.page = pageSettings
+			app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
+				got <- req.action
+
+				return applyResult{ok: true, message: "Done."}, nil
+			}
+
+			w := gogui.NewTestWindow(t, gogui.WindowCfg{
+				Width: defaultWidth, Height: defaultHeight, State: app,
+			})
+			w.SetView(view)
+			w.TestRender(nil)
+
+			if err := w.TestClick(tt.id); err != nil {
+				t.Fatalf("click %s: %v", tt.id, err)
+			}
+
+			select {
+			case action := <-got:
+				if action != tt.want {
+					t.Fatalf("apply called with %q, want %q", action, tt.want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("apply was not invoked")
+			}
+
+			// Busy is cleared by the queued callback; flushing it also exercises
+			// the toast + re-poll path without touching the window from the
+			// goroutine.
+			waitIdle(t, w, app)
+		})
 	}
-
-	select {
-	case action := <-got:
-		if action != actionEnable {
-			t.Fatalf("apply called with %q, want %q", action, actionEnable)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("apply was not invoked")
-	}
-
-	// Busy is cleared by the queued callback; flushing it also exercises the
-	// toast + re-poll path without touching the window from the goroutine.
-	waitIdle(t, w, app)
 }
 
 // waitIdle drives frames until the in-flight action finishes.  FrameFn flushes
@@ -613,7 +630,7 @@ func TestDisplayCapitalization(t *testing.T) {
 	}
 }
 
-// TestServiceStateShownCapitalized proves the Service card shows the capitalized
+// TestServiceStateShownCapitalized proves the header shows the capitalized
 // state while the snapshot keeps the raw lowercase value.
 func TestServiceStateShownCapitalized(t *testing.T) {
 	app := settingsApp()
@@ -623,12 +640,12 @@ func TestServiceStateShownCapitalized(t *testing.T) {
 	if app.snap.scmState != "running" {
 		t.Fatalf("sample snapshot state changed: %q", app.snap.scmState)
 	}
-	texts := textSet(mustFindLayout(t, w, root, "gui:card:service"))
+	texts := textSet(mustFindLayout(t, w, root, "gui:header"))
 	if !texts["Running"] {
-		t.Error(`Service card does not show the capitalized state "Running"`)
+		t.Error(`header does not show the capitalized state "Running"`)
 	}
 	if texts["running"] {
-		t.Error("Service card still shows the raw lowercase state")
+		t.Error("header still shows the raw lowercase state")
 	}
 }
 

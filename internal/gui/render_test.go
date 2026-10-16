@@ -749,22 +749,14 @@ func TestSettingsOfflineNoticeWraps(t *testing.T) {
 	}
 }
 
-// statusPowerControlID is the one Status power control.
-const statusPowerControlID = "gui:power"
+// TestStatusHasNoLifecycleControls proves the Status page carries no lifecycle
+// controls — Start/Stop and Install/Uninstall live in Settings, and the header
+// has no power button — and that the header shows the service state badge.
+func TestStatusHasNoLifecycleControls(t *testing.T) {
+	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
-// TestStatusSinglePowerControl proves the Status page has exactly one power
-// control and no Enable/Disable or Start/Stop/Install/Uninstall buttons.
-func TestStatusSinglePowerControl(t *testing.T) {
-	w := gogui.NewTestWindow(t, gogui.WindowCfg{
-		Width: defaultWidth, Height: defaultHeight, State: statusApp(),
-	})
-	w.SetView(view)
-	w.TestRender(nil)
-
-	if n := len(w.ResolveID(statusPowerControlID)); n != 1 {
-		t.Fatalf("power controls = %d, want exactly 1", n)
-	}
 	for _, id := range []string{
+		"gui:power",
 		"gui:action:enable", "gui:action:disable", "gui:action:restore",
 		"gui:service:install", "gui:service:uninstall",
 		"gui:service:start", "gui:service:stop",
@@ -774,11 +766,16 @@ func TestStatusSinglePowerControl(t *testing.T) {
 		}
 	}
 
+	// The SCM state badge sits in the header, beside the app name.
+	if !textSet(mustFindLayout(t, w, root, "gui:brand:title"))["Running"] {
+		t.Error("header title row does not carry the service state badge")
+	}
+
 	assertNoFindings(t, w)
 }
 
 // TestStatusRestoreOnlyForDirtyLeftover proves Restore is offered only for the
-// crash-leftover state (!Enabled && Dirty), never beside a healthy control.
+// crash-leftover state (!Enabled && Dirty), never beside a healthy session.
 func TestStatusRestoreOnlyForDirtyLeftover(t *testing.T) {
 	healthy := statusApp()
 	if n := len(renderIDs(t, healthy, "gui:action:restore")); n != 0 {
@@ -791,9 +788,6 @@ func TestStatusRestoreOnlyForDirtyLeftover(t *testing.T) {
 
 	if n := len(renderIDs(t, dirty, "gui:action:restore")); n != 1 {
 		t.Fatalf("dirty-leftover showed %d Restore buttons, want 1", n)
-	}
-	if n := len(renderIDs(t, dirty, statusPowerControlID)); n != 1 {
-		t.Fatalf("dirty-leftover showed %d power controls, want 1", n)
 	}
 }
 
@@ -952,93 +946,120 @@ func childLayout(ly *gogui.Layout, i int) *gogui.Layout {
 	return &ly.Children[i]
 }
 
-// TestHeaderPowerButton proves the single Protection button lives in the header
-// (on both pages), reads Enable when off / Disable when on, and is disabled when
-// a write is not allowed.
-func TestHeaderPowerButton(t *testing.T) {
+// TestServiceStartStopButton proves the single Start/Stop control lives in the
+// Settings service card, reads Start when stopped / Stop when running, is only
+// offered for an installed service, and is disabled when a write is not allowed.
+func TestServiceStartStopButton(t *testing.T) {
 	tests := []struct {
 		name     string
 		snap     snapshot
+		id       string
 		label    string
 		disabled bool
 	}{
-		{"running", sampleSnapshot(), "Disable", false},
-		{"stopped-installed", stoppedInstalledSnapshot(), "Enable", false},
-		{"not-installed", snapshot{trust: trustVerified, updated: time.Now()}, "Enable", true},
-		{"unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()}, "Enable", true},
+		{"running shows Stop", sampleSnapshot(), "gui:service:stop", "Stop", false},
+		{"stopped-installed shows Start", stoppedInstalledSnapshot(), "gui:service:start", "Start", false},
+		{"not-installed shows neither", snapshot{trust: trustVerified, updated: time.Now()}, "", "", false},
+		{"unverified is disabled", snapshot{trust: trustUnverified, running: true, installed: true, updated: time.Now()}, "gui:service:start", "Start", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
 			app.snap = tt.snap
+			app.page = pageSettings
 
-			w, root := layoutFor(t, app, defaultWidth, defaultHeight)
-			btn := mustFindLayout(t, w, root, "gui:power")
+			w, root := layoutFor(t, app, defaultWidth, 2400)
+
+			if tt.id == "" {
+				for _, id := range []string{"gui:service:start", "gui:service:stop"} {
+					if n := len(w.ResolveID(id)); n != 0 {
+						t.Errorf("not-installed Settings rendered %q", id)
+					}
+				}
+
+				return
+			}
+
+			btn := mustFindLayout(t, w, root, tt.id)
 			if got := buttonLabel(btn); got != tt.label {
-				t.Errorf("power label = %q, want %q", got, tt.label)
+				t.Errorf("label = %q, want %q", got, tt.label)
 			}
 			if btn.Shape.Disabled != tt.disabled {
-				t.Errorf("power disabled = %v, want %v", btn.Shape.Disabled, tt.disabled)
+				t.Errorf("disabled = %v, want %v", btn.Shape.Disabled, tt.disabled)
 			}
 
-			// The header is global: the same button renders on Settings.
-			app.page = pageSettings
-			if n := len(renderIDs(t, app, "gui:power")); n != 1 {
-				t.Errorf("power button on Settings = %d, want 1", n)
+			// The header carries no power control any more; the state badge is
+			// not a button.
+			if n := len(w.ResolveID("gui:power")); n != 0 {
+				t.Errorf("header still renders a power control (%d)", n)
 			}
 		})
 	}
 }
 
-// TestHeaderPowerRightMost proves the power control is the last (right-most)
-// header action, sitting past the theme control.
-func TestHeaderPowerRightMost(t *testing.T) {
+// TestHeaderControlsRightOfTitle proves the header actions sit right of the
+// identity block, and that Restore (when offered for a crash leftover) is the
+// right-most action.
+func TestHeaderControlsRightOfTitle(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
-	power := mustFindLayout(t, w, root, "gui:power")
-	for _, id := range []string{"gui:theme"} {
-		other := mustFindLayout(t, w, root, id)
-		if power.Shape.X <= other.Shape.X {
-			t.Errorf("power x=%.1f is not right of %s x=%.1f", power.Shape.X, id, other.Shape.X)
-		}
+	title := mustFindLayout(t, w, root, "gui:brand:title")
+	theme := mustFindLayout(t, w, root, "gui:theme")
+	if theme.Shape.X <= title.Shape.X {
+		t.Errorf("theme control x=%.1f is not right of the title x=%.1f", theme.Shape.X, title.Shape.X)
+	}
+
+	dirty := statusApp()
+	dirty.snap.status.Enabled = false
+	dirty.snap.status.Mode = "off"
+	dw, droot := layoutFor(t, dirty, defaultWidth, defaultHeight)
+
+	dtheme := mustFindLayout(t, dw, droot, "gui:theme")
+	restore := mustFindLayout(t, dw, droot, "gui:action:restore")
+	if restore.Shape.X <= dtheme.Shape.X {
+		t.Errorf("Restore x=%.1f is not right of the theme control x=%.1f", restore.Shape.X, dtheme.Shape.X)
 	}
 }
 
-// TestHeaderPowerStyled proves the power button's palette: the affirmative
-// Enable wears the success green, and Disable does NOT wear danger-red — a
-// healthy "protected" session must not look like an error.
-func TestHeaderPowerStyled(t *testing.T) {
+// TestServiceStartStopStyled proves the Start/Stop palette: the actionable Start
+// wears the success green, and Stop does NOT wear danger-red — a healthy
+// "protected" session must not look like an error.  A disabled Start reads
+// inert/neutral rather than a washed success block.
+func TestServiceStartStopStyled(t *testing.T) {
 	th := gogui.CurrentTheme()
 
 	off := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
 	off.snap = stoppedInstalledSnapshot()
-	w, root := layoutFor(t, off, defaultWidth, defaultHeight)
-	enable := mustFindLayout(t, w, root, "gui:power")
-	if enable.Shape.Color != th.Cfg.ColorSuccess {
-		t.Errorf("Enable fill = %v, want success %v", enable.Shape.Color, th.Cfg.ColorSuccess)
+	off.page = pageSettings
+	w, root := layoutFor(t, off, defaultWidth, 2400)
+	start := mustFindLayout(t, w, root, "gui:service:start")
+	if start.Shape.Color != th.Cfg.ColorSuccess {
+		t.Errorf("Start fill = %v, want success %v", start.Shape.Color, th.Cfg.ColorSuccess)
 	}
 
-	w, root = layoutFor(t, statusApp(), defaultWidth, defaultHeight)
-	disable := mustFindLayout(t, w, root, "gui:power")
-	if disable.Shape.Color == th.Cfg.ColorError {
-		t.Errorf("Disable fill = %v: the protected state must not be danger-red", disable.Shape.Color)
+	on := settingsApp()
+	w, root = layoutFor(t, on, defaultWidth, 2400)
+	stop := mustFindLayout(t, w, root, "gui:service:stop")
+	if stop.Shape.Color == th.Cfg.ColorError {
+		t.Errorf("Stop fill = %v: the protected state must not be danger-red", stop.Shape.Color)
 	}
 
-	// Disabled (service not installed): the power button must read inert/neutral,
-	// never a washed success-green block with white-on-pale-green text.
-	notInstalled := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
-	notInstalled.snap = snapshot{trust: trustVerified, updated: time.Now()}
-	w, root = layoutFor(t, notInstalled, defaultWidth, defaultHeight)
-	idle := mustFindLayout(t, w, root, "gui:power")
+	// Disabled (unverified identity): Start must read inert/neutral, never a
+	// washed success-green block.
+	unverified := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	unverified.snap = snapshot{trust: trustUnverified, installed: true, running: false, updated: time.Now()}
+	unverified.page = pageSettings
+	w, root = layoutFor(t, unverified, defaultWidth, 2400)
+	idle := mustFindLayout(t, w, root, "gui:service:start")
 	if !idle.Shape.Disabled {
-		t.Fatal("power should be disabled when the service is not installed")
+		t.Fatal("Start should be disabled when the service identity is unverified")
 	}
 	if idle.Shape.Color == th.Cfg.ColorSuccess {
-		t.Errorf("disabled power fill = success %v: must be neutral/inert, not a success block", idle.Shape.Color)
+		t.Errorf("disabled Start fill = success %v: must be neutral/inert", idle.Shape.Color)
 	}
 	if idle.Shape.Color != th.Cfg.ColorActive {
-		t.Errorf("disabled power fill = %v, want the neutral inert surface %v", idle.Shape.Color, th.Cfg.ColorActive)
+		t.Errorf("disabled Start fill = %v, want the neutral inert surface %v", idle.Shape.Color, th.Cfg.ColorActive)
 	}
 }
 
@@ -1242,12 +1263,12 @@ func TestHeaderAligned(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
 	hdr := mustFindLayout(t, w, root, "gui:header")
-	power := mustFindLayout(t, w, root, "gui:power")
+	theme := mustFindLayout(t, w, root, "gui:theme")
 
-	powerCY := power.Shape.Y + power.Shape.Height/2
+	themeCY := theme.Shape.Y + theme.Shape.Height/2
 	hdrCY := hdr.Shape.Y + hdr.Shape.Height/2
-	if absF(powerCY-hdrCY) > 2 {
-		t.Errorf("power button centre %.1f is not on the header centre %.1f", powerCY, hdrCY)
+	if absF(themeCY-hdrCY) > 2 {
+		t.Errorf("theme control centre %.1f is not on the header centre %.1f", themeCY, hdrCY)
 	}
 }
 
@@ -1561,6 +1582,7 @@ func TestRenderArtifacts(t *testing.T) {
 		{"status", statusApp},
 		{"settings", settingsApp},
 		{"rules", rulesApp},
+		{"logging", loggingApp},
 	}
 	sizes := []struct {
 		name string

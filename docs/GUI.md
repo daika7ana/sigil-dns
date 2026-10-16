@@ -1,10 +1,12 @@
 # GUI
 
 `dns-client-gui.exe` is the full configuration client for the service. It has a
-**Status** page (banner + a single power control + profile / filtering / cache
-cards), a **Settings** page (service install / remove, profile management,
-and a per-profile editor), and an **About** page (version, IPC protocol, author,
-repository, license), without a console. The binary embeds an application
+**Status** page (banner + profile / filtering / cache cards), a **Settings** page
+(service Start / Stop and install / remove, profile management, and a
+per-profile editor), a **Rules** page (filter lists + per-domain routing), a
+**Logging** page (level, location, and a live viewer), and an **About** page
+(version, IPC protocol, author, repository, license), without a console. The
+binary embeds an application
 manifest that requests **administrator**, so Windows shows one UAC prompt at
 **launch** and the window runs elevated until you close it.
 
@@ -25,24 +27,35 @@ running.
 
 ## Pages
 
-The left nav rail switches between **Status**, **Settings**, and **About**.
+The left nav rail switches between **Status**, **Settings**, **Rules**, **Logging**, and **About**.
 **Status** polls the service about every 1 second and shows:
 
 - A banner for the overall state.
-- A single header power control — **Enable** / **Disable** (and **Restore** only
-  for a crash-leftover dirty state).
+- A **Restore now** header action, shown only for a crash-leftover dirty state.
+  Service **Start** / **Stop** lives in the **Settings** service card.
 - Cards for the active profile, filtering, and cache. Provider, variant, and
   protocol appear as **labels** (`cloudflare / security / doh`); the resolver id
   is **masked** — `•••• (set)` or `Not set`, never the value.
 
 **Settings** shows:
 
-- A **Service** card: installed state — `Running`, `Stopped`, or `Not installed`
-  — plus install / remove.
+- A **Service** card: a **Start** / **Stop** control (Start runs the service and
+  turns protection on; Stop stops it) plus install / remove; the installed state
+  — `Running`, `Stopped`, or `Not installed` — shows as a badge in the header.
 - A **Profiles** list: select the active profile, and add / rename / delete.
 - A **profile editor**: provider / variant / protocol, the resolver id (masked;
   leaving it blank keeps the existing one), a custom URL, bootstrap IPs,
   filtering + block response, and cache + size.
+
+**Logging** shows:
+
+- A level selector — **Off**, **Errors only**, **Normal**, or **Verbose** — and
+  a location field (blank uses the default beside `config.yaml`).
+- **Apply** writes the setting through the elevated helper and notes
+  *"Takes effect on next service start."*
+- A **live viewer** that tails the log file, with a **refresh** slider from
+  **0 s (off)** to **30 s**. **Verbose** may record DNS query names, so treat
+  the log as sensitive.
 
 **About** shows:
 
@@ -69,11 +82,12 @@ The left nav rail switches between **Status**, **Settings**, and **About**.
 
 | Control | Shown when | Action |
 |---|---|---|
-| **Enable / Disable** (header power) | service installed | Start interception (and the service) / stop it. |
+| **Start / Stop** (Settings service card) | service installed | Start interception (and the service) / stop it. |
 | **Restore now** | Restore needed / Needs attention | Clean up stale interception. |
 | **Install / Uninstall service** | Settings | Register or remove the Windows service. |
 | **Add / Rename / Delete profile** | Settings | Manage profiles (delete is refused for the active profile). |
 | **Save** | Settings, draft dirty | Apply the profile editor via the elevated helper. |
+| **Apply** | Logging | Save the log level / location for the next service start. |
 | **Theme** | always | Toggle Auto / Light / Dark. |
 
 The Status page polls the service about every 1 second; there is no manual
@@ -108,7 +122,7 @@ These are the SPEC §15 rules as the window enforces them:
 ## Window state
 
 The window defaults to 1280 × 720 and cannot be resized below 980 × 620. The
-left navigation rail (Status / Settings / About) is intentionally narrow.
+left navigation rail (Status / Settings / Rules / Logging / About) is intentionally narrow.
 Window geometry and the theme preference live in
 `%LOCALAPPDATA%\dns-client\gui.json` (user scope, never secrets). Delete that
 file to reset the window size and theme to defaults.

@@ -14,13 +14,16 @@ type guiAction string
 
 const (
 	actionEnable  guiAction = "enable"
-	actionDisable guiAction = "disable"
 	actionRestore guiAction = "restore"
 
 	// Service-management actions (Windows SCM).  They map onto the elevated
-	// helper's service_* actions with an empty patch.
-	actionInstall   guiAction = "service:install"
-	actionUninstall guiAction = "service:uninstall"
+	// helper's service_* actions with an empty patch.  The card's Start runs
+	// Enable (which starts the service and applies interception); Stop maps
+	// onto the service's own graceful shutdown, which removes interception and
+	// leaves the service installed.
+	actionInstall     guiAction = "service:install"
+	actionUninstall   guiAction = "service:uninstall"
+	actionServiceStop guiAction = "service:stop"
 
 	// Profile actions.  All four map onto elevate.ActionApply; the structural
 	// verbs additionally set AddProfile/RenameProfile/DeleteProfile.
@@ -36,29 +39,28 @@ const (
 	// a service-only action: it carries no config patch and drives the running
 	// service over the verified control pipe (elevate.ActionRefreshLists).
 	actionRefreshLists guiAction = "lists:refresh"
+
+	// actionSaveLog writes the Logging page's level and path.  It maps onto
+	// elevate.ActionApply and carries only the log patch (LOGGING_PLAN §4.7).
+	actionSaveLog guiAction = "log:save"
 )
 
-// powerState is the Status page's single power control: its on/off state,
-// whether it can be toggled, whether the crash-recovery Restore button is
-// offered, and a guidance note.
+// powerState is the header's crash-recovery affordance: whether the one-click
+// Restore is offered and the guidance note shown under the app name.
 type powerState struct {
-	on        bool
-	canToggle bool
-	restore   bool
-	note      string
+	restore bool
+	note    string
 }
 
-// planPower maps the state onto the single power control.  This is the one
-// place the state->control matrix lives, so it is pure and directly testable.
+// planPower maps the state onto the header's Restore affordance and note.  This
+// is the one place the state->header matrix lives, so it is pure and directly
+// testable.
 //
-// The control mirrors Enable/Disable (which already start the service and
-// apply/remove interception), so there is no separate Start/Stop.  Restore is
-// offered ONLY for the crash-leftover case (kindDirty); it is never offered
-// while the resolver is enabled, so one click can no longer tear down a
-// working session.
-func planPower(kind statusKind, installed, running, on, busy, trusted bool) (ps powerState) {
-	ps.on = on
-	ps.canToggle = trusted && installed && !busy
+// Restore is offered ONLY for the crash-leftover case (kindDirty, interception
+// still applied while it is off); it is never offered beside a healthy session,
+// so one click can no longer tear down a working one.  Routine protection is
+// turned on by starting the service in Settings.
+func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powerState) {
 	ps.restore = kind == kindDirty && trusted && !busy
 
 	switch {
@@ -73,7 +75,7 @@ func planPower(kind statusKind, installed, running, on, busy, trusted bool) (ps 
 	case kind == kindStopped && running:
 		ps.note = "The service is running but protection is off."
 	case kind == kindStopped:
-		ps.note = "Turning this on starts the service and enables protection."
+		ps.note = "Start the service in Settings to turn on protection."
 	case kind == kindDegraded:
 		ps.note = "The resolver needs attention. Check Settings."
 	}
@@ -93,7 +95,7 @@ type actionMeta struct {
 }
 
 // actionMetas is the presentation for the known actions.  Enable/Restore are
-// the primary call to action; Disable/Rename/the service-management buttons are
+// the primary call to action; Stop/Rename/the service-management buttons are
 // deliberately Secondary (routine, not destructive, and their disabled state
 // reads as greyed rather than a pale filled-primary); Uninstall/Delete are the
 // destructive actions.
@@ -102,12 +104,12 @@ var actionMetas = map[guiAction]actionMeta{
 		"Waiting for elevation to enable...", "Enabled", "Could not enable"},
 	actionRestore: {"Restore now", gogui.ButtonPrimary,
 		"Waiting for elevation to restore...", "Restored", "Could not restore"},
-	actionDisable: {"Disable", gogui.ButtonSecondary,
-		"Waiting for elevation to disable...", "Disabled", "Could not disable"},
 	actionInstall: {"Install", gogui.ButtonSecondary,
 		"Waiting for elevation to install the service...", "Service installed", "Could not install the service"},
 	actionUninstall: {"Uninstall", gogui.ButtonDanger,
 		"Waiting for elevation to uninstall the service...", "Service removed", "Could not remove the service"},
+	actionServiceStop: {"Stop", gogui.ButtonSecondary,
+		"Waiting to stop the service...", "Service stopped", "Could not stop the service"},
 	actionSaveProfile: {"Save", gogui.ButtonPrimary,
 		"Waiting for elevation to save the profile...", "Profile saved", "Could not save the profile"},
 	actionAddProfile: {"Add", gogui.ButtonPrimary,
@@ -120,6 +122,8 @@ var actionMetas = map[guiAction]actionMeta{
 		"Waiting for elevation to set the active profile...", "Active profile set", "Could not set the active profile"},
 	actionRefreshLists: {"Update blocklists", gogui.ButtonSecondary,
 		"Waiting for the service to update blocklists...", "Blocklists updated", "Could not update blocklists"},
+	actionSaveLog: {"Apply", gogui.ButtonPrimary,
+		"Waiting for elevation to save logging...", "Logging saved", "Could not save logging"},
 }
 
 // metaFor returns an action's presentation, or the unknown-action defaults.
