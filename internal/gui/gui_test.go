@@ -477,6 +477,10 @@ func waitIdle(t *testing.T, w *gogui.Window, app *App) {
 // inset, and a two-step font-ladder bump (body 12 -> 14).
 func TestWindowsThemeTunedTokens(t *testing.T) {
 	for _, name := range []string{"windows", "windows-dark"} {
+		base, ok := gogui.ThemeGet(name)
+		if !ok {
+			t.Fatalf("%s theme is not registered", name)
+		}
 		th := windowsTheme(name, gogui.ThemeDark)
 		if th.Cfg.SizeScrollbar != themeScrollbarSize {
 			t.Errorf("%s SizeScrollbar = %v, want %v", name, th.Cfg.SizeScrollbar, themeScrollbarSize)
@@ -491,9 +495,10 @@ func TestWindowsThemeTunedTokens(t *testing.T) {
 		if want := float32(12) + themeFontDelta; th.Cfg.TextStyleDef.Size != want {
 			t.Errorf("%s body size = %v, want %v", name, th.Cfg.TextStyleDef.Size, want)
 		}
-		// The family stays empty, so Windows resolves its own system face.
-		if th.Cfg.TextStyleDef.Family != "" {
-			t.Errorf("%s pinned a font family %q", name, th.Cfg.TextStyleDef.Family)
+		// The calibration must not pin a family of its own; the base theme
+		// decides (empty on Linux, the system face on Windows).
+		if th.Cfg.TextStyleDef.Family != base.Cfg.TextStyleDef.Family {
+			t.Errorf("%s family = %q, want base %q", name, th.Cfg.TextStyleDef.Family, base.Cfg.TextStyleDef.Family)
 		}
 	}
 
