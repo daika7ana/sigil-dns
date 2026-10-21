@@ -1052,10 +1052,10 @@ func TestNavRailCompact(t *testing.T) {
 	}
 
 	// Every item is the same width and has room for the accent bar, the icon
-	// and the longest label ("Settings").
+	// column and the longest label ("Settings").
 	inset := gogui.CurrentTheme().PaddingButton
-	// bar (3) + icon (~17, IconLarge) + two inter-part gaps (SpacingMedium each).
-	const navItemLeading float32 = 48
+	// bar (3) + icon column + two inter-part gaps (SpacingMedium each).
+	navItemLeading := 3 + navIconWidth + 2*gogui.CurrentTheme().SpacingMedium
 	for _, tc := range []struct{ id, label string }{
 		{"gui:nav:status", "Status"},
 		{"gui:nav:settings", "Settings"},
@@ -1082,22 +1082,75 @@ func TestNavRailCompact(t *testing.T) {
 	}
 }
 
+// TestNavLabelsShareLeftEdge proves the icon column fixes the label X: every
+// nav label starts at the same point, right after the fixed-width icon slot and
+// one gap, and each glyph is centred in that slot.  Glyph widths differ between
+// fonts, so only a fixed slot can keep the labels on one edge.
+func TestNavLabelsShareLeftEdge(t *testing.T) {
+	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
+	gap := gogui.CurrentTheme().SpacingMedium
+
+	var labelX float32
+	for i, tc := range []struct{ button, icon, label string }{
+		{"gui:nav:status", "gui:nav:icon:status", "Status"},
+		{"gui:nav:settings", "gui:nav:icon:settings", "Settings"},
+		{"gui:nav:rules", "gui:nav:icon:rules", "Rules"},
+		{"gui:nav:logging", "gui:nav:icon:logging", "Logging"},
+		{"gui:nav:about", "gui:nav:icon:about", "About"},
+	} {
+		btn := mustFindLayout(t, w, root, tc.button)
+		slot := mustFindLayout(t, w, root, tc.icon)
+		label := findTextLayout(btn, tc.label)
+		if label == nil || label.Shape == nil {
+			t.Fatalf("%s does not render its %q label", tc.button, tc.label)
+		}
+
+		if i == 0 {
+			labelX = label.Shape.X
+		} else if absF(label.Shape.X-labelX) > 1 {
+			t.Errorf("%s label x=%.0f, want %.0f: labels are ragged", tc.button, label.Shape.X, labelX)
+		}
+
+		if want := slot.Shape.X + slot.Shape.Width + gap; absF(label.Shape.X-want) > 1 {
+			t.Errorf("%s label x=%.0f, want icon slot right edge + gap = %.0f", tc.button, label.Shape.X, want)
+		}
+
+		glyph := childLayout(slot, 0)
+		if glyph == nil || glyph.Shape == nil {
+			t.Fatalf("%s icon slot is empty", tc.button)
+		}
+		if absF(glyph.Shape.X+glyph.Shape.Width/2-(slot.Shape.X+slot.Shape.Width/2)) > 1 {
+			t.Errorf("%s glyph centre is not the icon slot centre", tc.button)
+		}
+	}
+}
+
 // findTextWidth returns the width of the first text shape in the subtree whose
 // content is label, or 0 when none renders it.
 func findTextWidth(ly *gogui.Layout, label string) (width float32) {
-	if ly == nil || ly.Shape == nil {
-		return 0
-	}
-	if ly.Shape.TC != nil && ly.Shape.TC.Text == label {
-		return ly.Shape.Width
-	}
-	for i := range ly.Children {
-		if w := findTextWidth(&ly.Children[i], label); w > 0 {
-			return w
-		}
+	if got := findTextLayout(ly, label); got != nil {
+		return got.Shape.Width
 	}
 
 	return 0
+}
+
+// findTextLayout returns the first text layout in the subtree whose content is
+// label.
+func findTextLayout(ly *gogui.Layout, label string) *gogui.Layout {
+	if ly == nil || ly.Shape == nil {
+		return nil
+	}
+	if ly.Shape.TC != nil && ly.Shape.TC.Text == label {
+		return ly
+	}
+	for i := range ly.Children {
+		if got := findTextLayout(&ly.Children[i], label); got != nil {
+			return got
+		}
+	}
+
+	return nil
 }
 
 // TestBannerIndicatorCentred proves the status indicator is vertically centred

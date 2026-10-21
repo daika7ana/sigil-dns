@@ -372,6 +372,8 @@ func (r *Resolver) build(addrs []string) (p *proxy.Proxy, err error) {
 		RequestHandler: r.handler,
 		CacheEnabled:   !r.cacheDisabled,
 		CacheSizeBytes: r.cacheSize,
+		// Ask validating upstreams for AD/RRSIGs; dns-client does not validate itself.
+		DNSSECEnabled: true,
 	})
 }
 

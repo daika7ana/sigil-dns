@@ -24,6 +24,19 @@ honest version of that boundary.
 | **`hosts` file / LLMNR / mDNS / NetBIOS** | These resolve locally without DNS at all. `dns-client` never sees them. |
 | **DNS-level blocklists** | The blocklists only see traffic that reaches the resolver, so they inherit every gap above. |
 
+## DNSSEC
+
+DNSSEC validation is delegated to the upstream resolver. With the cache enabled
+(the default), queries carry the DO bit, so validating presets (Quad9,
+Cloudflare, NextDNS, ControlD) return authenticated answers and signatures are
+cached.
+
+`dns-client` does not validate DNSSEC itself, and cannot without a validating
+recursor: block, hosts and rewrite answers are synthesized locally and can never
+carry a valid signature. Filtered names are therefore intentionally unsigned.
+A plain UDP/53 custom upstream can also have the upstream's AD bit stripped by
+an on-path attacker; prefer DoH/DoT/DoQ if that matters.
+
 ## What silently breaks or leaks
 
 ### New or transient adapters — leak window

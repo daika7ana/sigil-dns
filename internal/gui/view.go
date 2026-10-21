@@ -66,6 +66,10 @@ const (
 	// navItemMinHeight is the navigation item's height floor, so the larger
 	// glyph and its label sit comfortably and the hit target stays a good size.
 	navItemMinHeight float32 = 40
+	// navIconWidth is the fixed icon column inside an item.  Every glyph is
+	// centred in it, so all labels start at one X whatever the glyph's own
+	// width — a fixed column rather than per-icon padding.
+	navIconWidth float32 = 20
 	// headerMinHeight floors the header band to an even integer so its bottom
 	// hairline lands on a whole pixel and reads the same weight as the nav-pane
 	// divider (a fractional band would antialias it into two faint rows).
@@ -220,7 +224,7 @@ func navItem(t gogui.Theme, app *App, p pageKind, label, icon string) gogui.View
 				Padding:    gogui.PaddingNone,
 				SizeBorder: gogui.NoBorder,
 			}),
-			navIcon(t, icon, selected),
+			navIcon(t, p, icon, selected),
 			gogui.Text(gogui.TextCfg{
 				Text:      label,
 				TextStyle: t.TextStyleBody,
@@ -255,18 +259,30 @@ func navItem(t gogui.Theme, app *App, p pageKind, label, icon string) gogui.View
 
 // navIcon is the item's leading glyph, in the accent when selected.  It sits on
 // the IconLarge rung (17px at the tuned body 14) so it reads as a proper
-// NavigationView icon beside the 14px label, not a small dot.
-func navIcon(t gogui.Theme, icon string, selected bool) gogui.View {
+// NavigationView icon beside the 14px label, not a small dot.  The glyph is
+// centred in the fixed navIconWidth column, so every label starts at the same X.
+func navIcon(t gogui.Theme, p pageKind, icon string, selected bool) gogui.View {
 	ts := t.TextStyleIconLarge
 	ts.Color = t.TextStyleSecondary.Color
 	if selected {
 		ts.Color = t.ColorAccent
 	}
 
-	return gogui.Text(gogui.TextCfg{
-		Text:      icon,
-		TextStyle: ts,
-		Sizing:    gogui.FitFit,
+	return gogui.Row(gogui.ContainerCfg{
+		ID:         "gui:nav:icon:" + pageName(p),
+		Width:      navIconWidth,
+		Sizing:     gogui.FixedFit,
+		HAlign:     gogui.HAlignCenter,
+		VAlign:     gogui.VAlignMiddle,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{
+				Text:      icon,
+				TextStyle: ts,
+				Sizing:    gogui.FitFit,
+			}),
+		},
 	})
 }
 
