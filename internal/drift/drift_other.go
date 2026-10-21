@@ -12,6 +12,6 @@ func watchRegistry(ctx context.Context, nudge chan<- struct{}) {}
 
 // NewSystemReconciler returns a reconciler with no platform hooks, so builds
 // and tests off Windows are unaffected.
-func NewSystemReconciler(statePath string, logger *slog.Logger) (r *Reconciler) {
-	return NewReconciler(Options{Logger: logger})
+func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()) (r *Reconciler) {
+	return NewReconciler(Options{Logger: logger, OnDisable: onDisable})
 }

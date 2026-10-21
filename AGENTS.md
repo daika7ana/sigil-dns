@@ -58,8 +58,8 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   `elevate.Request`), `instance.go` (`gui.lock` single-instance guard), `render_test.go` (headless
   shape/colour assertions — no fonts in the container), `console_{windows,other}.go` (`detachConsole`).
   The GUI is the **full-permission surface**; the default/Linux build stays GUI-free behind the `gui` tag.
-- **Elevated-helper allowlist** (`internal/elevate`): `Patch` is the whole config surface, not just
-  `mode` — `Mode` / `ActiveProfile` / per-profile `Profiles` (provider/variant/protocol/id/url/bootstrap/
+- **Elevated-helper allowlist** (`internal/elevate`): `Patch` is the whole config surface —
+  `ActiveProfile` / per-profile `Profiles` (provider/variant/protocol/id/url/bootstrap/
   filtering/cache) plus structural `AddProfile` / `RenameProfile` / `DeleteProfile`; actions also include
   `service_install|service_uninstall|service_start|service_stop`. Every field is validated (bootstrap as
   IP literals, provider/variant/protocol against the registry, id charset/length, explicit-zero
@@ -87,6 +87,9 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   handle (`file.Truncate(0)` + seek/write). `os.Truncate` **by path** is only the GUI's "Clear log file".
 
 ## Invariants — do not break
+- **A running service always has interception on.** Service start always enables; the SCM state stays
+  StartPending until recovery + enable succeed. Any startup/reload/drift failure stops the service
+  instead of leaving it running with protection off.
 - **Enable order:** bind listeners → two-stage health check → persist snapshot + dirty marker → apply
   interception → flush DNS. Never touch DNS settings before the resolver is proven listening.
 - **Never re-snapshot while dirty.** Restore from the persisted snapshot first; re-snapshotting a

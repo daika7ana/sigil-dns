@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/drift"
@@ -43,14 +44,20 @@ const (
 // ErrUnsupported is returned by the non-Windows stubs.
 var ErrUnsupported = errors.New("service management is not supported on this platform")
 
+// ErrConfigUnavailable marks a start that cannot enable because the config is
+// invalid.  The service exits cleanly so the SCM does not restart it; the user
+// fixes the file and starts it again.
+var ErrConfigUnavailable = errors.New("configuration unavailable")
+
 // Lifecycle is the daemon core the service drives.  It satisfies
 // ipc.Lifecycle structurally, so the same object backs the IPC server.
 type Lifecycle interface {
 	// Status returns the persisted state, or state.ErrNoState.
 	Status() (st *state.State, err error)
 
-	// Startup runs crash recovery and reports whether mode=on should re-enable.
-	Startup(ctx context.Context) (reenable bool, err error)
+	// Startup runs crash recovery; the caller then Enables (a running service
+	// is always protected).
+	Startup(ctx context.Context) (err error)
 
 	// Enable applies interception.
 	Enable(ctx context.Context) (err error)
@@ -79,6 +86,11 @@ type Agent struct {
 	ln             net.Listener
 	sln            net.Listener
 	cancel         context.CancelFunc
+
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	started   atomic.Bool
+	startDone chan struct{}
 }
 
 // NewAgent returns an Agent.  An empty endpoint uses the platform default.
@@ -96,12 +108,22 @@ func NewAgent(lc Lifecycle, logger *slog.Logger, endpoint string) (a *Agent) {
 		logger:         logger,
 		endpoint:       endpoint,
 		statusEndpoint: ipc.StatusEndpoint(),
+		stopCh:         make(chan struct{}),
+		startDone:      make(chan struct{}),
 	}
 }
 
 // SetWatcher sets the optional background reconciler.  It must be called before
 // Start.
 func (a *Agent) SetWatcher(w *drift.Reconciler) { a.watcher = w }
+
+// RequestStop asks the service host to stop the service.  It is called when
+// drift can no longer be reconciled, so the service goes from on to off
+// instead of running unprotected.
+func (a *Agent) RequestStop() { a.stopOnce.Do(func() { close(a.stopCh) }) }
+
+// Done is closed after RequestStop.
+func (a *Agent) Done() <-chan struct{} { return a.stopCh }
 
 // SetStatusEndpoint overrides the read-only status endpoint.  Tests use it to
 // isolate listeners; production uses the platform default.
@@ -151,7 +173,7 @@ func (l *lockedLifecycle) Status() (st *state.State, err error) {
 }
 
 // Startup implements Lifecycle.
-func (l *lockedLifecycle) Startup(ctx context.Context) (reenable bool, err error) {
+func (l *lockedLifecycle) Startup(ctx context.Context) (err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -191,42 +213,77 @@ func (l *lockedLifecycle) RefreshLists(ctx context.Context) (err error) {
 	return l.lc.RefreshLists(ctx)
 }
 
-// Start binds the IPC listeners, then runs crash recovery and (if mode=on)
-// re-enable.  It returns an error only when IPC cannot be served at all; a
-// recovery or enable failure leaves the service running in a degraded state
-// with IPC available so an operator can still status/disable it.
+// Start binds the IPC listeners, runs crash recovery, then enables
+// interception.  A recovery or enable failure is returned so the service
+// stops: a running service always means protection is on, never a half state.
 func (a *Agent) Start(ctx context.Context) (err error) {
+	a.started.Store(true)
+	defer close(a.startDone)
+
+	if a.stopped() {
+		return context.Canceled
+	}
+
 	if err = a.startIPC(); err != nil {
 		return err
 	}
 
-	if a.watcher != nil {
-		a.watcher.Start()
+	if a.stopped() {
+		a.cleanup(context.Background())
+
+		return context.Canceled
 	}
 
-	reenable, err := a.lc.Startup(ctx)
-	if err != nil {
-		a.logger.ErrorContext(ctx, "crash recovery failed; running degraded", "err", err)
+	if err = a.lc.Startup(ctx); err != nil {
+		a.logger.ErrorContext(ctx, "crash recovery failed; stopping service", "err", err)
+		a.cleanup(context.Background())
 
-		return nil
+		return err
 	}
 
-	if !reenable {
-		return nil
+	if a.stopped() {
+		a.cleanup(context.Background())
+
+		return context.Canceled
 	}
 
 	if err = a.lc.Enable(ctx); err != nil {
-		a.logger.ErrorContext(ctx, "enable failed; running degraded", "err", err)
+		a.logger.ErrorContext(ctx, "enable failed; stopping service", "err", err)
+		a.cleanup(context.Background())
 
-		return nil
+		return err
+	}
+
+	// Start watching only once protection is on; a stale probe during startup
+	// could otherwise auto-disable before the first enable completes.
+	if a.watcher != nil {
+		select {
+		case <-a.stopCh:
+		case <-ctx.Done():
+		default:
+			a.watcher.Start()
+		}
 	}
 
 	return nil
 }
 
-// Stop shuts the IPC servers down and, only if interception is actually active,
-// disables/restores it.
+// Stop asks Start to abort if it is still running, waits for it, then shuts
+// down and restores.  Waiting prevents a stop from being undone by a late
+// enable.
 func (a *Agent) Stop(ctx context.Context) (err error) {
+	a.RequestStop()
+
+	if a.started.Load() {
+		<-a.startDone
+	}
+
+	return a.cleanup(ctx)
+}
+
+// cleanup shuts the IPC servers down and restores interception.  It does not
+// wait for Start; Start calls it on a failure or abort.
+func (a *Agent) cleanup(ctx context.Context) (err error) {
 	if a.watcher != nil {
 		a.watcher.Stop()
 	}
@@ -248,6 +305,16 @@ func (a *Agent) Stop(ctx context.Context) (err error) {
 	}
 
 	return a.lc.Disable(ctx)
+}
+
+// stopped reports whether a stop was requested.
+func (a *Agent) stopped() (ok bool) {
+	select {
+	case <-a.stopCh:
+		return true
+	default:
+		return false
+	}
 }
 
 // startIPC binds the control and status pipes, retrying transient failures with

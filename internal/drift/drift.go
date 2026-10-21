@@ -123,6 +123,10 @@ type Options struct {
 	Logger      *slog.Logger
 	Interval    time.Duration
 	MaxAttempts int
+
+	// OnDisable runs after the auto-disable attempt on persistent drift so the
+	// service host can stop (a running service is never left unprotected).
+	OnDisable func()
 }
 
 // Reconciler periodically compares expected and actual interception state and
@@ -134,6 +138,7 @@ type Reconciler struct {
 	logger      *slog.Logger
 	interval    time.Duration
 	maxAttempts int
+	onDisable   func()
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -164,6 +169,7 @@ func NewReconciler(opts Options) (r *Reconciler) {
 		logger:      logger,
 		interval:    interval,
 		maxAttempts: maxAttempts,
+		onDisable:   opts.OnDisable,
 	}
 }
 
@@ -229,8 +235,18 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 
 			if r.disabler != nil {
 				if dErr := r.disabler.Disable(ctx); dErr != nil {
-					r.logger.ErrorContext(ctx, "auto-disable failed", "err", dErr)
+					// Do not stop with interception still active: that would
+					// leave DNS pointed at a dead resolver.  Keep the service
+					// up and retry from a clean attempt count.
+					r.logger.ErrorContext(ctx, "auto-disable failed; keeping service up", "err", dErr)
+					*attempts = 0
+
+					return false
 				}
+			}
+
+			if r.onDisable != nil {
+				r.onDisable()
 			}
 
 			return true

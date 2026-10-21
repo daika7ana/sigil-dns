@@ -75,10 +75,11 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    here on Windows, so the Windows-only tests still execute. Manual
    (`workflow_dispatch`) runs on a branch always run them.
 3. Builds **both** binaries:
-   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-X .../version.Version=<tag>" -o dist/sigildns.exe ./cmd/sigildns`
+   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X .../version.Version=<tag>" -o dist/sigildns.exe ./cmd/sigildns`
    and the same with `-tags gui` and `-H windowsgui` for
-   `dist/sigildns-gui.exe`. Symbols are kept so a user crash report has usable
-   stack traces.
+   `dist/sigildns-gui.exe`. `-s -w` matches `dev/build.sh` and strips the
+   symbol table and DWARF to keep the download small; Go runtime stack traces
+   still include function names and line numbers.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
    binaries, `config.example.yaml`, `README.md`, `SPEC.md`, `LICENSE`, `docs/`,

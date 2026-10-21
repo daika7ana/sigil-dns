@@ -1,5 +1,5 @@
 // Package config implements the Phase-2 YAML configuration (SPEC §8): active
-// mode and profile, upstream/bootstrap lists, cache settings, and the
+// profile, upstream/bootstrap lists, cache settings, and the
 // phase-3 fields (per_domain, filtering) which parse and validate but are not
 // used yet.
 package config
@@ -25,12 +25,6 @@ import (
 
 // SchemaVersion is the current config schema version.
 const SchemaVersion = 1
-
-// Modes.
-const (
-	ModeOn  = "on"
-	ModeOff = "off"
-)
 
 // DefaultCacheSizeBytes is 64 MiB.
 const DefaultCacheSizeBytes = resolver.DefaultCacheSizeBytes
@@ -212,18 +206,16 @@ type Profile struct {
 // Config is the top-level configuration.
 type Config struct {
 	Profiles      map[string]Profile `yaml:"profiles"`
-	Mode          string             `yaml:"mode"`
 	Profile       string             `yaml:"profile"`
 	SchemaVersion int                `yaml:"schema_version"`
 	Log           LogConfig          `yaml:"log"`
 }
 
-// Default returns the default configuration: mode off, one "default" profile,
-// cache enabled at 64 MiB, ControlD free p0.
+// Default returns the default configuration: one "default" profile, cache
+// enabled at 64 MiB, ControlD free p0.
 func Default() (c *Config) {
 	return &Config{
 		SchemaVersion: SchemaVersion,
-		Mode:          ModeOff,
 		Profile:       DefaultProfileName,
 		Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
 		Profiles: map[string]Profile{
@@ -317,9 +309,6 @@ func (c *Config) normalize() {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = SchemaVersion
 	}
-	if c.Mode == "" {
-		c.Mode = ModeOff
-	}
 	if len(c.Profiles) == 0 {
 		c.Profiles = Default().Profiles
 	}
@@ -361,12 +350,6 @@ func (p *Profile) filteringDefaults() {
 func (c *Config) Validate() (err error) {
 	if c.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported schema_version %d (want %d)", c.SchemaVersion, SchemaVersion)
-	}
-
-	switch c.Mode {
-	case ModeOn, ModeOff:
-	default:
-		return fmt.Errorf("invalid mode %q (want %q or %q)", c.Mode, ModeOn, ModeOff)
 	}
 
 	if _, ok := c.Profiles[c.Profile]; !ok {

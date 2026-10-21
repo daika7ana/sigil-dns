@@ -147,8 +147,8 @@ resolvers). Offer to stop ICS; never silently fail. Do not disable the Windows D
 `NotifyIpInterfaceChange` fires only on adapter up/down — it **misses** GPO refresh (~90 min),
 MDM/Intune, VPN, and other DNS tools rewriting servers. Add:
 - a registry watcher (`RegNotifyChangeKeyValue` on `HKLM\...\Tcpip(6)\Parameters\Interfaces\*\NameServer`), and
-- a **30–60 s reconcile loop** comparing expected-vs-actual; re-apply, or auto-disable + warn on
-  persistent drift.
+- a **30–60 s reconcile loop** comparing expected-vs-actual; re-apply, or auto-disable and stop the
+  service on persistent drift (never leave it running unprotected).
 
 ### 4.7 Security of the IPC path
 Unelevated→SYSTEM DNS control is a privilege path (any local process could redirect auth/corp
@@ -304,7 +304,6 @@ User-entered DoH/DoT URL + optional bootstrap (v4/v6). Raw upstream escape hatch
 ## 8. Config schema (sketch)
 
 ```yaml
-mode: on              # on | off
 profile: default      # active profile (many stored, one active at a time)
 log:                  # optional; off by default
   level: off          # off | error | info | debug
@@ -337,12 +336,17 @@ snapshot, dirty marker, active profile, last health result.
 
 ## 9. Lifecycle
 
-- **Service start**: load config; if dirty marker → **restore from snapshot first** (never
-  re-snapshot while dirty); if mode=on → re-enable. Retry/fallback if network not yet up (don't
-  abort-or-restore loop).
+- **Service start**: if dirty marker → **restore from snapshot first** (never re-snapshot while
+  dirty), then **always enable**. The SCM state stays **StartPending** (checkpointed every 10 s)
+  until recovery and enable finish; only then does it become Running. A running service means
+  interception is on — there is no running-but-off state. If recovery or enable fails the service
+  stops rather than keep serving a half state; a failed restore leaves the dirty marker for the next
+  start. A configuration error exits cleanly so the SCM does not restart a hopeless boot.
 - **Enable**: §4.3 strict order (bind → two-stage health check → snapshot+dirty → apply → flush).
-- **Disable**: stop resolver → restore (delete NRPT rule / reset adapters) → **flush dns** → clear
-  dirty marker.
+  If apply fails, restore whatever was partially applied and stop the resolver; if the restore also
+  fails, keep the resolver up (DNS must not point at a dead port) and leave the dirty marker.
+- **Disable**: restore (delete NRPT rule / reset adapters) → **flush dns** → stop resolver → clear
+  dirty marker. A failed restore leaves the resolver running so a retry is possible.
 - **Two-stage health check**: (a) query a random synthetic name **only our handler answers** (proves
   loopback→us, not "something on :53"); (b) query a random uncached name **per upstream family**
   (proves upstream, catches IPv6-dead-while-IPv4-ok).
@@ -463,7 +467,7 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   `--apply <staging>` via `ShellExecuteW "runas"`. The helper re-loads and validates the staged patch
   with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
   existing admin control pipe (`reload` / `enable` / `disable` / `refresh_lists`). The allowlist is the
-  **whole config surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches
+  **whole config surface**: `ActiveProfile`, per-profile `Profiles` patches
   (provider / variant / protocol / id / custom URL / bootstrap / fallback profile / filtering / cache,
   plus **per-list
   operations** — toggle/add/remove existing lists by index — and **per-domain rules** with a per-rule
@@ -495,7 +499,9 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
   untrusted and refuse writes (kills pipe-squatting without a nonce).
 - **Config is single-writer**: only the elevated helper writes `config.yaml`; the service never does.
-  `reload` = disable (restore) → enable with last-known-good rollback; no manual restart required.
+  `reload` = disable (restore) → enable with last-known-good rollback; if the rollback also fails the
+  service stops, so it never keeps running with interception off. If the disable itself cannot remove
+  interception, the resolver stays up and the service keeps running instead of stranding DNS.
 
 **Manifest elevation (deviation from §15.3.8).** The shipped Windows binary embeds an application
 manifest (`cmd/sigildns/sigildns.manifest`) with

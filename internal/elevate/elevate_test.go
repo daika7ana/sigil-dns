@@ -17,9 +17,6 @@ import (
 )
 
 func TestValidate(t *testing.T) {
-	on := config.ModeOn
-	bad := "bogus"
-
 	cases := []struct {
 		name    string
 		req     Request
@@ -27,10 +24,9 @@ func TestValidate(t *testing.T) {
 	}{
 		{"enable", Request{Action: ActionEnable, UUID: "u"}, false},
 		{"restore", Request{Action: ActionRestore, UUID: "u"}, false},
-		{"apply mode", Request{Action: ActionApply, UUID: "u", Patch: Patch{Mode: &on}}, false},
+		{"apply", Request{Action: ActionApply, UUID: "u"}, false},
 		{"unknown action", Request{Action: "frobnicate", UUID: "u"}, true},
 		{"missing uuid", Request{Action: ActionEnable}, true},
-		{"bad mode", Request{Action: ActionApply, UUID: "u", Patch: Patch{Mode: &bad}}, true},
 	}
 
 	for _, tc := range cases {
@@ -69,10 +65,15 @@ func TestValidatePatchShape(t *testing.T) {
 	}{
 		{
 			name:    "service action takes no patch",
-			req:     Request{Action: ActionServiceStart, UUID: "u", Patch: Patch{Mode: ptr("on")}},
+			req:     Request{Action: ActionServiceStart, UUID: "u", Patch: Patch{ActiveProfile: ptr("x")}},
 			wantErr: true,
 		},
 		{name: "service action empty patch", req: Request{Action: ActionServiceStop, UUID: "u"}, wantErr: false},
+		{
+			name:    "enable takes no patch",
+			req:     Request{Action: ActionEnable, UUID: "u", Patch: Patch{ActiveProfile: ptr("x")}},
+			wantErr: true,
+		},
 		{
 			name: "block ttl zero rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
@@ -192,9 +193,6 @@ func TestApplyRequestGuards(t *testing.T) {
 		if err := applyRequest(cfg, req, "rev-1"); err != nil {
 			t.Fatalf("applyRequest: %v", err)
 		}
-		if cfg.Mode != config.ModeOn {
-			t.Fatalf("mode = %q, want on", cfg.Mode)
-		}
 		if cfg.Profile != config.DefaultProfileName {
 			t.Fatal("unknown field changed the active profile")
 		}
@@ -206,12 +204,12 @@ func TestApplyRequestGuards(t *testing.T) {
 			Action:           ActionApply,
 			UUID:             "u",
 			ExpectedRevision: "rev-1",
-			Patch:            Patch{Mode: ptr(config.ModeOn)},
+			Patch:            Patch{ActiveProfile: ptr("ghost")},
 		}
 		if err := applyRequest(cfg, req, "rev-2"); !errors.Is(err, ErrRevision) {
 			t.Fatalf("applyRequest = %v, want ErrRevision", err)
 		}
-		if cfg.Mode != config.ModeOff {
+		if cfg.Profile != config.DefaultProfileName {
 			t.Fatal("config mutated despite a revision mismatch")
 		}
 	})
@@ -948,15 +946,19 @@ func TestReloadRelevant(t *testing.T) {
 		t.Fatal("log-only change must not reload")
 	}
 
-	modeChange := base.Clone()
-	modeChange.Mode = config.ModeOn
-	if !reloadRelevant(base, modeChange) {
-		t.Fatal("mode change must reload")
+	profileChange := base.Clone()
+	p := profileChange.Profiles[config.DefaultProfileName]
+	p.Upstreams = []string{"https://example.invalid/dns-query"}
+	profileChange.Profiles[config.DefaultProfileName] = p
+	if !reloadRelevant(base, profileChange) {
+		t.Fatal("profile change must reload")
 	}
 
-	logAndMode := logOnly.Clone()
-	logAndMode.Mode = config.ModeOn
-	if !reloadRelevant(base, logAndMode) {
+	logAndProfile := logOnly.Clone()
+	p = logAndProfile.Profiles[config.DefaultProfileName]
+	p.Upstreams = []string{"https://example.invalid/dns-query"}
+	logAndProfile.Profiles[config.DefaultProfileName] = p
+	if !reloadRelevant(base, logAndProfile) {
 		t.Fatal("mixed log+non-log change must reload")
 	}
 }

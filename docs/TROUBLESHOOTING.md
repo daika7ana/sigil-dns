@@ -60,7 +60,7 @@ supported.
 
 | Field | Meaning |
 |---|---|
-| `mode` | Desired state (`on`/`off`). |
+| `mode` | Persisted interception state (`on`/`off`); a running service is always `on`. |
 | `intercept` | Mechanism in use (`nrpt` or `adapter`). |
 | `active_upstream` | The upstream(s) captured at enable time. |
 | `dirty` | `true` means interception was applied but not cleanly restored — run `restore`. |
@@ -181,7 +181,6 @@ Config errors are reported on `enable`/`run`. Examples:
 |---|---|
 | `parsing config: ...` | YAML syntax error; validate indentation/types. |
 | `unsupported schema_version N (want 1)` | Set `schema_version: 1`. |
-| `invalid mode "x" (want "on" or "off")` | Use `on` or `off`. |
 | `active profile "x" not found in profiles` | `profile` must name a key under `profiles`. |
 | `profile "x" has no upstreams` | Add at least one `upstreams` entry. |
 | `profile "x": cache enabled with non-positive size_bytes` | Set `size_bytes > 0` or disable the cache. |
@@ -193,10 +192,10 @@ Config errors are reported on `enable`/`run`. Examples:
 A `bypass: true` rule is intentional: those domains are resolved by the system's
 normal DNS, not by Sigil DNS — see [LIMITATIONS](LIMITATIONS.md).
 
-If a config file is unreadable at service start, the service **still starts in a
-degraded state** so `restore` and status work; enabling then fails with
-`configuration unavailable: ...` until the file is fixed. Restart the service
-after fixing it.
+If a config file is unreadable at service start, crash recovery (`restore`) still
+runs, then the service **stops** with `configuration unavailable: ...` in the
+log. Fix the file, then start the service again. A running service always has
+interception on.
 
 ## "another Sigil DNS instance is running"
 
@@ -209,13 +208,15 @@ persists, check for a leftover process:
 Get-Process sigildns
 ```
 
-## Service will not start or is degraded
+## Service will not start or keeps stopping
 
-- `service start` timing out at the SCM's ~30 s start budget: the service
-  reports Running before crash recovery/re-enable, so a slow PowerShell health
-  check does not trip error 1053. A failed recovery or enable leaves the service
-  **running but degraded** (log says `running degraded`); use `status` and
-  `disable`.
+- `service start` timing out at the SCM's ~30 s start budget: the service stays
+  in **StartPending** and checkpoints every 10 s while crash recovery and
+  enable run, so a slow PowerShell health check does not trip error 1053.
+  Running is reported only after interception is on. If recovery or enable
+  fails, the service **stops** (log says `service start failed`) — it is never
+  left running with interception off. A bad config exits cleanly, without the
+  SCM's restart loop, so fix the file and start it again.
 - Recovery actions are configured to restart the service on failure (5 s, 10 s,
   30 s). A loop of restarts usually means a port-53 conflict or an unreachable
   upstream.

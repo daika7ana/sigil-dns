@@ -2,6 +2,7 @@ package drift
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,12 +98,13 @@ func (f *fakeApplier) Apply(context.Context) error {
 
 type fakeDisabler struct {
 	disables atomic.Int32
+	err      error
 }
 
 func (f *fakeDisabler) Disable(context.Context) error {
 	f.disables.Add(1)
 
-	return nil
+	return f.err
 }
 
 func driftObs() (obs Observation) {
@@ -140,8 +142,12 @@ func TestReconcilerGivesUpOnPersistentDrift(t *testing.T) {
 	p := &fakeProber{fn: func(int) (Observation, error) { return driftObs(), nil }}
 	ap := &fakeApplier{}
 	dis := &fakeDisabler{}
+	stopped := false
 
-	r := NewReconciler(Options{Prober: p, Applier: ap, Disabler: dis, Interval: time.Millisecond, MaxAttempts: 3})
+	r := NewReconciler(Options{
+		Prober: p, Applier: ap, Disabler: dis, Interval: time.Millisecond, MaxAttempts: 3,
+		OnDisable: func() { stopped = true },
+	})
 
 	done, cancel := runAsync(r)
 	defer cancel()
@@ -161,6 +167,34 @@ func TestReconcilerGivesUpOnPersistentDrift(t *testing.T) {
 	}
 	if got := dis.disables.Load(); got != 1 {
 		t.Errorf("disable calls = %d, want 1", got)
+	}
+	if !stopped {
+		t.Error("OnDisable not called after auto-disable")
+	}
+}
+
+func TestReconcilerKeepsRunningWhenAutoDisableFails(t *testing.T) {
+	p := &fakeProber{fn: func(int) (Observation, error) { return driftObs(), nil }}
+	dis := &fakeDisabler{err: errors.New("nrpt failed")}
+	stopped := false
+
+	r := NewReconciler(Options{
+		Prober: p, Disabler: dis, Interval: time.Millisecond, MaxAttempts: 3,
+		OnDisable: func() { stopped = true },
+	})
+
+	done, cancel := runAsync(r)
+	defer cancel()
+
+	waitFor(t, func() bool { return dis.disables.Load() >= 1 })
+	if stopped {
+		t.Fatal("OnDisable must not run when the auto-disable failed")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("Run stopped after a failed auto-disable")
+	default:
 	}
 }
 

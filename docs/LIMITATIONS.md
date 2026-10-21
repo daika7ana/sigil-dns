@@ -98,9 +98,12 @@ not yet authenticated to.**
 
 If Windows, Group Policy, MDM/Intune, or another DNS tool keeps rewriting the
 interception out from under the service, the reconcile loop retries. After
-`DefaultMaxAttempts` (3) consecutive failed re-applies it **auto-disables and
-logs an error** rather than looping forever. The service stays up in a degraded
-state so you can `status`/`disable` it.
+`DefaultMaxAttempts` (3) consecutive failed re-applies it **auto-disables, logs
+an error, and stops the service** rather than looping forever or running
+unprotected. `status` then shows interception off; fix the conflicting tool and
+start the service again. If the auto-disable itself fails, the service keeps
+running with its resolver up and retries, because stopping would leave DNS
+pointed at a dead port.
 
 ## Port 53 and ICS
 

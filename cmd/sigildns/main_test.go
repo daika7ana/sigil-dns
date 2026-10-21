@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,32 +16,35 @@ import (
 	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
-// TestServiceLifecycleDegradedEnable verifies the service can boot and run
-// crash recovery from state alone, while Enable reports a clear error until the
-// config loads (M4).
-func TestServiceLifecycleDegradedEnable(t *testing.T) {
+// TestServiceLifecycleEnableWithoutConfig verifies crash recovery runs from
+// state alone, while Enable reports a clear error until the config loads (M4).
+func TestServiceLifecycleEnableWithoutConfig(t *testing.T) {
 	dir := t.TempDir()
 	inner := lifecycle.New(lifecycle.Config{StatePath: filepath.Join(dir, "state.json")})
 
 	want := errors.New("configuration unavailable")
 	lc := &serviceLifecycle{inner: inner, enableErr: want}
 
-	if err := lc.Enable(context.Background()); !errors.Is(err, want) {
-		t.Fatalf("Enable err = %v, want %v", err, want)
-	}
-
 	// Recovery works without config: no state means nothing to restore.
-	reenable, err := lc.Startup(context.Background())
-	if err != nil {
+	if err := lc.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
-	}
-	if reenable {
-		t.Fatal("Startup should not request re-enable with no state")
 	}
 
 	if _, err = lc.Status(); !errors.Is(err, state.ErrNoState) {
 		t.Fatalf("Status err = %v, want ErrNoState", err)
 	}
+
+	if err := lc.Enable(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Enable err = %v, want %v", err, want)
+	}
+
+	// A failed enable must release the lock Startup retained, or the SCM's
+	// restart attempt collides with the dying process.
+	lock, err := state.AcquireLock(filepath.Join(dir, "state.json") + ".lock")
+	if err != nil {
+		t.Fatalf("lock still held after a config-error enable: %v", err)
+	}
+	_ = lock.Release()
 }
 
 // fakeDaemon is an in-memory svcDaemon for reload tests.
@@ -55,7 +59,7 @@ type fakeDaemon struct {
 
 func (f *fakeDaemon) Status() (st *state.State, err error) { return f.st, nil }
 
-func (f *fakeDaemon) Startup(context.Context) (reenable bool, err error) { return false, nil }
+func (f *fakeDaemon) Startup(context.Context) (err error) { return nil }
 
 func (f *fakeDaemon) Enable(context.Context) (err error) {
 	f.enableCalls++
@@ -233,9 +237,11 @@ func TestReloadUnionSeedsDuringSwap(t *testing.T) {
 func TestReloadRollbackFailure(t *testing.T) {
 	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("rollback bad")}
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new bad")}
+	stopped := false
 
 	lc := &serviceLifecycle{
 		inner: old,
+		stop:  func() { stopped = true },
 		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
 	}
 
@@ -244,6 +250,50 @@ func TestReloadRollbackFailure(t *testing.T) {
 	}
 	if lc.inner != svcDaemon(old) {
 		t.Fatal("inner should remain the old lifecycle")
+	}
+	if !stopped {
+		t.Fatal("a failed rollback must stop the service")
+	}
+}
+
+func TestReloadDisableFailureStops(t *testing.T) {
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, disableErr: errors.New("restore failed")}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	stopped := false
+
+	lc := &serviceLifecycle{
+		inner: old,
+		stop:  func() { stopped = true },
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	if _, err := lc.Reload(context.Background()); err == nil {
+		t.Fatal("Reload should fail when the old lifecycle cannot disable")
+	}
+	if !stopped {
+		t.Fatal("a failed disable must stop the service")
+	}
+}
+
+func TestReloadRestoreFailureKeepsRunning(t *testing.T) {
+	old := &fakeDaemon{
+		st:         &state.State{Mode: state.ModeOn},
+		disableErr: fmt.Errorf("%w: nrpt failed", lifecycle.ErrRestore),
+	}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+	stopped := false
+
+	lc := &serviceLifecycle{
+		inner: old,
+		stop:  func() { stopped = true },
+		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	if _, err := lc.Reload(context.Background()); err == nil {
+		t.Fatal("Reload should fail")
+	}
+	if stopped {
+		t.Fatal("a failed restore must not stop the still-running resolver")
 	}
 }
 
@@ -385,7 +435,7 @@ func TestServiceConfigSanitizesErrors(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 
 	// A validation error quotes the offending value verbatim.
-	bad := "schema_version: 1\nmode: SECRETMODE\nprofile: default\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
+	bad := "schema_version: 1\nprofile: SECRETMODE\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
 	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +452,7 @@ func TestServiceConfigSanitizesErrors(t *testing.T) {
 	}
 
 	// A resolve error is replaced by a static string too.
-	good := "schema_version: 1\nmode: off\nprofile: default\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
+	good := "schema_version: 1\nprofile: default\nprofiles:\n  default:\n    upstreams: [https://x]\n    cache: {enabled: true, size_bytes: 1024}\n"
 	if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -29,10 +29,12 @@ const (
 
 // NewSystemReconciler returns a Reconciler wired to the Windows registry watcher
 // and the NRPT / per-adapter interception.
-func NewSystemReconciler(statePath string, logger *slog.Logger) (r *Reconciler) {
+func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()) (r *Reconciler) {
 	s := &system{statePath: statePath}
 
-	return NewReconciler(Options{Prober: s, Applier: s, Disabler: s, Logger: logger})
+	return NewReconciler(Options{
+		Prober: s, Applier: s, Disabler: s, Logger: logger, OnDisable: onDisable,
+	})
 }
 
 // system implements Prober, Applier, and Disabler against the persisted state.

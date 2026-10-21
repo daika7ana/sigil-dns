@@ -164,8 +164,8 @@ sigildns providers show quad9/secure/doh
 sigildns providers show nextdns/ultralow/doh --id <profile-id>
 sigildns providers show controld/p1/doh
 
-#    Paste the printed upstreams/bootstrap into your config, then set mode: on.
-#    (The default config points at ControlD free p0 and is mode: off.)
+#    Paste the printed upstreams/bootstrap into your config.
+#    (The default config points at ControlD free p0.)
 
 # 3. Install and start the service (elevated)
 sigildns service install
@@ -175,9 +175,12 @@ sigildns service start
 sigildns status
 ```
 
-With `mode: on`, starting the service enables interception (bind → two-stage
-health check → snapshot → NRPT → flush). Read status as JSON to confirm
-`"mode": "on"` and `"dirty": false`.
+Starting the service always enables interception (bind → two-stage health check
+→ snapshot → NRPT → flush); the SCM state stays Starting until that finishes, and
+a running service is never left with protection off. If enabling fails the
+service stops; a bad config exits cleanly so fix it and start again, while other
+failures are retried by the SCM recovery actions. Read status as JSON to confirm
+`"mode": "on"`.
 
 Want to try the resolver **without touching the system**? Run it in the
 foreground:
@@ -240,8 +243,8 @@ Configuration is a single YAML file:
 Precedence when starting: **command-line flags > config file > built-in
 defaults**.
 
-`config init` writes a minimal default: `mode: off`, one profile named `default`
-using ControlD free p0 with a 64 MiB cache. A fuller annotated example lives in
+`config init` writes a minimal default: one profile named `default` using
+ControlD free p0 with a 64 MiB cache. A fuller annotated example lives in
 [config.example.yaml](config.example.yaml); see [docs/CONFIG.md](docs/CONFIG.md)
 for every field, validation rule, the `block_response` values, and `per_domain`
 semantics.

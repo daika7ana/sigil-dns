@@ -7,7 +7,6 @@
 # Precedence when starting: command-line flags > this file > built-in defaults.
 
 schema_version: 1
-mode: off          # on | off
 profile: default   # which entry under profiles is active
 
 # Optional service file logging.  Off by default.  Applies at the next service

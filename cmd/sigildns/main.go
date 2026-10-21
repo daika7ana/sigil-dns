@@ -519,7 +519,9 @@ func cmdService(args []string) (err error) {
 	case "start":
 		return service.Start()
 	case "stop":
-		return service.Stop()
+		// Verify interception is actually down, not just that the SCM reports
+		// Stopped (the handler's shutdown restore is best-effort).
+		return elevate.ServiceStop()
 	default:
 		return fmt.Errorf("unknown service subcommand %q", sub)
 	}
@@ -529,21 +531,26 @@ func cmdService(args []string) (err error) {
 // *lifecycle.Lifecycle satisfies it; tests inject fakes.
 type svcDaemon interface {
 	Status() (st *state.State, err error)
-	Startup(ctx context.Context) (reenable bool, err error)
+	Startup(ctx context.Context) (err error)
 	Enable(ctx context.Context) (err error)
 	Disable(ctx context.Context) (err error)
 	Restore(ctx context.Context) (err error)
 	RefreshLists(ctx context.Context) (err error)
 }
 
-// serviceLifecycle lets the Windows service boot even when the config is
-// corrupt: Startup/Status/Disable work from persisted state alone, while Enable
-// reports a clear error until the config loads.  It also implements reload
-// (SPEC §15.1): swap when idle, or restore + re-enable with rollback when active.
+// serviceLifecycle lets crash recovery run even when the config is corrupt:
+// Startup/Status/Disable work from persisted state alone, while Enable reports
+// a clear error until the config loads (and the service then stops).  It also
+// implements reload (SPEC §15.1): swap when idle, or restore + re-enable with
+// rollback when active; if the rollback also fails the service stops.
 type serviceLifecycle struct {
 	inner     svcDaemon
 	build     func() (lc svcDaemon, sum ipc.ConfigSummary, err error)
 	enableErr error
+
+	// stop asks the service host to stop when a reload cannot restore
+	// protection (both the new enable and the rollback failed).
+	stop func()
 
 	// logger is the service's redacting logger; Reload re-seeds it on rollback
 	// so the restored profile's id stays scrubbed.
@@ -554,13 +561,17 @@ type serviceLifecycle struct {
 func (s *serviceLifecycle) Status() (st *state.State, err error) { return s.inner.Status() }
 
 // Startup implements service.Lifecycle.
-func (s *serviceLifecycle) Startup(ctx context.Context) (reenable bool, err error) {
+func (s *serviceLifecycle) Startup(ctx context.Context) (err error) {
 	return s.inner.Startup(ctx)
 }
 
 // Enable implements service.Lifecycle.
 func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 	if s.enableErr != nil {
+		// Startup retained the single-instance lock; release it so a bad config
+		// cannot collide with the SCM's restart attempt.
+		_ = s.inner.Disable(ctx)
+
 		return s.enableErr
 	}
 
@@ -616,6 +627,16 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	// last-known-good config on failure.
 	old := s.inner
 	if err = old.Disable(ctx); err != nil {
+		// The swap never happened, so the old profile is still live.
+		logging.UpdateSecrets(s.logger, oldSecrets)
+
+		// A failed restore leaves the old resolver running (and probably still
+		// protected); stopping now would point DNS at a dead port.  Only stop
+		// when the failure came after interception was removed.
+		if !errors.Is(err, lifecycle.ErrRestore) && s.stop != nil {
+			s.stop()
+		}
+
 		return sum, fmt.Errorf("reload: disable: %w", err)
 	}
 	if err = newInner.Enable(ctx); err != nil {
@@ -624,7 +645,12 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 		logging.UpdateSecrets(s.logger, oldSecrets)
 
 		if rErr := old.Enable(ctx); rErr != nil {
-			// Leave the dirty marker set for crash recovery.
+			// Leave the dirty marker set for crash recovery.  Stop the service:
+			// it must never keep running with interception off.
+			if s.stop != nil {
+				s.stop()
+			}
+
 			return sum, fmt.Errorf("reload: enable failed (%v); rollback also failed: %w", err, rErr)
 		}
 
@@ -718,25 +744,26 @@ func cmdServiceHost(args []string) (err error) {
 		return o.lifecycleFor(resolved, l), sum, nil
 	}
 
-	// Never refuse to boot on a bad config: always start the host so crash
-	// recovery (restore) and IPC status work, and degrade enable until the
-	// config loads.
+	// Never refuse to run crash recovery on a bad config: start the host so
+	// restore still runs, then let the failed enable stop the service (a
+	// running service must never have interception off).
 	slc := &serviceLifecycle{build: build, logger: l}
 
 	inner, _, bErr := build()
 	if bErr != nil {
-		l.Error("config unavailable; service starts degraded", "err", ipc.SanitizedConfigError(bErr))
+		l.Error("config unavailable; service will stop after recovery", "err", ipc.SanitizedConfigError(bErr))
 
 		slc.inner = o.lifecycleForState()
-		slc.enableErr = fmt.Errorf("configuration unavailable: %w", bErr)
+		slc.enableErr = fmt.Errorf("%w: %v", service.ErrConfigUnavailable, bErr)
 	} else {
 		slc.inner = inner
 	}
 
 	agent := service.NewAgent(slc, l, "")
+	slc.stop = agent.RequestStop
 	agent.SetConfigPath(o.configPath)
 	agent.SetReloader(slc.Reload)
-	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l))
+	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l, agent.RequestStop))
 
 	return service.Run(agent)
 }

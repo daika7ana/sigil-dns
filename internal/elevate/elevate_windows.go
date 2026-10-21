@@ -211,6 +211,19 @@ func HelperMain(reqPath string) (err error) {
 	return writeResult(reqPath, runAction(ctx, req))
 }
 
+// ServiceStop stops the service and verifies interception is down, so the
+// `service stop` CLI command cannot report success while a rule survives.
+func ServiceStop() (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
+	defer cancel()
+
+	if res := stopServiceAndVerify(ctx); res.Err != "" {
+		return errors.New(res.Err)
+	}
+
+	return nil
+}
+
 // ServiceUninstall runs the same ordered, fail-closed uninstall the elevated
 // helper drives (restore -> stop -> verify interception down -> delete) so the
 // `service uninstall` CLI command cannot delete a registration while
@@ -233,11 +246,9 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return Result{Err: err.Error()}
 	}
 
-	// enable forces the mode; only apply takes the caller's patch.
+	// Service-management actions are handled here; apply is the only action
+	// that writes a config patch.
 	switch req.Action {
-	case ActionEnable:
-		on := config.ModeOn
-		req.Patch = Patch{Mode: &on}
 	case ActionServiceInstall:
 		return installService()
 	case ActionServiceUninstall:
@@ -245,14 +256,13 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	case ActionServiceStart:
 		return startService()
 	case ActionServiceStop:
-		return stopService()
-	case ActionApply, ActionRestore, ActionRefreshLists:
+		return stopServiceAndVerify(ctx)
 	}
 
 	changed := false
 	reload := false
 
-	if req.Action != ActionRestore && req.Action != ActionRefreshLists {
+	if req.Action == ActionApply {
 		// Resolve the config path from the ProgramData KnownFolder inside the
 		// elevated helper: never trust %ProgramData% from the caller's env.
 		path := config.SystemPath()
@@ -298,9 +308,32 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		reload = reloadRelevant(snapshot, cfg)
 	}
 
-	// Enable/disable/restore always require a running service (enable starts
-	// it).  Apply is handled separately below so a pure config edit never
-	// starts the service or reports failure for a write that did happen.
+	// Restore must never start the service: startup would enable interception
+	// again.  Stop a running service first, then prove interception is down;
+	// a service whose shutdown restore failed may still leave a live rule.
+	if req.Action == ActionRestore {
+		if running, _ := serviceRunning(); running {
+			res := stopServiceAndVerify(ctx)
+			if res.Err != "" {
+				return res
+			}
+			res.Message = "interception restored"
+
+			return res
+		}
+		if err := localRestore(ctx); err != nil {
+			return Result{Err: err.Error()}
+		}
+		if err := verifyInterceptionDown(ctx); err != nil {
+			return Result{Err: err.Error()}
+		}
+
+		return Result{OK: true, Message: "interception restored"}
+	}
+
+	// Enable/refresh always require a running service (enable starts it).
+	// Apply is handled separately below so a pure config edit never starts the
+	// service or reports failure for a write that did happen.
 	if req.Action != ActionApply {
 		pid, err := ensureService(ctx)
 		if err != nil {
@@ -367,6 +400,25 @@ func stopService() (res Result) {
 	}
 
 	return Result{OK: true, Message: "service stopped"}
+}
+
+// stopServiceAndVerify stops the service, then confirms no loopback rule
+// survived.  service.Stop ignores the handler's exit code, so a failed
+// shutdown restore would otherwise be reported as success.
+func stopServiceAndVerify(ctx context.Context) (res Result) {
+	if res = stopService(); res.Err != "" {
+		return res
+	}
+	// The service's shutdown restore is best-effort; run the config-independent
+	// restore again so adapter fallback state is cleaned up too, then verify.
+	if err := localRestore(ctx); err != nil {
+		return Result{Err: err.Error()}
+	}
+	if err := verifyInterceptionDown(ctx); err != nil {
+		return Result{Err: err.Error()}
+	}
+
+	return res
 }
 
 // startService verifies the registration still points at this binary before
@@ -516,10 +568,10 @@ func verifyInterceptionDown(ctx context.Context) (err error) {
 	defer cancel()
 
 	if lErr := localRestore(lctx); lErr != nil {
-		return errors.New("interception is still active; uninstall aborted")
+		return errors.New("interception is still active")
 	}
 	if probeNRPTActive(ctx) {
-		return errors.New("interception is still active; uninstall aborted")
+		return errors.New("interception is still active")
 	}
 
 	return nil
@@ -553,7 +605,11 @@ func uninstallService(ctx context.Context) (res Result) {
 			return nil
 		},
 		func() error {
-			return verifyInterceptionDown(ctx)
+			if vErr := verifyInterceptionDown(ctx); vErr != nil {
+				return fmt.Errorf("uninstall aborted: %w", vErr)
+			}
+
+			return nil
 		},
 		func() error {
 			if dErr := service.Delete(); dErr != nil {
@@ -580,17 +636,9 @@ func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (m
 	client := ipc.NewClient(ipc.PipeName)
 
 	switch req.Action {
-	case ActionRestore:
-		if err = client.Restore(ctx); err != nil {
-			return "", err
-		}
-
-		return "interception restored", nil
-
 	case ActionEnable:
-		if _, err = client.Reload(ctx); err != nil {
-			return "", err
-		}
+		// Service start already enables interception; Enable is idempotent and
+		// leaves a startup enable running.
 		if err = client.Enable(ctx); err != nil {
 			return "", err
 		}

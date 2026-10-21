@@ -1,6 +1,6 @@
 // Package elevate implements the one-shot elevated helper (SPEC §15.1/§15.2).
 //
-// The unelevated UI cannot change the config or the service mode directly: the
+// The unelevated UI cannot change the config or the service state directly: the
 // config file is ACL'd to SYSTEM/Administrators.  Instead it drops a
 // DPAPI-encrypted request into a per-user staging directory, launches this same
 // binary elevated (UAC) with --apply <path>, and reads the verdict back from a
@@ -33,7 +33,8 @@ type Action string
 
 // The allowlisted actions.  Anything else is rejected.
 const (
-	// ActionEnable persists mode=on, reloads, then enables interception.
+	// ActionEnable asks the service to enable interception.  It does not touch
+	// the config; service start already enables, so this is normally redundant.
 	ActionEnable Action = "enable"
 
 	// ActionRestore restores interception from persisted state.  It does not
@@ -85,10 +86,11 @@ func (a Action) serviceAction() (ok bool) {
 	}
 }
 
-// noPatch reports whether a takes no config patch (service actions and the
-// service-only refresh_lists action).
+// noPatch reports whether a takes no config patch (service actions, enable,
+// restore, and the service-only refresh_lists action).
 func (a Action) noPatch() (ok bool) {
-	return a.serviceAction() || a == ActionRefreshLists
+	return a.serviceAction() || a == ActionEnable || a == ActionRestore ||
+		a == ActionRefreshLists
 }
 
 // Patch is the allowlisted set of config fields a request may change.  Only the
@@ -96,7 +98,6 @@ func (a Action) noPatch() (ok bool) {
 // decoded request, so the helper can never be walked into writing arbitrary
 // config.
 type Patch struct {
-	Mode          *string                 `json:"mode,omitempty"`
 	ActiveProfile *string                 `json:"active_profile,omitempty"`
 	Profiles      map[string]ProfilePatch `json:"profiles,omitempty"`
 	AddProfile    *string                 `json:"add_profile,omitempty"`
@@ -206,8 +207,7 @@ type CachePatch struct {
 
 // empty reports whether the patch carries no allowlisted field.
 func (p Patch) empty() (ok bool) {
-	return p.Mode == nil &&
-		p.ActiveProfile == nil &&
+	return p.ActiveProfile == nil &&
 		len(p.Profiles) == 0 &&
 		p.AddProfile == nil &&
 		p.RenameProfile == nil &&
@@ -264,18 +264,10 @@ func (r Request) Validate() (err error) {
 
 	if r.Action.noPatch() {
 		if !r.Patch.empty() {
-			return errors.New("service actions do not take a config patch")
+			return errors.New("this action does not take a config patch")
 		}
 
 		return nil
-	}
-
-	if r.Patch.Mode != nil {
-		switch *r.Patch.Mode {
-		case config.ModeOn, config.ModeOff:
-		default:
-			return fmt.Errorf("invalid mode %q", *r.Patch.Mode)
-		}
 	}
 
 	return r.Patch.validateShape()
@@ -551,12 +543,7 @@ func applyRequest(cfg *config.Config, req Request, actualRevision string) (err e
 		}
 	}
 
-	// 4. Mode.
-	if req.Patch.Mode != nil {
-		cfg.Mode = *req.Patch.Mode
-	}
-
-	// 5. Logging.
+	// 4. Logging.
 	applyLogPatch(&cfg.Log, req.Patch)
 
 	// A non-blank log path must have an existing parent directory: otherwise

@@ -17,9 +17,6 @@ func TestDefault(t *testing.T) {
 	if c.SchemaVersion != SchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", c.SchemaVersion, SchemaVersion)
 	}
-	if c.Mode != ModeOff {
-		t.Errorf("Mode = %q, want %q", c.Mode, ModeOff)
-	}
 	if c.Profile != DefaultProfileName {
 		t.Errorf("Profile = %q, want %q", c.Profile, DefaultProfileName)
 	}
@@ -40,7 +37,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 
 	c := Default()
-	c.Mode = ModeOn
 	c.Profiles[DefaultProfileName] = Profile{
 		Upstreams: []string{"https://dns.quad9.net/dns-query", "tls://dns.quad9.net:853"},
 		Bootstrap: []string{"9.9.9.9", "2620:fe::fe"},
@@ -55,9 +51,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	got, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if got.Mode != ModeOn {
-		t.Errorf("Mode = %q, want %q", got.Mode, ModeOn)
 	}
 	p := got.Profiles[DefaultProfileName]
 	if !slices.Equal(p.Upstreams, c.Profiles[DefaultProfileName].Upstreams) {
@@ -81,7 +74,6 @@ func TestValidationErrors(t *testing.T) {
 	valid := func() *Config {
 		return &Config{
 			SchemaVersion: SchemaVersion,
-			Mode:          ModeOff,
 			Profile:       "default",
 			Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
 			Profiles: map[string]Profile{
@@ -97,7 +89,6 @@ func TestValidationErrors(t *testing.T) {
 		name   string
 		mutate func(*Config)
 	}{
-		{"bad mode", func(c *Config) { c.Mode = "sometimes" }},
 		{"missing active profile", func(c *Config) { c.Profile = "ghost" }},
 		{"empty upstreams", func(c *Config) {
 			c.Profiles["default"] = Profile{Cache: &Cache{Enabled: true, SizeBytes: 1024}}
@@ -163,7 +154,7 @@ func TestLoadMissingAndBadYAML(t *testing.T) {
 	}
 
 	bad := filepath.Join(t.TempDir(), "bad.yaml")
-	if err := os.WriteFile(bad, []byte("mode: [not,a,scalar]\n"), 0o600); err != nil {
+	if err := os.WriteFile(bad, []byte("schema_version: [not,a,scalar]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(bad); err == nil {
@@ -171,10 +162,23 @@ func TestLoadMissingAndBadYAML(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoresRemovedMode: mode was removed from the config surface; an
+// old file that still carries it must load (yaml ignores unknown keys).
+func TestLoadIgnoresRemovedMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "schema_version: 1\nmode: on\nprofile: default\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load with legacy mode: %v", err)
+	}
+}
+
 func TestResolvePrecedence(t *testing.T) {
 	cfg := &Config{
 		SchemaVersion: SchemaVersion,
-		Mode:          ModeOn,
 		Profile:       "default",
 		Profiles: map[string]Profile{
 			"default": {
@@ -272,7 +276,6 @@ func TestResolvePrecedence(t *testing.T) {
 func TestFallbackProfile(t *testing.T) {
 	cfg := &Config{
 		SchemaVersion: SchemaVersion,
-		Mode:          ModeOn,
 		Profile:       "primary",
 		Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
 		Profiles: map[string]Profile{
@@ -681,7 +684,7 @@ func TestLogConfigDefaultsAndParse(t *testing.T) {
 
 	// A block parses.
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "schema_version: 1\nmode: off\nprofile: default\n" +
+	body := "schema_version: 1\nprofile: default\n" +
 		"log:\n  level: debug\n  max_size_mb: 5\n  keep_mb: 2\n" +
 		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -698,7 +701,7 @@ func TestLogConfigDefaultsAndParse(t *testing.T) {
 
 	// An absent block defaults to off.
 	bare := filepath.Join(t.TempDir(), "config.yaml")
-	body = "schema_version: 1\nmode: off\nprofile: default\n" +
+	body = "schema_version: 1\nprofile: default\n" +
 		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
 	if err = os.WriteFile(bare, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)

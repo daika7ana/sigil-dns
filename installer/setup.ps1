@@ -190,7 +190,7 @@ function Install-SigilDns {
     Write-Host "  Data:   $DataDir"
     Write-Host ''
     Write-Host 'Next steps:'
-    Write-Host "  1. Edit $configPath (set mode: on, pick a provider)"
+    Write-Host "  1. Edit $configPath (pick a provider) or use the GUI"
     Write-Host "  2. $targetExe service stop; $targetExe service start   # apply"
     Write-Host ''
     Write-Host 'See config.example.yaml in the release zip for sample profiles.'

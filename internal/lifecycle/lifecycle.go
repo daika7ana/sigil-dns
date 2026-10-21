@@ -26,6 +26,11 @@ import (
 // no resolver is running.
 var ErrNotRunning = errors.New("resolver is not running")
 
+// ErrRestore marks a failure to remove interception.  The resolver is still
+// running in that case, so callers must not stop it and point DNS at a dead
+// port; the service keeps serving and can retry.
+var ErrRestore = errors.New("restoring interception")
+
 // Config configures a Lifecycle.
 type Config struct {
 	Logger         *slog.Logger
@@ -94,8 +99,9 @@ func New(cfg Config) (l *Lifecycle) {
 
 // Enable binds the resolver, runs the health check, snapshots state, and
 // applies interception.  On success the resolver is left running and the
-// single-instance lock is held until Disable.  The caller blocks on its signal
-// context and then calls Disable.
+// single-instance lock is held until Disable.  An already-enabled session is
+// left untouched.  The caller blocks on its signal context and then calls
+// Disable.
 func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	if err = l.acquire(); err != nil {
 		return err
@@ -106,9 +112,20 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		}
 	}()
 
+	// Enable is idempotent: a client Enable can race service startup, and a
+	// running enabled session must not be torn down and re-enabled.
+	if st, sErr := l.store.Load(); sErr == nil && st.Mode == state.ModeOn && l.res != nil {
+		return nil
+	}
+
 	// Never re-snapshot a dirty system; restore from the persisted snapshot
-	// first.
+	// first, while any resolver left by an earlier session is still running.
 	if err = l.restore(ctx, true); err != nil {
+		return err
+	}
+
+	// A resolver left by a now-disabled session is stopped before rebinding.
+	if err = l.stopResolver(ctx); err != nil {
 		return err
 	}
 
@@ -151,10 +168,19 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// 4. Apply interception.
 	if err = l.ic.Enable(ctx, l.cfg.Bypass); err != nil {
-		// Keep the dirty marker so a later restore undoes any partial change.
-		_ = l.stopResolver(ctx)
+		enableErr := fmt.Errorf("enabling interception: %w", err)
 
-		return fmt.Errorf("enabling interception: %w", err)
+		// A partial apply must not be left pointing at a resolver we are about
+		// to stop.  Restore first; if that fails, leave the resolver running so
+		// DNS still works and the caller can retry.
+		if rErr := l.restore(ctx, true); rErr != nil {
+			return errors.Join(enableErr, rErr)
+		}
+		if sErr := l.stopResolver(ctx); sErr != nil {
+			return errors.Join(enableErr, sErr)
+		}
+
+		return enableErr
 	}
 
 	// 5. Flush DNS.
@@ -167,7 +193,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	return nil
 }
 
-// Disable stops the resolver, restores interception, flushes, and clears the
+// Disable restores interception, flushes, stops the resolver, and clears the
 // dirty marker.  It is idempotent.
 func (l *Lifecycle) Disable(ctx context.Context) (err error) {
 	if err = l.acquire(); err != nil {
@@ -180,33 +206,37 @@ func (l *Lifecycle) Disable(ctx context.Context) (err error) {
 
 // disable implements Disable without taking the lock.
 func (l *Lifecycle) disable(ctx context.Context) (err error) {
-	// 1. Stop resolver.
-	errs := []error{l.stopResolver(ctx)}
-
-	// 2. Restore interception.
+	// 1. Restore interception before stopping the resolver.  If the restore
+	// fails, the resolver is still up, so DNS does not point at a dead port;
+	// the caller can retry.
 	if iErr := l.ic.Disable(ctx); iErr != nil {
-		// Keep dirty on partial failure.
-		errs = append(errs, fmt.Errorf("restoring interception: %w", iErr))
-
-		return errors.Join(errs...)
+		return fmt.Errorf("%w: %v", ErrRestore, iErr)
 	}
 
-	// 3. Flush.
+	// 2. Flush.
 	l.flushDNS(ctx)
 
-	// 4. Clear dirty marker.
-	errs = append(errs, l.markClean(ctx))
+	// 3. Stop resolver.
+	if sErr := l.stopResolver(ctx); sErr != nil {
+		return sErr
+	}
 
-	return errors.Join(errs...)
+	// 4. Clear dirty marker.
+	return l.markClean(ctx)
 }
 
 // Restore undoes interception from the persisted state.  It is idempotent and
 // keeps the dirty marker set on partial failure.
 func (l *Lifecycle) Restore(ctx context.Context) (err error) {
+	// A running service already holds the lock; only drop it when this call
+	// acquired it, or a concurrent client could race the live session.
+	acquired := l.lock == nil
 	if err = l.acquire(); err != nil {
 		return err
 	}
-	defer l.release()
+	if acquired {
+		defer l.release()
+	}
 
 	return l.restore(ctx, false)
 }
@@ -244,34 +274,22 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 	return nil
 }
 
-// Startup performs crash recovery: if the dirty marker is set it restores
-// first, then reports whether mode=on so the caller can re-enable.  On a
-// re-enable the lock is retained for the caller; otherwise it is released.
-func (l *Lifecycle) Startup(ctx context.Context) (reenable bool, err error) {
+// Startup performs crash recovery: a running service always means protection
+// is on, so the caller must Enable next.  If the dirty marker is set it
+// restores first.  The lock is retained for the caller's Enable; a failure
+// releases it.
+func (l *Lifecycle) Startup(ctx context.Context) (err error) {
 	if err = l.acquire(); err != nil {
-		return false, err
+		return err
 	}
 
 	if err = l.restore(ctx, true); err != nil {
 		l.release()
 
-		return false, err
+		return err
 	}
 
-	st, sErr := l.store.Load()
-	if sErr != nil && !errors.Is(sErr, state.ErrNoState) {
-		l.release()
-
-		return false, sErr
-	}
-
-	if sErr == nil && st.Mode == state.ModeOn {
-		return true, nil
-	}
-
-	l.release()
-
-	return false, nil
+	return nil
 }
 
 // Run starts the resolver in the foreground without touching interception.

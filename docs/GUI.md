@@ -86,7 +86,7 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 | **Protected** | The service is running and interception is applied. |
 | **Not running** | The service is stopped. |
 | **Restore needed** | A dirty marker from a previous session — interception was applied but not cleanly restored. |
-| **Needs attention** | The service is running but degraded: the config could not be loaded, or the health check failed. |
+| **Needs attention** | Interception is on but the active config is invalid or the last health check failed. |
 | **Unverified** | The status pipe's server process is not the Sigil DNS service. Reads are not trusted and all actions are refused. |
 
 ## Controls
@@ -94,7 +94,7 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 | Control | Shown when | Action |
 |---|---|---|
 | **Start / Stop** (Settings service card) | service installed | Start interception (and the service) / stop it. |
-| **Restore now** | Restore needed / Needs attention | Clean up stale interception. |
+| **Restore now** | Restore needed / Needs attention | Clean up stale interception; stops a running service and verifies the NRPT rule is gone. |
 | **Install / Uninstall service** | Settings | Register or remove the Windows service. |
 | **Add / Rename / Delete profile** | Settings | Manage profiles (delete is refused for the active profile). |
 | **Save** | Settings, draft dirty | Apply the profile editor via the elevated helper. |

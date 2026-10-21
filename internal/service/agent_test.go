@@ -20,15 +20,14 @@ type fakeAgentLC struct {
 	startupErr   error
 	enableErr    error
 	stErr        error
-	reenable     bool
 	enableCalls  int
 	disableCalls int
 }
 
 func (f *fakeAgentLC) Status() (st *state.State, err error) { return f.st, f.stErr }
 
-func (f *fakeAgentLC) Startup(context.Context) (reenable bool, err error) {
-	return f.reenable, f.startupErr
+func (f *fakeAgentLC) Startup(context.Context) (err error) {
+	return f.startupErr
 }
 
 func (f *fakeAgentLC) Enable(context.Context) (err error) {
@@ -73,8 +72,8 @@ func newTestAgent(t *testing.T, lc Lifecycle) (a *Agent) {
 	return a
 }
 
-func TestAgentRecoveryReenables(t *testing.T) {
-	lc := &fakeAgentLC{reenable: true, st: &state.State{Mode: state.ModeOn}}
+func TestAgentStartEnables(t *testing.T) {
+	lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOn}}
 	a := newTestAgent(t, lc)
 
 	ctx := context.Background()
@@ -95,57 +94,103 @@ func TestAgentRecoveryReenables(t *testing.T) {
 	}
 }
 
-func TestAgentNoReenable(t *testing.T) {
-	lc := &fakeAgentLC{reenable: false}
-	a := newTestAgent(t, lc)
-
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = a.Stop(context.Background()) }()
-
-	if lc.enableCalls != 0 {
-		t.Fatalf("enableCalls = %d, want 0", lc.enableCalls)
-	}
-}
-
-// TestAgentStartupErrorDegraded: a recovery failure must not take the service
-// down; IPC stays available.
-func TestAgentStartupErrorDegraded(t *testing.T) {
+// TestAgentStartupErrorStops: a recovery failure stops the service instead of
+// leaving it running with interception off.
+func TestAgentStartupErrorStops(t *testing.T) {
 	want := errors.New("boom")
 	lc := &fakeAgentLC{startupErr: want, st: &state.State{Mode: state.ModeOn}}
 	a := newTestAgent(t, lc)
 
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start should degrade, got err = %v", err)
-	}
 	defer func() { _ = a.Stop(context.Background()) }()
 
-	conn, err := ipc.Dial(context.Background(), a.endpoint)
-	if err != nil {
-		t.Fatalf("Dial control pipe: %v", err)
+	if err := a.Start(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Start err = %v, want %v", err, want)
 	}
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	var st *state.State
-	if err = ipc.Exchange(conn, ipc.MethodStatus, &st); err != nil {
-		t.Fatalf("IPC not available after degraded start: %v", err)
+	if lc.disableCalls != 1 {
+		t.Fatalf("disableCalls = %d, want 1 cleanup attempt", lc.disableCalls)
 	}
 }
 
-// TestAgentEnableFailureDegraded: an enable failure keeps the service up.
-func TestAgentEnableFailureDegraded(t *testing.T) {
-	lc := &fakeAgentLC{reenable: true, enableErr: errors.New("nrpt failed"), st: &state.State{Mode: state.ModeOn}}
+// TestAgentEnableFailureStops: an enable failure stops the service and attempts
+// to restore whatever interception was partially applied.
+func TestAgentEnableFailureStops(t *testing.T) {
+	want := errors.New("nrpt failed")
+	lc := &fakeAgentLC{enableErr: want, st: &state.State{Mode: state.ModeOn}}
 	a := newTestAgent(t, lc)
 
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start should degrade, got err = %v", err)
-	}
 	defer func() { _ = a.Stop(context.Background()) }()
+
+	if err := a.Start(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Start err = %v, want %v", err, want)
+	}
 
 	if lc.enableCalls != 1 {
 		t.Fatalf("enableCalls = %d, want 1", lc.enableCalls)
+	}
+	if lc.disableCalls != 1 {
+		t.Fatalf("disableCalls = %d, want 1 cleanup attempt", lc.disableCalls)
+	}
+}
+
+// blockingAgentLC blocks Startup until the test releases it.
+type blockingAgentLC struct {
+	fakeAgentLC
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingAgentLC) Startup(context.Context) (err error) {
+	close(b.started)
+	<-b.release
+
+	return nil
+}
+
+// TestAgentStopDuringStartupDoesNotEnable: a stop that arrives while Start is
+// still recovering must wait for Start and must not let a late enable run.
+func TestAgentStopDuringStartupDoesNotEnable(t *testing.T) {
+	lc := &blockingAgentLC{started: make(chan struct{}), release: make(chan struct{})}
+	a := newTestAgent(t, lc)
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- a.Start(context.Background()) }()
+	<-lc.started
+
+	// Signal the stop before Stop itself is scheduled, so this test is about
+	// the no-late-enable guarantee, not goroutine timing.
+	a.RequestStop()
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- a.Stop(context.Background()) }()
+
+	select {
+	case err := <-stopErr:
+		t.Fatalf("Stop returned before Start finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(lc.release)
+
+	select {
+	case err := <-startErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return")
+	}
+
+	select {
+	case err := <-stopErr:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return")
+	}
+
+	if lc.enableCalls != 0 {
+		t.Fatalf("enableCalls = %d, want 0 after a stop during startup", lc.enableCalls)
 	}
 }
 

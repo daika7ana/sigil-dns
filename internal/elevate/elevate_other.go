@@ -14,6 +14,11 @@ func HelperMain(string) error {
 	return ErrUnsupported
 }
 
+// ServiceStop is unsupported off Windows.
+func ServiceStop() error {
+	return ErrUnsupported
+}
+
 // ServiceUninstall is unsupported off Windows.
 func ServiceUninstall() error {
 	return ErrUnsupported

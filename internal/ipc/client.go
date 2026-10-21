@@ -12,8 +12,8 @@ import (
 // caller.
 const clientTimeout = 10 * time.Second
 
-// reloadTimeout bounds a reload call, which restores and re-enables interception
-// (health check included).
+// reloadTimeout bounds calls that bind or restore interception (reload, enable,
+// disable, restore), health check included.
 const reloadTimeout = 2 * time.Minute
 
 // Client talks to a running sigildns service over the IPC transport.
@@ -49,12 +49,12 @@ func (c *Client) Reload(ctx context.Context) (sum *ConfigSummary, err error) {
 
 // Enable asks the service to enable interception.
 func (c *Client) Enable(ctx context.Context) (err error) {
-	return c.call(ctx, MethodEnable, nil)
+	return c.callTimeout(ctx, MethodEnable, nil, reloadTimeout)
 }
 
 // Disable asks the service to disable interception.
 func (c *Client) Disable(ctx context.Context) (err error) {
-	return c.call(ctx, MethodDisable, nil)
+	return c.callTimeout(ctx, MethodDisable, nil, reloadTimeout)
 }
 
 // Restore asks the service (control pipe) to restore interception from persisted

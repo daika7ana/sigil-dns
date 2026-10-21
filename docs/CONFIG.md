@@ -20,13 +20,15 @@ A running config file is optional: with no file, built-in defaults are used
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `schema_version` | integer | `1` | Must be `1`; any other value is rejected. |
-| `mode` | string | `off` | `on` or `off`. With `on`, the service re-enables interception on start. |
 | `profile` | string | `default` | Must name an entry in `profiles`. |
 | `profiles` | map | one `default` profile | Map of profile name → profile block. |
 | `log` | block | `off` | Optional service file logging. See below. |
 
 Precedence overrides: `--upstream`, `--bootstrap`, and `--profile` replace the
 resolved profile's values at runtime.
+
+To turn protection off, stop the service (`sigildns service stop` or the GUI
+**Stop** control). There is no running-without-interception state.
 
 ## `profiles.<name>`
 
@@ -188,7 +190,6 @@ stays ACLed to SYSTEM + Administrators beside `config.yaml`.
 
 ```yaml
 schema_version: 1
-mode: on
 profile: default
 profiles:
   default:
@@ -216,7 +217,6 @@ sigildns providers show quad9/secure/doq   # quic://dns.quad9.net:853
 
 ```yaml
 schema_version: 1
-mode: on
 profile: nextdns
 profiles:
   nextdns:
@@ -243,7 +243,6 @@ Custom profile:
 
 ```yaml
 schema_version: 1
-mode: on
 profile: controld
 profiles:
   controld:
@@ -271,7 +270,6 @@ sigildns providers show controld/x-hagezi/doh --id x-hagezi-pro
 
 ```yaml
 schema_version: 1
-mode: on
 profile: default
 profiles:
   default:

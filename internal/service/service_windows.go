@@ -36,21 +36,28 @@ func (h *handler) Execute(
 	r <-chan svc.ChangeRequest,
 	changes chan<- svc.Status,
 ) (svcSpecificEC bool, exitCode uint32) {
-	const accepts = svc.AcceptStop | svc.AcceptShutdown
+	const (
+		accepts   = svc.AcceptStop | svc.AcceptShutdown
+		waitHint  = 2 * 60 * 1000 // ms; Start checks in every 10 s
+		checkStep = 10 * time.Second
+	)
 
-	changes <- svc.Status{State: svc.StartPending}
+	// Stay in StartPending until Agent.Start has actually enabled interception.
+	// Reporting Running first would expose a Running-but-unprotected service
+	// (the exact state this service must never have).  Checkpoint every 10 s so
+	// the SCM does not trip its start budget while PowerShell/NRPT is slow.
+	changes <- svc.Status{State: svc.StartPending, Accepts: accepts, CheckPoint: 1, WaitHint: waitHint}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Report Running before crash recovery + re-enable (which can invoke a slow
-	// PowerShell/health check) so the SCM ~30 s start budget (error 1053) is not
-	// tripped.  A degraded start keeps the service up so an operator can
-	// status/disable.
-	changes <- svc.Status{State: svc.Running, Accepts: accepts}
-
 	errCh := make(chan error, 1)
 	go func() { errCh <- h.agent.Start(ctx) }()
+
+	ticker := time.NewTicker(checkStep)
+	defer ticker.Stop()
+
+	checkpoint := uint32(1)
 
 	for {
 		select {
@@ -61,10 +68,31 @@ func (h *handler) Execute(
 				h.agent.logger.Error("service start failed", "err", err)
 				changes <- svc.Status{State: svc.StopPending}
 
+				if errors.Is(err, ErrConfigUnavailable) {
+					// A bad config will not fix itself; retrying just churns.
+					return false, 0
+				}
+
 				return false, 1
 			}
+
+			changes <- svc.Status{State: svc.Running, Accepts: accepts}
+		case <-ticker.C:
+			if errCh != nil {
+				checkpoint++
+				changes <- svc.Status{State: svc.StartPending, Accepts: accepts, CheckPoint: checkpoint, WaitHint: waitHint}
+			}
+		case <-h.agent.Done():
+			// Persistent drift could not be reconciled; stop so the service is
+			// never left running with interception off.
+			changes <- svc.Status{State: svc.StopPending}
+			cancel()
+			h.stop()
+			return false, 0
 		case c, ok := <-r:
 			if !ok {
+				cancel()
+				h.stop()
 				return false, 0
 			}
 
@@ -74,16 +102,19 @@ func (h *handler) Execute(
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-
-				if err := h.agent.Stop(context.Background()); err != nil {
-					h.agent.logger.Error("service stop failed", "err", err)
-
-					return false, 1
-				}
-
+				h.stop()
 				return false, 0
 			}
 		}
+	}
+}
+
+// stop restores interception and logs a cleanup failure.  A stop the user (or
+// drift) asked for must exit 0 even if cleanup failed: returning a failure
+// would trigger the SCM recovery actions and restart the service.
+func (h *handler) stop() {
+	if err := h.agent.Stop(context.Background()); err != nil {
+		h.agent.logger.Error("service stop failed", "err", err)
 	}
 }
 

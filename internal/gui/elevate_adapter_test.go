@@ -455,7 +455,7 @@ func saveRequest(t *testing.T, d profileDraft) elevate.Request {
 func assertNoPatch(t *testing.T, p elevate.Patch) {
 	t.Helper()
 
-	if p.Mode != nil || p.ActiveProfile != nil || len(p.Profiles) != 0 ||
+	if p.ActiveProfile != nil || len(p.Profiles) != 0 ||
 		p.AddProfile != nil || p.RenameProfile != nil || p.DeleteProfile != nil {
 		t.Fatalf("expected empty patch, got %+v", p)
 	}

@@ -18,7 +18,6 @@ import (
 // plantedConfig contains a resolver id (as a DoH path), a DoT host-label id, and
 // a list URL with a secret path.  None may appear in a summary.
 const plantedConfig = `schema_version: 1
-mode: on
 profile: default
 profiles:
   default:
@@ -142,7 +141,6 @@ func TestConfigSummaryNeverLeaksSecrets(t *testing.T) {
 func TestConfigSummaryProfiles(t *testing.T) {
 	const planted = "SECRETPLANT"
 	body := `schema_version: 1
-mode: on
 profile: beta
 profiles:
   zebra:
@@ -213,7 +211,6 @@ profiles:
 // an absent field defaults to enabled (legacy configs stay active).
 func TestPerDomainSummaryEnabled(t *testing.T) {
 	body := `schema_version: 1
-mode: on
 profile: default
 profiles:
   default:
@@ -247,7 +244,6 @@ profiles:
 // view and still never exposes an upstream.
 func TestPerDomainSummaryBypass(t *testing.T) {
 	body := `schema_version: 1
-mode: on
 profile: default
 profiles:
   default:
@@ -271,7 +267,7 @@ profiles:
 }
 
 func TestConfigSummaryBrokenConfig(t *testing.T) {
-	path := writeConfigFile(t, "mode: [not,a,scalar]\n")
+	path := writeConfigFile(t, "schema_version: [not,a,scalar]\n")
 	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)
 	resp := srv.Handle(context.Background(), Caller{Admin: false},
 		Request{Version: ProtocolVersion, Method: MethodConfigSummary})
