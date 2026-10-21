@@ -38,6 +38,10 @@ const (
 
 	// probeIPv6 is answered for synthetic-name AAAA queries.
 	probeIPv6 = "2001:db8::53"
+
+	// upstreamTimeout bounds one upstream exchange.  Kept short so a dead or
+	// blackholed primary reaches the fallback promptly.
+	upstreamTimeout = 5 * time.Second
 )
 
 // defaultListen is the dual-stack loopback listener set.
@@ -83,6 +87,11 @@ type Config struct {
 	Listen         []string
 	CacheSizeBytes int
 	CacheDisabled  bool
+
+	// FallbackUpstreams answer queries when the main upstreams time out or
+	// fail.  They use FallbackBootstrap for hostname resolution.
+	FallbackUpstreams []string
+	FallbackBootstrap []string
 }
 
 // filterState is the atomically-swappable filtering state.
@@ -94,16 +103,18 @@ type filterState struct {
 
 // Resolver is a running (or startable) loopback DNS resolver.
 type Resolver struct {
-	logger        *slog.Logger
-	upstreamConf  *proxy.UpstreamConfig
-	handler       *probeHandler
-	proxy         *proxy.Proxy
-	bootstrap     []*upstream.UpstreamResolver
-	filterState   atomic.Pointer[filterState]
-	filterCfg     FilterConfig
-	listen        []string
-	cacheSize     int
-	cacheDisabled bool
+	logger            *slog.Logger
+	upstreamConf      *proxy.UpstreamConfig
+	fallbackConf      *proxy.UpstreamConfig
+	handler           *probeHandler
+	proxy             *proxy.Proxy
+	bootstrap         []*upstream.UpstreamResolver
+	fallbackBootstrap []*upstream.UpstreamResolver
+	filterState       atomic.Pointer[filterState]
+	filterCfg         FilterConfig
+	listen            []string
+	cacheSize         int
+	cacheDisabled     bool
 }
 
 // New builds a Resolver.  It creates the upstreams but does not bind anything
@@ -130,24 +141,18 @@ func New(cfg Config) (r *Resolver, err error) {
 
 	opts := &upstream.Options{
 		Logger:  r.logger,
-		Timeout: 10 * time.Second,
+		Timeout: upstreamTimeout,
 	}
 
 	// Build one plain-DNS resolver per bootstrap address and combine them in
 	// parallel, so dual-stack bootstrap lists work.
-	var boots upstream.ParallelResolver
-	for _, addr := range cfg.Bootstrap {
-		boot, bErr := upstream.NewUpstreamResolver(addr, nil)
-		if bErr != nil {
-			_ = r.closeBootstrap()
-
-			return nil, fmt.Errorf("creating bootstrap resolver %q: %w", addr, bErr)
-		}
-		r.bootstrap = append(r.bootstrap, boot)
-		boots = append(boots, boot)
+	boots, err := newBootstrapResolvers(cfg.Bootstrap)
+	if err != nil {
+		return nil, err
 	}
+	r.bootstrap = boots
 	if len(boots) > 0 {
-		opts.Bootstrap = boots
+		opts.Bootstrap = parallelResolvers(boots)
 	}
 
 	var ups []upstream.Upstream
@@ -164,12 +169,47 @@ func New(cfg Config) (r *Resolver, err error) {
 
 	r.upstreamConf = &proxy.UpstreamConfig{Upstreams: ups}
 
+	// The fallback profile answers only when every main upstream fails; it is
+	// resolved with its own bootstrap so the two profiles never couple.
+	if len(cfg.FallbackUpstreams) > 0 {
+		fBoots, fErr := newBootstrapResolvers(cfg.FallbackBootstrap)
+		if fErr != nil {
+			closeUpstreams(ups)
+			_ = r.closeBootstrap()
+
+			return nil, fmt.Errorf("fallback: %w", fErr)
+		}
+		r.fallbackBootstrap = fBoots
+
+		fOpts := &upstream.Options{Logger: r.logger, Timeout: upstreamTimeout}
+		if len(fBoots) > 0 {
+			fOpts.Bootstrap = parallelResolvers(fBoots)
+		}
+
+		var fUps []upstream.Upstream
+		for _, addr := range cfg.FallbackUpstreams {
+			u, uErr := upstream.AddressToUpstream(addr, fOpts)
+			if uErr != nil {
+				closeUpstreams(fUps)
+				closeUpstreams(ups)
+				_ = r.closeBootstrap()
+				_ = r.closeFallbackBootstrap()
+
+				return nil, fmt.Errorf("fallback: creating upstream %q: %w", addr, uErr)
+			}
+			fUps = append(fUps, u)
+		}
+
+		r.fallbackConf = &proxy.UpstreamConfig{Upstreams: fUps}
+	}
+
 	if len(cfg.Rules) > 0 {
 		var rulesConf *proxy.UpstreamConfig
 		rulesConf, err = parseRules(cfg.Rules, opts)
 		if err != nil {
 			closeUpstreams(ups)
 			_ = r.closeBootstrap()
+			_ = r.closeFallbackBootstrap()
 
 			return nil, err
 		}
@@ -186,6 +226,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		if err = r.reloadFilter(context.Background(), cfg.Filter); err != nil {
 			closeUpstreams(ups)
 			_ = r.closeBootstrap()
+			_ = r.closeFallbackBootstrap()
 
 			return nil, err
 		}
@@ -254,6 +295,32 @@ func closeUpstreams(ups []upstream.Upstream) {
 	for _, u := range ups {
 		_ = u.Close()
 	}
+}
+
+// newBootstrapResolvers creates one plain-DNS resolver per bootstrap address,
+// closing any earlier ones on failure.
+func newBootstrapResolvers(addrs []string) (boots []*upstream.UpstreamResolver, err error) {
+	for _, addr := range addrs {
+		boot, bErr := upstream.NewUpstreamResolver(addr, nil)
+		if bErr != nil {
+			_ = closeBootstrapResolvers(boots)
+
+			return nil, fmt.Errorf("creating bootstrap resolver %q: %w", addr, bErr)
+		}
+		boots = append(boots, boot)
+	}
+
+	return boots, nil
+}
+
+// parallelResolvers adapts concrete bootstrap resolvers to the parallel
+// resolver dnsproxy expects.
+func parallelResolvers(boots []*upstream.UpstreamResolver) (p upstream.ParallelResolver) {
+	for _, b := range boots {
+		p = append(p, b)
+	}
+
+	return p
 }
 
 // parseRules converts structured rules into a proxy.UpstreamConfig holding only
@@ -369,6 +436,7 @@ func (r *Resolver) build(addrs []string) (p *proxy.Proxy, err error) {
 		UDPListenAddr:  udp,
 		TCPListenAddr:  tcp,
 		UpstreamConfig: r.upstreamConf,
+		Fallbacks:      r.fallbackConf,
 		RequestHandler: r.handler,
 		CacheEnabled:   !r.cacheDisabled,
 		CacheSizeBytes: r.cacheSize,
@@ -438,11 +506,18 @@ func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 		errs = append(errs, r.proxy.Shutdown(ctx))
 		r.proxy = nil
 		r.upstreamConf = nil
-	} else if r.upstreamConf != nil {
-		errs = append(errs, r.upstreamConf.Close())
-		r.upstreamConf = nil
+		r.fallbackConf = nil
+	} else {
+		if r.upstreamConf != nil {
+			errs = append(errs, r.upstreamConf.Close())
+			r.upstreamConf = nil
+		}
+		if r.fallbackConf != nil {
+			errs = append(errs, r.fallbackConf.Close())
+			r.fallbackConf = nil
+		}
 	}
-	errs = append(errs, r.closeBootstrap())
+	errs = append(errs, r.closeBootstrap(), r.closeFallbackBootstrap())
 	r.setFilterState(nil)
 
 	return errors.Join(errs...)
@@ -450,11 +525,26 @@ func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 
 // closeBootstrap closes the bootstrap upstreams if any were created.
 func (r *Resolver) closeBootstrap() (err error) {
-	errs := make([]error, 0, len(r.bootstrap))
-	for _, b := range r.bootstrap {
+	err = closeBootstrapResolvers(r.bootstrap)
+	r.bootstrap = nil
+
+	return err
+}
+
+// closeFallbackBootstrap closes the fallback profile's bootstrap upstreams.
+func (r *Resolver) closeFallbackBootstrap() (err error) {
+	err = closeBootstrapResolvers(r.fallbackBootstrap)
+	r.fallbackBootstrap = nil
+
+	return err
+}
+
+// closeBootstrapResolvers closes and clears boots.
+func closeBootstrapResolvers(boots []*upstream.UpstreamResolver) (err error) {
+	errs := make([]error, 0, len(boots))
+	for _, b := range boots {
 		errs = append(errs, b.Close())
 	}
-	r.bootstrap = nil
 
 	return errors.Join(errs...)
 }

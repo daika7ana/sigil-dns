@@ -130,6 +130,16 @@ func TestValidationErrors(t *testing.T) {
 				Filtering: Filtering{Lists: []FilterList{{URL: ""}}},
 			}
 		}},
+		{"fallback profile missing", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FallbackProfile = "ghost"
+			c.Profiles["default"] = p
+		}},
+		{"fallback profile self", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FallbackProfile = "default"
+			c.Profiles["default"] = p
+		}},
 	}
 
 	for _, tc := range cases {
@@ -257,6 +267,76 @@ func TestResolvePrecedence(t *testing.T) {
 			t.Fatal("want error for unknown profile")
 		}
 	})
+}
+
+func TestFallbackProfile(t *testing.T) {
+	cfg := &Config{
+		SchemaVersion: SchemaVersion,
+		Mode:          ModeOn,
+		Profile:       "primary",
+		Log:           LogConfig{Level: LogLevelOff, MaxSizeMB: DefaultLogMaxSizeMB, KeepMB: DefaultLogKeepMB},
+		Profiles: map[string]Profile{
+			"primary": {
+				Upstreams:       []string{"https://primary.example/dns-query"},
+				Bootstrap:       []string{"1.1.1.1"},
+				FallbackProfile: "backup",
+				Cache:           &Cache{Enabled: true, SizeBytes: 1024},
+			},
+			"backup": {
+				Upstreams: []string{"tls://backup.example:853"},
+				Bootstrap: []string{"9.9.9.9"},
+				Provider:  "Quad9",
+				Protocol:  "dot",
+				Cache:     &Cache{Enabled: true, SizeBytes: 1024},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	r, err := Resolve(cfg, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.FallbackProfile != "backup" {
+		t.Errorf("FallbackProfile = %q", r.FallbackProfile)
+	}
+	if !slices.Equal(r.FallbackUpstreams, []string{"tls://backup.example:853"}) {
+		t.Errorf("FallbackUpstreams = %v", r.FallbackUpstreams)
+	}
+	if !slices.Equal(r.FallbackBootstrap, []string{"9.9.9.9"}) {
+		t.Errorf("FallbackBootstrap = %v", r.FallbackBootstrap)
+	}
+	if r.FallbackProvider != "Quad9" || r.FallbackProtocol != "dot" {
+		t.Errorf("fallback metadata = %q/%q", r.FallbackProvider, r.FallbackProtocol)
+	}
+	// The primary's own endpoints are untouched.
+	if !slices.Equal(r.Upstreams, []string{"https://primary.example/dns-query"}) {
+		t.Errorf("Upstreams = %v", r.Upstreams)
+	}
+
+	// Renaming the fallback follows the reference.
+	if err = cfg.RenameProfile("backup", "spare"); err != nil {
+		t.Fatalf("RenameProfile: %v", err)
+	}
+	if got := cfg.Profiles["primary"].FallbackProfile; got != "spare" {
+		t.Errorf("reference after rename = %q, want spare", got)
+	}
+
+	// A referenced profile cannot be deleted until the reference is cleared.
+	if err = cfg.DeleteProfile("spare"); err == nil {
+		t.Fatal("deleting a referenced fallback profile was allowed")
+	}
+	p := cfg.Profiles["primary"]
+	p.FallbackProfile = ""
+	cfg.Profiles["primary"] = p
+	if err = cfg.DeleteProfile("spare"); err != nil {
+		t.Fatalf("delete after clearing: %v", err)
+	}
+	if err = cfg.Validate(); err != nil {
+		t.Fatalf("Validate after delete: %v", err)
+	}
 }
 
 func TestInitIdempotence(t *testing.T) {

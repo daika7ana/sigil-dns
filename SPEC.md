@@ -197,6 +197,9 @@ WSL2 (NAT) may bypass loopback DNS. Document (`dnsTunneling`/`.wslconfig`). Not 
   `quic://<id>.dns.nextdns.io:853`.
 - Default upstream pool + per-domain upstreams via `proxy.UpstreamConfig.DomainReservedUpstreams`
   / `SpecifiedDomainUpstreams` / `SubdomainExclusions`.
+- Fallback: the active profile's `fallback_profile` builds a second `proxy.UpstreamConfig` wired to
+  `proxy.Config.Fallbacks`; dnsproxy tries it per query only after every primary upstream fails. Only
+  that profile's `upstreams`/`bootstrap` are used, and fallback chains are not followed.
 - **Integration pitfalls (verified against current master):**
   - There is no `BeforeRequestHandler`. `Config.RequestHandler` **replaces** `DefaultHandler`; the
     handler must call `p.Resolve` exactly once (double-forwarding trap) or short-circuit.
@@ -312,6 +315,7 @@ profiles:
   default:
     upstreams: ["https://dns.quad9.net/dns-query"]
     bootstrap: [9.9.9.9, 149.112.112.112]
+    fallback_profile: backup   # optional; another profile, tried only if all upstreams fail
     per_domain:
       - domains: ["corp.example"]   # exact or *.wildcard; dnsmasq semantics (see §5)
         upstream: "tls://10.0.0.1"
@@ -449,8 +453,9 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   bool, active profile name, bootstrap IP literals, rule/list **counts** and list **hosts**, filtering
   + cache settings, `config_valid` with a secret-free error, a revision token, and a `profiles` list —
   one sanitized `ProfileSummary` per profile: name, active flag, provider/variant/protocol labels,
-  `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals, per-list **hosts** (+
-  enabled) and per-domain rule **domains** (+ enabled, `bypass` flag); never ids or upstream URLs). `id_set` is
+  `id_set`, filtering/cache flags, cache size, counts, bootstrap IP literals, fallback profile name,
+  per-list **hosts** (+ enabled) and per-domain rule **domains** (+ enabled, `bypass` flag); never ids
+  or upstream URLs). `id_set` is
   provider-aware (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only
   the DoH-path heuristic. The provider catalog is rendered **locally** from `internal/providers` (no
   IPC, no secrets).
@@ -459,7 +464,8 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
   existing admin control pipe (`reload` / `enable` / `disable` / `refresh_lists`). The allowlist is the
   **whole config surface**, not just `mode`: `Mode`, `ActiveProfile`, per-profile `Profiles` patches
-  (provider / variant / protocol / id / custom URL / bootstrap / filtering / cache, plus **per-list
+  (provider / variant / protocol / id / custom URL / bootstrap / fallback profile / filtering / cache,
+  plus **per-list
   operations** — toggle/add/remove existing lists by index — and **per-domain rules** with a per-rule
   `enabled` flag and a kind (an upstream rule, or a **bypass** rule that carries no upstream / keep)),
   the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service

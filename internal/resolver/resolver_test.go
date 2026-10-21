@@ -121,6 +121,37 @@ func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
 	}
 }
 
+// TestResolverFallsBackWhenPrimaryFails points the primary at a dead TCP port
+// (instant refusal) and proves the query is answered by the fallback profile.
+func TestResolverFallsBackWhenPrimaryFails(t *testing.T) {
+	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
+
+	r, err := New(Config{
+		Logger:            slog.Default(),
+		Upstreams:         []string{"tcp://127.0.0.1:1"},
+		FallbackUpstreams: []string{fallbackAddr},
+		Listen:            []string{"127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	if err = r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	resp := query(t, r.UDPAddrs()[0], "example.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if fallbackHits.Load() == 0 {
+		t.Fatal("fallback upstream was never queried")
+	}
+}
+
 func TestIPv4Addrs(t *testing.T) {
 	got := ipv4Addrs([]string{"127.0.0.1:53", "[::1]:53", "0.0.0.0:53"})
 	want := []string{"127.0.0.1:53", "0.0.0.0:53"}

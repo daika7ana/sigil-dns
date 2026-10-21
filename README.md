@@ -160,8 +160,8 @@ dns-client run --upstream https://dns.quad9.net/dns-query
   for a crash-leftover state), and profile / filtering / cache cards.
 - **Settings** — service install / remove and state, a profile list with add /
   rename / delete / set-active, and a per-profile editor (provider / variant /
-  protocol, a masked resolver id, custom URL, bootstrap, filtering + block
-  response, cache and size).
+  protocol, a masked resolver id, custom URL, bootstrap, fallback profile,
+  filtering + block response, cache and size).
 
 Enable starts the service and applies interception; Disable removes it. The
 binary requests admin via an embedded manifest, so Windows shows **one UAC prompt

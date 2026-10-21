@@ -183,6 +183,10 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 		pp.Bootstrap = &bs
 	}
 
+	// Always sent: an empty value clears the fallback, like filtering/cache.
+	fb := strings.TrimSpace(d.fallback)
+	pp.FallbackProfile = &fb
+
 	pp.Filtering = &elevate.FilteringPatch{Enabled: new(d.filtering)}
 	if d.filtering {
 		if br := strings.TrimSpace(d.blockResp); br != "" {

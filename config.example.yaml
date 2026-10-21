@@ -35,6 +35,11 @@ profiles:
     variant: secure
     protocol: doh
 
+    # Optional: if every upstream above fails, retry the query against another
+    # profile's upstreams.  Must name an entry under profiles (no chains); see
+    # docs/CONFIG.md for a complete example.
+    # fallback_profile: backup
+
     cache:
       enabled: true
       size_bytes: 67108864   # 64 MiB

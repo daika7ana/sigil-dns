@@ -159,6 +159,7 @@ profiles:
     cache: { enabled: true, size_bytes: 1048576 }
   beta:
     upstreams: [https://freedns.controld.com/p0]
+    fallback_profile: alpha
     cache: { enabled: true, size_bytes: 1048576 }
 `
 	path := writeConfigFile(t, body)
@@ -189,6 +190,9 @@ profiles:
 	}
 	if sum.Profiles[0].Active || !sum.Profiles[1].Active || sum.Profiles[2].Active {
 		t.Fatalf("active flags wrong: %+v", sum.Profiles)
+	}
+	if got := sum.Profiles[1].FallbackProfile; got != "alpha" {
+		t.Errorf("beta fallback = %q, want alpha", got)
 	}
 
 	alpha := sum.Profiles[0]

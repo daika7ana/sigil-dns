@@ -130,6 +130,10 @@ type ProfilePatch struct {
 	Filtering *FilteringPatch `json:"filtering,omitempty"`
 	Cache     *CachePatch     `json:"cache,omitempty"`
 
+	// FallbackProfile names the profile to use when this one's upstreams fail.
+	// An explicit empty value clears the fallback.
+	FallbackProfile *string `json:"fallback_profile,omitempty"`
+
 	// PerDomain replaces the profile's per-domain routing rules.  A blank
 	// Upstream on an entry keeps the existing rule's upstream at the same index
 	// (replace-only), so a configured per-domain upstream never has to travel.
@@ -611,6 +615,10 @@ func applyProfilePatch(p *config.Profile, pp ProfilePatch) (err error) {
 
 	if pp.Bootstrap != nil {
 		p.Bootstrap = append([]string(nil), (*pp.Bootstrap)...)
+	}
+
+	if pp.FallbackProfile != nil {
+		p.FallbackProfile = strings.TrimSpace(*pp.FallbackProfile)
 	}
 
 	if pp.Filtering != nil {

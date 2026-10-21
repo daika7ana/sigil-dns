@@ -39,6 +39,10 @@ type Config struct {
 	Listen         []string
 	CacheSizeBytes int
 	CacheDisabled  bool
+
+	// FallbackUpstreams/FallbackBootstrap answer when the upstreams above fail.
+	FallbackUpstreams []string
+	FallbackBootstrap []string
 }
 
 // resolverHandle is the lifecycle's view of the running resolver.  The
@@ -321,6 +325,9 @@ func (l *Lifecycle) resolverConfig() (cfg resolver.Config) {
 		Listen:         l.cfg.Listen,
 		CacheSizeBytes: l.cfg.CacheSizeBytes,
 		CacheDisabled:  l.cfg.CacheDisabled,
+
+		FallbackUpstreams: l.cfg.FallbackUpstreams,
+		FallbackBootstrap: l.cfg.FallbackBootstrap,
 	}
 }
 

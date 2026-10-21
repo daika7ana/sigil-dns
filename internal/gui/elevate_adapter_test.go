@@ -144,6 +144,31 @@ func TestSavePatchMapping(t *testing.T) {
 	})
 }
 
+// TestFallbackProfileMapping checks the draft fallback reaches the patch and
+// always travels: a name is trimmed, and a blank draft explicitly clears it.
+func TestFallbackProfileMapping(t *testing.T) {
+	t.Run("seeded from the summary", func(t *testing.T) {
+		d := draftForProfile(ipc.ProfileSummary{Name: "w", FallbackProfile: "backup"})
+		if d.fallback != "backup" {
+			t.Fatalf("fallback = %q, want backup", d.fallback)
+		}
+	})
+
+	t.Run("set", func(t *testing.T) {
+		pp := saveRequest(t, profileDraft{name: "w", provider: "quad9", variant: "secure", protocol: "doh", fallback: " backup "}).Patch.Profiles["w"]
+		if pp.FallbackProfile == nil || *pp.FallbackProfile != "backup" {
+			t.Fatalf("fallback = %v, want backup", pp.FallbackProfile)
+		}
+	})
+
+	t.Run("cleared", func(t *testing.T) {
+		pp := saveRequest(t, profileDraft{name: "w", provider: "quad9", variant: "secure", protocol: "doh", fallback: "   "}).Patch.Profiles["w"]
+		if pp.FallbackProfile == nil || *pp.FallbackProfile != "" {
+			t.Fatalf("fallback = %v, want an explicit empty string", pp.FallbackProfile)
+		}
+	})
+}
+
 // TestListDiffMapping checks the seeded-list vs editor-list diff: a changed
 // toggle is SetEnabled by original index, a deleted row is Remove by index, a
 // new row travels as Add with its URL, and an unchanged seed sends no list

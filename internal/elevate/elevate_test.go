@@ -960,3 +960,33 @@ func TestReloadRelevant(t *testing.T) {
 		t.Fatal("mixed log+non-log change must reload")
 	}
 }
+
+// TestApplyProfileFallbackPatch covers the allowlisted fallback_profile field:
+// it trims on set, clears on an explicit empty value, and a nil patch leaves it
+// untouched.
+func TestApplyProfileFallbackPatch(t *testing.T) {
+	p := config.Profile{Upstreams: []string{"https://x"}, Cache: &config.Cache{Enabled: true, SizeBytes: 1024}}
+
+	if err := applyProfilePatch(&p, ProfilePatch{}); err != nil {
+		t.Fatalf("nil patch: %v", err)
+	}
+	if p.FallbackProfile != "" {
+		t.Fatalf("nil patch set fallback = %q", p.FallbackProfile)
+	}
+
+	fb := "  backup  "
+	if err := applyProfilePatch(&p, ProfilePatch{FallbackProfile: &fb}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if p.FallbackProfile != "backup" {
+		t.Fatalf("fallback = %q, want backup", p.FallbackProfile)
+	}
+
+	clear := ""
+	if err := applyProfilePatch(&p, ProfilePatch{FallbackProfile: &clear}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if p.FallbackProfile != "" {
+		t.Fatalf("fallback not cleared: %q", p.FallbackProfile)
+	}
+}

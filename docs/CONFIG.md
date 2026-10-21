@@ -34,6 +34,7 @@ resolved profile's values at runtime.
 |---|---|---|---|
 | `upstreams` | list of strings | `["https://freedns.controld.com/p0"]` | Required, non-empty; each entry non-empty. |
 | `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry non-empty. May be empty for NextDNS ultralow. |
+| `fallback_profile` | string | empty | Optional name of another profile; see below. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
 | `filtering` | block | disabled | See below. |
@@ -46,6 +47,35 @@ resolved profile's values at runtime.
 never derived from the upstream URL, and do not affect resolution. They exist so
 a GUI can show a friendly profile name without parsing secrets out of the
 upstream.
+
+### Fallback profiles
+
+A profile may name another profile as its fallback:
+
+```yaml
+profiles:
+  default:
+    upstreams: ["https://dns.quad9.net/dns-query"]
+    fallback_profile: backup
+  backup:
+    upstreams: ["https://dns.google/dns-query"]
+    bootstrap: [8.8.8.8]
+```
+
+When every upstream of the active profile fails (timeout, unreachable, TLS/HTTP
+failure), dnsproxy retries the query against the fallback profile's upstreams.
+This is per query and automatic: the active profile does not change, and status
+still shows the primary profile. Only the fallback's `upstreams` and `bootstrap`
+are used; its `per_domain`, `filtering`, and `cache` blocks are ignored, while
+the primary profile's per-domain rules and filtering still apply. Chains are not
+followed — the fallback profile's own `fallback_profile` is ignored.
+
+The name must exist in `profiles`; self-reference is rejected. Renaming a profile
+updates references, and deleting one that is another profile's fallback is
+refused until that reference is cleared. Empty or omitted means no fallback.
+
+This covers the upstream provider being down or slow. If the dns-client service
+itself is not running, nothing listens on loopback and no fallback can help.
 
 ### `cache`
 

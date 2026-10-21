@@ -86,6 +86,10 @@ type ProfileSummary struct {
 	// Bootstrap is the list of bootstrap IP literals.
 	Bootstrap []string `json:"bootstrap,omitempty"`
 
+	// FallbackProfile is the name of the profile used when this profile's
+	// upstreams fail.  A profile name is not a secret.
+	FallbackProfile string `json:"fallback_profile,omitempty"`
+
 	// Lists is the per-list (host only) summary in config order, so the editor
 	// can address a list by index without its URL ever crossing the pipe.
 	Lists []ListSummary `json:"lists,omitempty"`
@@ -245,6 +249,7 @@ func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSumm
 		BlockResponse:    p.Filtering.BlockResponse,
 		ListCount:        len(p.Filtering.Lists),
 		PerDomainCount:   len(p.PerDomain),
+		FallbackProfile:  p.FallbackProfile,
 	}
 
 	if p.Cache != nil {

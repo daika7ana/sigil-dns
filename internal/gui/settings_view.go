@@ -553,6 +553,27 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		}))
 	}
 
+	// The fallback is another profile, never this one, so the sentinel ("")
+	// is a real selection rather than "nothing chosen" — hence not one().
+	fallbackOptions := []gogui.SelectOption{gogui.NewSelectOption("No fallback", "")}
+	for _, name := range profilesFor(app) {
+		if name != d.name {
+			fallbackOptions = append(fallbackOptions, gogui.NewSelectOption(name, name))
+		}
+	}
+
+	fallbackFields := []gogui.View{
+		formSelect(gogui.SelectCfg{
+			ID: "gui:edit:fallback", Label: "Fallback profile",
+			Options: fallbackOptions, Selected: []string{d.fallback},
+			Disabled: disabled,
+			OnSelect: func(vals []string, ctx gogui.EventCtx) {
+				updateDraft(ctx, func(d *profileDraft) { d.fallback = first(vals) })
+			},
+		}, floor),
+		caption(t, "Answers when this profile's upstreams time out or fail. Uses the fallback profile's upstreams and bootstrap."),
+	}
+
 	filteringFields := []gogui.View{
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:filtering", Label: "Filtering", Selected: d.filtering,
@@ -593,8 +614,10 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	return card(t, "gui:card:editor", "Profile editor", []gogui.View{
 		fieldGroup(t, "gui:edit:group:provider", "Provider", providerFields...),
 		groupDivider(t, 1),
-		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
+		fieldGroup(t, "gui:edit:group:failover", "Failover", fallbackFields...),
 		groupDivider(t, 2),
+		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
+		groupDivider(t, 3),
 		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields...),
 		saveRow(d, disabled),
 	})

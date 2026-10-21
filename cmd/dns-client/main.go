@@ -211,7 +211,18 @@ func resolverSecrets(r config.Resolved) (secrets []string) {
 
 	proto := providers.Protocol(strings.TrimSpace(r.Protocol))
 
-	return providers.ExtractIDs(strings.TrimSpace(r.Provider), proto, ups)
+	secrets = providers.ExtractIDs(strings.TrimSpace(r.Provider), proto, ups)
+
+	// The fallback profile's upstreams carry their own resolver id, parsed
+	// with that profile's metadata, so it must be scrubbed too.
+	if len(r.FallbackUpstreams) > 0 {
+		fbProto := providers.Protocol(strings.TrimSpace(r.FallbackProtocol))
+		secrets = append(secrets, providers.ExtractIDs(
+			strings.TrimSpace(r.FallbackProvider), fbProto, r.FallbackUpstreams,
+		)...)
+	}
+
+	return secrets
 }
 
 // resolveSettings applies flag > config > default precedence.
@@ -286,6 +297,9 @@ func (o options) lifecycleFor(r config.Resolved, l *slog.Logger) (lc *lifecycle.
 		Listen:         o.listenAddrs(),
 		CacheSizeBytes: r.Cache.SizeBytes,
 		CacheDisabled:  !r.Cache.Enabled,
+
+		FallbackUpstreams: r.FallbackUpstreams,
+		FallbackBootstrap: r.FallbackBootstrap,
 	})
 }
 

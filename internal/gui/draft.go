@@ -26,6 +26,7 @@ type profileDraft struct {
 	id          string // typed new resolver id; blank = keep existing
 	url         string // custom provider only; blank = keep
 	bootstrap   string // comma-separated IP literals
+	fallback    string // fallback profile name; "" = none
 	filtering   bool
 	blockResp   string // "0.0.0.0" or "nxdomain"
 	cache       bool
@@ -81,6 +82,7 @@ func draftForProfile(p ipc.ProfileSummary) profileDraft {
 		id:          "",
 		url:         "",
 		bootstrap:   strings.Join(p.Bootstrap, ", "),
+		fallback:    p.FallbackProfile,
 		filtering:   p.FilteringEnabled,
 		blockResp:   p.BlockResponse,
 		cache:       p.CacheEnabled,

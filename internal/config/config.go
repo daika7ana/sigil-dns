@@ -201,6 +201,12 @@ type Profile struct {
 	Provider  string      `yaml:"provider,omitempty"`
 	Variant   string      `yaml:"variant,omitempty"`
 	Protocol  string      `yaml:"protocol,omitempty"`
+
+	// FallbackProfile names another profile whose upstreams answer queries
+	// when this profile's upstreams time out or fail (see docs/CONFIG.md).
+	// Only that profile's upstreams and bootstrap are used; its per-domain
+	// rules, filtering and cache are not.  Fallback chains are not followed.
+	FallbackProfile string `yaml:"fallback_profile,omitempty"`
 }
 
 // Config is the top-level configuration.
@@ -335,6 +341,7 @@ func (c *Config) normalize() {
 		p.Provider = strings.TrimSpace(p.Provider)
 		p.Variant = strings.TrimSpace(p.Variant)
 		p.Protocol = strings.TrimSpace(p.Protocol)
+		p.FallbackProfile = strings.TrimSpace(p.FallbackProfile)
 
 		c.Profiles[name] = p
 	}
@@ -369,6 +376,14 @@ func (c *Config) Validate() (err error) {
 	for name, p := range c.Profiles {
 		if err = p.validate(name); err != nil {
 			return err
+		}
+		if fb := p.FallbackProfile; fb != "" {
+			if fb == name {
+				return fmt.Errorf("profile %q: fallback_profile must not reference itself", name)
+			}
+			if _, ok := c.Profiles[fb]; !ok {
+				return fmt.Errorf("profile %q: fallback profile %q not found", name, fb)
+			}
 		}
 	}
 
@@ -517,6 +532,14 @@ func (c *Config) RenameProfile(from, to string) (err error) {
 		c.Profile = t
 	}
 
+	// Keep fallback references pointing at the renamed profile.
+	for name, q := range c.Profiles {
+		if q.FallbackProfile == f {
+			q.FallbackProfile = t
+			c.Profiles[name] = q
+		}
+	}
+
 	return nil
 }
 
@@ -535,6 +558,11 @@ func (c *Config) DeleteProfile(name string) (err error) {
 	}
 	if len(c.Profiles) <= 1 {
 		return errors.New("cannot delete the only profile")
+	}
+	for other, p := range c.Profiles {
+		if p.FallbackProfile == n {
+			return fmt.Errorf("profile %q is the fallback for %q; clear that reference first", n, other)
+		}
 	}
 
 	delete(c.Profiles, n)
@@ -653,6 +681,14 @@ type Resolved struct {
 	Variant     string
 	Protocol    string
 	Log         LogConfig
+
+	// FallbackProfile is the configured fallback profile name, if any, with
+	// its effective upstreams and bootstrap.
+	FallbackProfile   string
+	FallbackUpstreams []string
+	FallbackBootstrap []string
+	FallbackProvider  string
+	FallbackProtocol  string
 }
 
 // Resolve applies the precedence flags > config > defaults.  A nil cfg means no
@@ -684,6 +720,18 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	r.Provider = strings.TrimSpace(p.Provider)
 	r.Variant = strings.TrimSpace(p.Variant)
 	r.Protocol = strings.TrimSpace(p.Protocol)
+
+	if fb := strings.TrimSpace(p.FallbackProfile); fb != "" {
+		fp, ok := cfg.Profiles[fb]
+		if !ok {
+			return Resolved{}, fmt.Errorf("fallback profile %q not found in config", fb)
+		}
+		r.FallbackProfile = fb
+		r.FallbackUpstreams = fp.Upstreams
+		r.FallbackBootstrap = fp.Bootstrap
+		r.FallbackProvider = strings.TrimSpace(fp.Provider)
+		r.FallbackProtocol = strings.TrimSpace(fp.Protocol)
+	}
 
 	logCfg := cfg.Log
 	logCfg.normalize()
