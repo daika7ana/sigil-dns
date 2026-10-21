@@ -3,43 +3,76 @@ name: CI
 on:
   push:
     # Branches only: a tag push is released by release.yml, which would
-    # otherwise re-run this whole matrix on the same commit.
-    branches: ['**']
+    # otherwise re-run this whole matrix on the same commit.  PR branches run
+    # through pull_request below, so do not run them twice.
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
 
-# A newer push supersedes an in-flight run for the same ref.
+# A newer push supersedes an in-flight PR run.  Never cancel runs on main: the
+# release gate needs a completed, successful run for the tagged commit.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # The checked-in .syso is what embeds requireAdministrator in the exe.
+      # Regenerate it and fail if the manifest changed without the resource.
+      - name: Manifest resource is up to date
+        if: runner.os == 'Linux'
+        run: |
+          go generate ./cmd/sigildns
+          git diff --exit-code -- cmd/sigildns/rsrc_windows_amd64.syso
       - run: go build ./...
       - run: go build -tags tray ./...
       - run: go build -tags gui ./...
       - run: go vet ./...
       - run: go vet -tags gui ./...
       - run: go test -timeout 120s ./...
+      - name: Race detector
+        if: runner.os == 'Linux'
+        run: go test -race -timeout 120s ./internal/state/ ./internal/ipc/ ./internal/drift/ ./internal/resolver/
       # GUI headless smoke test (software renderer; no GPU/display needed).  Run
       # on both runners: Linux for fast feedback, Windows for the real target.
       - run: go test -tags gui ./internal/gui/
+      # setup.ps1 ships in the release zip but is never executed by CI.
+      - name: Parse PowerShell scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -Filter *.ps1
+          foreach ($f in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($null -ne $errors -and $errors.Count -gt 0) {
+              throw "$($f.FullName): $($errors[0].Message)"
+            }
+          }
+          Write-Host "Parsed $($files.Count) PowerShell script(s)"
 
   integration-windows:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Build CLI

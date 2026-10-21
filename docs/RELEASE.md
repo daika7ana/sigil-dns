@@ -14,7 +14,8 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
   headless `--apply` elevation helper.
 - `sigildns-gui.exe` — the GUI-subsystem configuration client (Status +
   Settings), built `-tags gui -ldflags "-H windowsgui"`.
-- `config.example.yaml`, `README.md`, `LICENSE`.
+- `config.example.yaml`, `README.md`, `SPEC.md`, `LICENSE`, and `docs/` (the
+  README links into it).
 - `installer/setup.ps1` — one entry point; prompts for Install or Uninstall and
   relaunches itself through UAC when started non-elevated.
 
@@ -46,7 +47,9 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 
 1. Make sure the commit you are tagging is green (the `ci.yml` `build` matrix
    and `integration-windows` job). Tag pushes no longer start CI, so the release
-   workflow checks the CI history for the tag's SHA itself.
+   workflow checks the CI history for the tag's SHA itself and **refuses to
+   publish** if the newest completed push run for that SHA failed or is still
+   running.
 2. Tag the release and push the tag:
 
    ```sh
@@ -55,30 +58,37 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    ```
 
    Pushing a `v*` tag triggers the workflow. It can also be run manually from
-   **Actions → release → Run workflow** (`workflow_dispatch`); a manual run
-   builds an artifact but does **not** create a GitHub Release (there is no tag).
+   **Actions → release → Run workflow** (`workflow_dispatch`). Running it on a
+   branch builds an artifact but does **not** create a GitHub Release; running
+   it on a tag follows the tag path and does publish.
 
 ## What the workflow does
 
-1. `actions/checkout@v7`, `actions/setup-go@v7` (`go-version-file: go.mod`).
-2. **CI gate** — for tag builds, looks up the `ci.yml` runs for the tagged
-   commit. A successful run skips the duplicate `go vet` / `go test` steps
-   (they already ran on the branch push). With no green run — a tag on an
-   unmerged commit, or a tag pushed before CI finished — the checks run here on
-   Windows, so the Windows-only tests still execute. Manual (`workflow_dispatch`)
-   runs always run them.
+1. `actions/checkout` and `actions/setup-go` (both pinned to commit SHAs;
+   `go-version-file: go.mod`).
+2. **CI gate** — for tag builds, looks up the newest completed `ci.yml` **push**
+   run for the tagged commit (pull-request runs are ignored). A successful run
+   skips the duplicate `go vet` / `go test` steps (they already ran on the
+   branch push). A failed or cancelled push run fails the release; a run that is
+   still in progress also fails when no completed push run exists yet. Only when
+   no push CI run exists at all (a tag on an unmerged commit) do the checks run
+   here on Windows, so the Windows-only tests still execute. Manual
+   (`workflow_dispatch`) runs on a branch always run them.
 3. Builds **both** binaries:
-   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/sigildns.exe ./cmd/sigildns`
-   and
-   `GOOS=windows GOARCH=amd64 go build -trimpath -tags gui -ldflags "-s -w -H windowsgui" -o dist/sigildns-gui.exe ./cmd/sigildns`.
+   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-X .../version.Version=<tag>" -o dist/sigildns.exe ./cmd/sigildns`
+   and the same with `-tags gui` and `-H windowsgui` for
+   `dist/sigildns-gui.exe`. Symbols are kept so a user crash report has usable
+   stack traces.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
-   binaries, `config.example.yaml`, `README.md`, `LICENSE`, and
-   `installer/setup.ps1`.
+   binaries, `config.example.yaml`, `README.md`, `SPEC.md`, `LICENSE`, `docs/`,
+   and `installer/setup.ps1`.
 6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
    it (the zip itself is never signed).
-7. Verifies the package: extracts the zip, asserts both binaries are present,
-   and (when signing ran) requires a `Valid` Authenticode signature on each.
+7. Verifies the package: extracts the zip, asserts every expected file is
+   present (both binaries, config, README, SPEC, LICENSE, `docs/`, installer),
+   recomputes the zip hash against `SHA256SUMS.txt`, and (when signing ran)
+   requires a `Valid` Authenticode signature on each binary.
 8. Uploads the zip and checksums as a build artifact.
 9. For tag builds, publishes the GitHub Release **draft-first**:
    `gh release create --draft` → `gh release upload --clobber` → `gh release
@@ -86,9 +96,9 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    without its assets, and re-running a tag build converges on the same
    draft.
 
-Release runs are serialized per ref
-(`concurrency: release-${{ github.ref }}`), so a manual dispatch cannot
-interleave uploads with a tag push.
+Release runs are serialized per ref (`concurrency: release-${{ github.ref }}`),
+so a re-run for the same tag queues instead of interleaving. Different tags run
+independently.
 
 ## Release notes
 

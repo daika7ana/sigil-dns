@@ -110,13 +110,15 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   config surface (see Architecture). No persistent broker, no silent/auto elevation.
 
 ## CI & releases
-- `.github/workflows/ci.yml`: branch pushes + PRs only (a tag push must not re-run it), a
-  `concurrency` group cancelling superseded runs, ubuntu+windows matrix (`go build`, `-tags tray`,
-  `-tags gui`, `vet`, `test`; GUI smoke test on both runners) plus `integration-windows` (real NRPT via
-  `scripts/ci-windows-integration.ps1`).
+- `.github/workflows/ci.yml`: `main` pushes + PRs only, docs-only paths ignored (a tag push must not
+  re-run it), a `concurrency` group cancelling superseded PR runs only, ubuntu+windows matrix (`go build`,
+  `-tags tray`, `-tags gui`, `vet`, `test`; GUI smoke test on both runners), manifest-resource freshness
+  and `-race` checks on Linux, a PowerShell parse check on Windows, plus `integration-windows` (real NRPT
+  via `scripts/ci-windows-integration.ps1`). Actions are pinned to commit SHAs (Dependabot keeps them).
 - `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; reuses a green
   `ci.yml` run for the tagged commit and skips its duplicated vet/test steps (falls back to running them
-  when the SHA has none); signs with
+  only when the SHA has no CI run at all; a red or still-running run blocks the release); ships the
+  `docs/` folder and `SPEC.md`; verifies every expected file and the checksum before upload; signs with
   `signtool` only when `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` secrets exist (else skip +
   `::warning::`); zips (+ `SHA256SUMS.txt`) and publishes the Release **draft-first** (create draft →
   upload assets → `--draft=false`), so a failed run never exposes an assetless release. Notes come from

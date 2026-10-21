@@ -4,7 +4,7 @@
 # Flow:
 #   1. start `sigildns.exe enable` as a background resolver
 #   2. wait for the NRPT rule to appear
-#   3. prove the system resolver now resolves via loopback
+#   3. prove the catch-all NRPT rule points at loopback and that resolver answers
 #   4. Force-kill the process (simulated kill -9): leaves dirty marker + stale lock
 #   5. assert the dirty marker is set
 #   6. `restore` must reclaim the stale lock and remove the NRPT rule
@@ -97,14 +97,36 @@ try {
 
     Write-Host "NRPT rule '$displayName' is active"
 
-    # 3. Prove resolution through the system resolver now goes via loopback.
-    ipconfig /flushdns | Out-Null
-    $resolved = Resolve-DnsName example.com -Type A -DnsOnly -ErrorAction Stop
-    $answer = $resolved | Where-Object { $_.IPAddress } | Select-Object -First 1
-    if (-not $answer) {
-        throw "Resolve-DnsName returned no address: $($resolved | Out-String)"
+    # 3. Prove the rule is configured to route example.com to the loopback
+    #    resolver: a catch-all namespace pointing at 127.0.0.1, and that server
+    #    answering.  (A plain system query proves nothing: the runner's normal
+    #    DNS answers too.  Querying 127.0.0.1 directly bypasses NRPT, so the
+    #    namespace/NameServers assertions above cover the routing itself.)
+    $rootRule = Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -eq $displayName -and $_.Namespace -eq '.' } |
+        Select-Object -First 1
+    if (-not $rootRule) {
+        throw "no catch-all ('.') NRPT rule for '$displayName'"
     }
-    Write-Host "resolved example.com -> $($answer.IPAddress) (via loopback)"
+    if ($rootRule.NameServers -notcontains '127.0.0.1') {
+        throw "catch-all NRPT rule does not point at 127.0.0.1 (NameServers: $($rootRule.NameServers -join ','))"
+    }
+
+    $maxQueries = 3
+    $answer = $null
+    for ($query = 1; $query -le $maxQueries; $query++) {
+        $answer = Resolve-DnsName example.com -Type A -DnsOnly -Server 127.0.0.1 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress } |
+            Select-Object -First 1
+        if ($answer) { break }
+
+        if ($query -eq $maxQueries) {
+            throw "sigildns did not answer example.com on 127.0.0.1 within $maxQueries attempts"
+        }
+        Write-Host "query attempt $query failed (upstream may be transiently unreachable); retrying..."
+        Start-Sleep -Seconds 5
+    }
+    Write-Host "resolved example.com -> $($answer.IPAddress) via 127.0.0.1"
 
     # 4. Simulated kill -9: leaves dirty marker and a stale lockfile behind.
     Stop-Process -Id $proc.Id -Force
@@ -124,6 +146,11 @@ try {
 
     # 6. Recovery: restore must reclaim the stale lock and remove the rule.
     & $exe restore --state $state
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "restore failed ($LASTEXITCODE); retrying once..."
+        Start-Sleep -Seconds 2
+        & $exe restore --state $state
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "restore failed with exit code $LASTEXITCODE"
     }

@@ -11,7 +11,8 @@ permissions:
   contents: write
   actions: read # CI gate below reads the CI run for the tagged commit
 
-# Serialize releases: a dispatch racing a tag push must not interleave uploads.
+# Serialize runs for the same ref: a re-run for a tag queues behind the current
+# one instead of interleaving. Different tags run independently.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -19,16 +20,20 @@ concurrency:
 jobs:
   release:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       # CI already ran vet+test for this commit (it is on a branch). Re-running
       # them here doubles the release time; fall back to running them only when
-      # no green CI run exists for this SHA (e.g. a tag on an unmerged commit).
+      # no push CI run exists for this SHA (e.g. a tag on an unmerged commit). A
+      # red or still-running push run blocks the release: it must not publish.
       - name: Check CI is green for this commit
         id: ci
         if: startsWith(github.ref, 'refs/tags/v')
@@ -37,14 +42,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:GITHUB_SHA&per_page=20" | ConvertFrom-Json
-          $green = @($runs.workflow_runs | Where-Object { $_.conclusion -eq 'success' })
-          if ($green.Count -eq 0) {
-            Write-Host "::warning::No successful CI run for $env:GITHUB_SHA; running vet/test in this job."
+          $sha = $env:GITHUB_SHA
+          $raw = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=20"
+          $exit = $LASTEXITCODE
+          if ($exit -ne 0) {
+            throw "Could not query ci.yml runs for $sha (gh exit $exit); refusing to release."
+          }
+          $json = $raw -join "`n" | ConvertFrom-Json
+          if ($null -eq $json.workflow_runs) {
+            throw "Unexpected ci.yml runs response for $sha; refusing to release."
+          }
+          # Only push runs count. A pull_request run for the same SHA can be the
+          # newest and get cancelled by a later PR push; it must not block a
+          # release, and an unmerged commit has no push run (documented fallback).
+          $runs = @($json.workflow_runs | Where-Object { $_.event -eq 'push' })
+          $completed = @($runs | Where-Object { $null -ne $_.conclusion })
+          $latest = $completed | Select-Object -First 1
+          if (-not $latest) {
+            if ($runs.Count -gt 0) {
+              throw "CI run(s) for $sha are still in progress; wait for one to finish, then re-run this release."
+            }
+            Write-Host "::warning::No push CI run exists for $sha; running vet/test in this job."
             "green=false" >> $env:GITHUB_OUTPUT
           }
+          elseif ($latest.conclusion -ne 'success') {
+            throw "CI for $sha concluded '$($latest.conclusion)' ($($latest.html_url)); refusing to release. Re-run CI first."
+          }
           else {
-            Write-Host "CI passed for ${env:GITHUB_SHA}: $($green[0].html_url)"
+            Write-Host "CI passed for ${sha}: $($latest.html_url)"
             "green=true" >> $env:GITHUB_OUTPUT
           }
 
@@ -58,7 +83,7 @@ jobs:
 
       - name: Test
         if: steps.ci.outputs.green != 'true'
-        run: go test ./...
+        run: go test -timeout 120s ./...
 
       # GUI headless smoke test (software renderer; no GPU/display needed).
       - name: Test (gui)
@@ -81,10 +106,10 @@ jobs:
           $stamp = "-X github.com/daika7ana/sigil-dns/internal/version.Version=$version"
 
           # Console subsystem: CLI + service host + headless --apply helper.
-          go build -trimpath -ldflags "-s -w $stamp" -o dist/sigildns.exe ./cmd/sigildns
+          go build -trimpath -ldflags "$stamp" -o dist/sigildns.exe ./cmd/sigildns
           # GUI subsystem: same program; no console window; opens the status
           # window with no arguments. Still --apply-capable for elevation.
-          go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/sigildns-gui.exe ./cmd/sigildns
+          go build -trimpath -tags gui -ldflags "-H windowsgui $stamp" -o dist/sigildns-gui.exe ./cmd/sigildns
 
       - name: Sign (optional)
         id: sign
@@ -152,7 +177,9 @@ jobs:
           Copy-Item 'dist/sigildns-gui.exe'    $stage -Force
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
+          Copy-Item 'SPEC.md'                    $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
+          Copy-Item 'docs'                       $stage -Recurse -Force
           Copy-Item 'installer/setup.ps1'        (Join-Path $stage 'installer') -Force
 
           $zip = "dist/sigildns_${version}_windows_amd64.zip"
@@ -175,12 +202,37 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'verify'
           Expand-Archive -Path $zip -DestinationPath $out -Force
 
-          $exes = @('sigildns.exe', 'sigildns-gui.exe') | ForEach-Object {
-            $p = Join-Path $out $_
-            if (-not (Test-Path $p)) { throw "$_ missing from $zip" }
-            $p
+          $expected = @(
+            'sigildns.exe'
+            'sigildns-gui.exe'
+            'config.example.yaml'
+            'README.md'
+            'SPEC.md'
+            'LICENSE'
+            'docs/CONFIG.md'
+            'docs/GUI.md'
+            'docs/LIMITATIONS.md'
+            'docs/RELEASE.md'
+            'docs/TROUBLESHOOTING.md'
+            'docs/icon.png'
+            'installer/setup.ps1'
+          )
+          foreach ($rel in $expected) {
+            if (-not (Test-Path (Join-Path $out $rel))) {
+              throw "$rel missing from $(Split-Path -Leaf $zip)"
+            }
           }
-          Write-Host "Both binaries present in $(Split-Path -Leaf $zip)"
+          Write-Host "Package contains all $($expected.Count) expected files"
+
+          $sumLine = (Get-Content 'dist/SHA256SUMS.txt' -Raw).Trim()
+          $expectedHash = ($sumLine -split '\s+')[0]
+          $actualHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          if ($actualHash -ne $expectedHash) {
+            throw "SHA256SUMS.txt does not match $(Split-Path -Leaf $zip)"
+          }
+          Write-Host "SHA256SUMS.txt matches $(Split-Path -Leaf $zip)"
+
+          $exes = @('sigildns.exe', 'sigildns-gui.exe') | ForEach-Object { Join-Path $out $_ }
 
           # Catch a silently skipped sign step before the assets are published.
           if ($env:SIGNED -eq 'true') {
@@ -192,9 +244,10 @@ jobs:
           }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sigildns-windows-amd64
+          overwrite: true
           path: |
             dist/*.zip
             dist/SHA256SUMS.txt
@@ -231,4 +284,3 @@ jobs:
 
           gh release edit $tag --draft=false
           if ($LASTEXITCODE -ne 0) { throw "gh release publish failed ($LASTEXITCODE)" }
-
