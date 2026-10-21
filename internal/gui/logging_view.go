@@ -12,7 +12,7 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
-	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/config"
 )
 
 // logViewerDefaultInterval is the initial refresh cadence of the live viewer,
@@ -474,7 +474,7 @@ func browseLogPath(ctx gogui.EventCtx) {
 	ctx.Window.NativeSaveDialog(gogui.NativeSaveDialogCfg{
 		Title:       "Choose log file",
 		StartDir:    dir,
-		DefaultName: fallback(name, "dns-client.log"),
+		DefaultName: fallback(name, "sigildns.log"),
 		Filters:     []gogui.NativeFileFilter{{Name: "Log files", Extensions: []string{"log"}}},
 		OnDone: func(res gogui.NativeDialogResult, w *gogui.Window) {
 			if res.Status != gogui.DialogOK {

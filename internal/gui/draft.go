@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 // profileDraft is the GUI-local editing buffer for one profile.  It is

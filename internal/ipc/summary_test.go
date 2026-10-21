@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // plantedConfig contains a resolver id (as a DoH path), a DoT host-label id, and

@@ -24,8 +24,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 // Action is the requested one-shot operation.
@@ -1012,7 +1012,7 @@ func uninstallPlan(running, enabled, dirty, active bool) (restore bool, reason s
 // uninstallStateFrom combines the SCM state with the persisted state and a
 // positive NRPT probe.  load reports (enabled, dirty, ok); a missing or corrupt
 // state.json (ok=false) is NOT a negative witness.  probeActive reports whether
-// dns-client NRPT interception is currently present.  When the service is
+// sigildns NRPT interception is currently present.  When the service is
 // running it is always restored, so the probe is skipped.  Pure so the
 // fail-open default is unit-testable.
 func uninstallStateFrom(

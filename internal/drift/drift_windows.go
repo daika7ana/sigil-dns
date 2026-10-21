@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/daika7ana/dns-client/internal/intercept"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/intercept"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // Registry keys watched for DNS server rewrites.  RegNotifyChangeKeyValue with

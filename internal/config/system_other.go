@@ -20,16 +20,16 @@ func SystemPath() (p string) { return DefaultPath() }
 // ProgramData hardening).
 func SystemStatePath() (p string) {
 	if dir := os.Getenv("ProgramData"); dir != "" {
-		return filepath.Join(dir, "dns-client", "state.json")
+		return filepath.Join(dir, "sigildns", "state.json")
 	}
 
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "dns-client", "state.json")
+		return filepath.Join(dir, "sigildns", "state.json")
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "state", "dns-client", "state.json")
+		return filepath.Join(home, ".local", "state", "sigildns", "state.json")
 	}
 
-	return filepath.Join(os.TempDir(), "dns-client", "state.json")
+	return filepath.Join(os.TempDir(), "sigildns", "state.json")
 }

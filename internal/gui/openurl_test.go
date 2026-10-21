@@ -18,8 +18,8 @@ func TestValidatePathRejectsDevicePaths(t *testing.T) {
 	}
 
 	for _, p := range []string{
-		`C:\ProgramData\dns-client\dns-client.log`,
-		`\\server\share\dns-client.log`,
+		`C:\ProgramData\sigildns\sigildns.log`,
+		`\\server\share\sigildns.log`,
 	} {
 		if _, err := validatePath(p); err != nil {
 			t.Errorf("validatePath(%q) = %v, want accepted", p, err)

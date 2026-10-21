@@ -62,3 +62,20 @@ func TestAcquireInstanceAfterRelease(t *testing.T) {
 	}
 	_ = again.Release()
 }
+
+// TestAcquireInstanceCreatesStateDir proves a first launch works before
+// gui.json exists: the user-scope directory must be created here, because the
+// lock file is opened with O_CREATE and saveSettings (which also creates it)
+// does not run until after the window opens.
+func TestAcquireInstanceCreatesStateDir(t *testing.T) {
+	guiPath := filepath.Join(t.TempDir(), "SigilDNS", "gui.json")
+
+	lock, err := acquireInstance(guiPath)
+	if err != nil {
+		t.Fatalf("acquireInstance on missing dir: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("acquireInstance returned no lock and no error")
+	}
+	_ = lock.Release()
+}

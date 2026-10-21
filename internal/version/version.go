@@ -3,7 +3,7 @@ package version
 
 // Version is the application version.  It is stamped at build time:
 //
-//	go build -ldflags "-X github.com/daika7ana/dns-client/internal/version.Version=v1.2.3"
+//	go build -ldflags "-X github.com/daika7ana/sigil-dns/internal/version.Version=v1.2.3"
 var Version = "dev"
 
 // ProtocolVersion is the IPC protocol version reported by the `info` method and

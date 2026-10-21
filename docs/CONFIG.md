@@ -1,14 +1,14 @@
 # Configuration reference
 
-`dns-client` reads one YAML file. Load and validate happen on every start;
+Sigil DNS reads one YAML file. Load and validate happen on every start;
 precedence is **command-line flags > config file > built-in defaults**.
 
 | Platform | Default path |
 |---|---|
-| Windows | `%ProgramData%\dns-client\config.yaml` |
-| Linux/dev | `$XDG_CONFIG_HOME/dns-client/config.yaml`, else `~/.config/dns-client/config.yaml` |
+| Windows | `%ProgramData%\SigilDNS\config.yaml` |
+| Linux/dev | `$XDG_CONFIG_HOME/sigildns/config.yaml`, else `~/.config/sigildns/config.yaml` |
 
-`dns-client config path` prints the resolved path. `dns-client config init`
+`sigildns config path` prints the resolved path. `sigildns config init`
 writes a default config and never overwrites an existing file.
 
 A running config file is optional: with no file, built-in defaults are used
@@ -74,7 +74,7 @@ The name must exist in `profiles`; self-reference is rejected. Renaming a profil
 updates references, and deleting one that is another profile's fallback is
 refused until that reference is cleared. Empty or omitted means no fallback.
 
-This covers the upstream provider being down or slow. If the dns-client service
+This covers the upstream provider being down or slow. If the Sigil DNS service
 itself is not running, nothing listens on loopback and no fallback can help.
 
 ### `cache`
@@ -107,7 +107,7 @@ per_domain:
 |---|---|---|
 | `domains` | list of strings | Required, non-empty. A domain must not contain `/`. |
 | `upstream` | string | Required non-empty on an upstream rule: any DoH/DoT/DoQ URL, or `#`. Forbidden on a bypass rule. |
-| `bypass` | bool | Default `false`. Set `true` to resolve the domains via the system's normal DNS instead of dns-client. Forbids `upstream`. |
+| `bypass` | bool | Default `false`. Set `true` to resolve the domains via the system's normal DNS instead of Sigil DNS. Forbids `upstream`. |
 
 Matching semantics (dnsproxy's dnsmasq parser):
 
@@ -117,7 +117,7 @@ Matching semantics (dnsproxy's dnsmasq parser):
 - `#` as `upstream` **excludes** those domains from any reserved upstream, so
   they fall back to the default `upstreams` pool.
 - A `bypass: true` rule sends its domains to the system's normal DNS — they are
-  not routed through dns-client's resolver and are not covered by its upstream,
+  not routed through Sigil DNS's resolver and are not covered by its upstream,
   filtering, or cache. See [LIMITATIONS](LIMITATIONS.md).
 - DS queries for a secure delegation (e.g. `secure.corp.example`) are resolved
   through the parent zone's upstream (`corp.example`).
@@ -165,7 +165,7 @@ does not restart the service.
 ```yaml
 log:
   level: off          # off | error | info | debug
-  path: ""            # empty = %ProgramData%\dns-client\dns-client.log
+  path: ""            # empty = %ProgramData%\SigilDNS\sigildns.log
   max_size_mb: 10
   keep_mb: 3
 ```
@@ -173,7 +173,7 @@ log:
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `level` | string | `off` | `off`, `error`, `info`, or `debug`. |
-| `path` | string | empty | Empty = `%ProgramData%\dns-client\dns-client.log`. A custom path must be absolute and not a `\\.\` device path. |
+| `path` | string | empty | Empty = `%ProgramData%\SigilDNS\sigildns.log`. A custom path must be absolute and not a `\\.\` device path. |
 | `max_size_mb` | integer | `10` | Rotate when the file reaches this size (clamped). |
 | `keep_mb` | integer | `3` | After rotation keep the newest this many MB (clamped to `max_size_mb`). |
 
@@ -207,9 +207,9 @@ profiles:
 Generate the exact block:
 
 ```powershell
-dns-client providers show quad9/secure/doh
-dns-client providers show quad9/secure/dot   # tls://dns.quad9.net:853
-dns-client providers show quad9/secure/doq   # quic://dns.quad9.net:853
+sigildns providers show quad9/secure/doh
+sigildns providers show quad9/secure/dot   # tls://dns.quad9.net:853
+sigildns providers show quad9/secure/doq   # quic://dns.quad9.net:853
 ```
 
 ### NextDNS (Ultralow; no bootstrap on purpose)
@@ -233,8 +233,8 @@ hostname. To avoid the system resolver, use `anycast`, which pins anycast IPs
 (worse routing):
 
 ```powershell
-dns-client providers show nextdns/ultralow/doh --id <id>
-dns-client providers show nextdns/anycast/doh  --id <id>
+sigildns providers show nextdns/ultralow/doh --id <id>
+sigildns providers show nextdns/anycast/doh  --id <id>
 ```
 
 ### ControlD
@@ -262,9 +262,9 @@ social, plus named lists (`x-oisd`, `x-stevenblack`, `x-adguard`, `family`,
 `uncensored`).
 
 ```powershell
-dns-client providers show controld/p1/doh
-dns-client providers show controld/custom/doh --id <id>
-dns-client providers show controld/x-hagezi/doh --id x-hagezi-pro
+sigildns providers show controld/p1/doh
+sigildns providers show controld/custom/doh --id <id>
+sigildns providers show controld/x-hagezi/doh --id x-hagezi-pro
 ```
 
 ### Per-domain routing + blocklist

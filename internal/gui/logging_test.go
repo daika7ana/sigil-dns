@@ -12,8 +12,8 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/elevate"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/elevate"
 )
 
 // goGlyphMaxTextLength is go-glyph's hard single-text cap (validation_common.go
@@ -60,7 +60,7 @@ func loggingApp() *App {
 	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
 	app.snap = sampleSnapshot()
 	app.snap.summary.LogLevel = config.LogLevelInfo
-	app.snap.summary.LogPath = filepath.Join("ProgramData", "dns-client", "dns-client.log")
+	app.snap.summary.LogPath = filepath.Join("ProgramData", "SigilDNS", "sigildns.log")
 	app.page = pageLogging
 	app.logView.interval.Store(logViewerDefaultInterval)
 
@@ -110,7 +110,7 @@ func TestLogViewerRepaintsOnLayoutRebuild(t *testing.T) {
 // the appended bytes reach the viewer and the box is pinned to the newest line.
 // It is bounded (a generous deadline, no fixed sleep) so it cannot be flaky.
 func TestLogViewerUpdatesThroughPoller(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "dns-client.log")
+	logPath := filepath.Join(t.TempDir(), "sigildns.log")
 	var b strings.Builder
 	for i := 0; i < 150; i++ {
 		fmt.Fprintf(&b, "2026-10-16T12:00:%02d INF resolver line %03d\n", i%60, i)
@@ -301,7 +301,7 @@ func TestOpenLogCallsOpener(t *testing.T) {
 	defer func() { openPath = orig }()
 
 	t.Run("opens the resolved file", func(t *testing.T) {
-		logPath := filepath.Join(t.TempDir(), "dns-client.log")
+		logPath := filepath.Join(t.TempDir(), "sigildns.log")
 		if err := os.WriteFile(logPath, []byte("x\n"), 0o600); err != nil {
 			t.Fatalf("seed log: %v", err)
 		}
@@ -346,7 +346,7 @@ func TestOpenLogCallsOpener(t *testing.T) {
 // TestClearLogRequiresConfirm proves Clear truncates the file only after Yes, and
 // No leaves it intact.
 func TestClearLogRequiresConfirm(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "dns-client.log")
+	logPath := filepath.Join(t.TempDir(), "sigildns.log")
 
 	newApp := func(t *testing.T) *App {
 		t.Helper()
@@ -425,9 +425,9 @@ func TestClearLogRequiresConfirm(t *testing.T) {
 // rejects empty, option-like, relative and NUL-bearing values.
 func TestValidatePath(t *testing.T) {
 	for _, p := range []string{
-		filepath.Join(t.TempDir(), "dns-client.log"),
-		`C:\ProgramData\dns-client\dns-client.log`,
-		`\\server\share\dns-client.log`,
+		filepath.Join(t.TempDir(), "sigildns.log"),
+		`C:\ProgramData\sigildns\sigildns.log`,
+		`\\server\share\sigildns.log`,
 	} {
 		if got, err := validatePath(p); err != nil || got != p {
 			t.Errorf("validatePath(%q) = (%q, %v), want the path", p, got, err)
@@ -587,7 +587,7 @@ func TestLoggingViewerDefaultInterval(t *testing.T) {
 // TestApplyLogCarriesPatch drives Apply and checks the request builder carries
 // the level and path as an elevate patch on ActionApply.
 func TestApplyLogCarriesPatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	req, ok := buildElevateRequest(applyRequest{
 		action: actionSaveLog,
@@ -633,7 +633,7 @@ func TestApplyLogBlankFields(t *testing.T) {
 // interval that has not elapsed is a no-op, and a later read appends only the
 // bytes written since.
 func TestLogTailAppendsOnlyNewBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 	if err := os.WriteFile(path, []byte("one\n"), 0o600); err != nil {
 		t.Fatalf("seed log: %v", err)
 	}
@@ -675,7 +675,7 @@ func TestLogTailAppendsOnlyNewBytes(t *testing.T) {
 // TestLogTailRestartsOnRotation proves a file that shrank (rotated/truncated)
 // is re-read from the top instead of being skipped.
 func TestLogTailRestartsOnRotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 	if err := os.WriteFile(path, []byte("old-a\nold-b\n"), 0o600); err != nil {
 		t.Fatalf("seed log: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestLogTailRestartsOnRotation(t *testing.T) {
 // TestLogTailDisabledAtZero proves the slider's 0 reads nothing at all: the
 // file is never opened and the tail stays empty.
 func TestLogTailDisabledAtZero(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 	if err := os.WriteFile(path, []byte("data\n"), 0o600); err != nil {
 		t.Fatalf("seed log: %v", err)
 	}

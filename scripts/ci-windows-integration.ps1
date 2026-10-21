@@ -2,7 +2,7 @@
 # runner (GitHub-hosted Windows runners run as admin).
 #
 # Flow:
-#   1. start `dns-client.exe enable` as a background resolver
+#   1. start `sigildns.exe enable` as a background resolver
 #   2. wait for the NRPT rule to appear
 #   3. prove the system resolver now resolves via loopback
 #   4. Force-kill the process (simulated kill -9): leaves dirty marker + stale lock
@@ -15,10 +15,10 @@
 
 $ErrorActionPreference = 'Stop'
 
-$displayName = 'dns-client'
+$displayName = 'Sigil DNS'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repoRoot 'dns-client.exe'
-$stateDir = Join-Path $env:RUNNER_TEMP 'dns-client-ci'
+$exe = Join-Path $repoRoot 'sigildns.exe'
+$stateDir = Join-Path $env:RUNNER_TEMP 'sigildns-ci'
 $state = Join-Path $stateDir 'state.json'
 
 function Remove-OurNrptRule {
@@ -28,7 +28,7 @@ function Remove-OurNrptRule {
 }
 
 if (-not (Test-Path $exe)) {
-    throw "dns-client.exe not found at $exe (build it first)"
+    throw "sigildns.exe not found at $exe (build it first)"
 }
 
 if (Test-Path $stateDir) {
@@ -58,7 +58,7 @@ try {
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         Write-Host "starting (attempt $attempt/$maxAttempts): $exe $($enableArgs -join ' ')"
         $proc = Start-Process -FilePath $exe -ArgumentList $enableArgs -PassThru -NoNewWindow
-        Write-Host "dns-client.exe pid $($proc.Id)"
+        Write-Host "sigildns.exe pid $($proc.Id)"
 
         # Wait for the NRPT rule; fail fast if the process died.
         $deadline = (Get-Date).AddSeconds(30)
@@ -82,7 +82,7 @@ try {
 
         if ($attempt -eq $maxAttempts) {
             if ($proc.HasExited) {
-                throw "dns-client.exe exited early with code $($proc.ExitCode)"
+                throw "sigildns.exe exited early with code $($proc.ExitCode)"
             }
             throw "NRPT rule '$displayName' did not appear within 30s"
         }
@@ -109,7 +109,7 @@ try {
     # 4. Simulated kill -9: leaves dirty marker and a stale lockfile behind.
     Stop-Process -Id $proc.Id -Force
     $proc.WaitForExit()
-    Write-Host "killed dns-client.exe (pid $($proc.Id))"
+    Write-Host "killed sigildns.exe (pid $($proc.Id))"
 
     # 5. Dirty marker must be set while the resolver is no longer running.
     $statusJson = & $exe status --state $state
@@ -144,7 +144,7 @@ finally {
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
 
-    Get-Process -Name 'dns-client' -ErrorAction SilentlyContinue |
+    Get-Process -Name 'sigildns' -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
 
     Remove-OurNrptRule

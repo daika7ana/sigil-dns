@@ -8,9 +8,9 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/elevate"
-	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/elevate"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 // elevateApply is the production applyFunc.  It is the only place that imports

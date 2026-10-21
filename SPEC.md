@@ -1,6 +1,6 @@
 # SPEC — System-Wide Custom DNS Client for Windows 11
 
-Working name: **dns-client** (rename later).
+Name: **Sigil DNS** (formerly dns-client).
 Target: Windows 11 x64 (ARM64 deferred).
 Developed on Linux, cross-built, released/signed on a Windows runner.
 **License: GPLv3** (forced by `AdguardTeam/urlfilter`; see §3). Full project is therefore GPLv3.
@@ -44,7 +44,7 @@ feature set of YogaDNS, without a kernel driver.
                     └─────────────────┬──────────────────┘
                                       ▼
              127.0.0.1:53 / [::1]:53  (UDP + TCP)
-   ┌────────────────────────  dns-client service  ────────────────────────┐
+   ┌────────────────────────  Sigil DNS service  ──────────────────────────┐
    │  runs as LocalSystem (v1 deviation; see §4.7)                          │
    │  dnsproxy.Proxy ──► urlfilter DNSEngine ──► per-domain routing ──► DoH  │
    │      ▲                    (blocklists)          (dnsmasq rules)  upstream│
@@ -58,7 +58,7 @@ feature set of YogaDNS, without a kernel driver.
 
 - **Service**: elevated, owns resolver + config + interception lifecycle + state file.
   Run as **LocalSystem** for v1. The originally-planned least-privilege virtual
-  account `NT SERVICE\dns-client` is infeasible: it cannot create pipe instances
+  account `NT SERVICE\sigildns` is infeasible: it cannot create pipe instances
   under the pipe SDDL, is locked out of its own state file by `state.secure()`,
   and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) and
   adapter DNS writes require. Least privilege remains a future hardening goal
@@ -154,9 +154,9 @@ MDM/Intune, VPN, and other DNS tools rewriting servers. Add:
 Unelevated→SYSTEM DNS control is a privilege path (any local process could redirect auth/corp
 traffic). Therefore:
 - **Named pipes only** (no local HTTP), split by privilege:
-  - **Control pipe** `\\.\pipe\dns-client` — state-changing ops. SDDL
+  - **Control pipe** `\\.\pipe\sigildns` — state-changing ops. SDDL
     `D:P(A;;GA;;;SY)(A;;GA;;;BA)` (SYSTEM + Administrators only).
-  - **Status pipe** `\\.\pipe\dns-client-status` — read-only. SDDL
+  - **Status pipe** `\\.\pipe\sigildns-status` — read-only. SDDL
     `D:P(A;;GA;;;SY)(A;;GRGW;;;AU)` (SYSTEM plus Authenticated Users with
     GR+GW, which go-winio needs to dial). Served with a read-only authorizer, so
     `enable`/`disable` are rejected even though any local user can connect. The
@@ -168,7 +168,7 @@ traffic). Therefore:
 - Status reads are read-only on the pipe and need no extra consent; the shipped GUI binary prompts
   **UAC** once at **launch** (manifest, §15.1), not per action.
 - **Service account**: v1 runs as **LocalSystem**, not the least-privilege
-  virtual account `NT SERVICE\dns-client` (see §2 for why).
+  virtual account `NT SERVICE\sigildns` (see §2 for why).
 - State file **and its directory** are ACLed to SYSTEM + Administrators via
   `SetSecurityInfo` (well-known SIDs, locale-independent). ACL failures are
   returned, not swallowed.
@@ -308,7 +308,7 @@ mode: on              # on | off
 profile: default      # active profile (many stored, one active at a time)
 log:                  # optional; off by default
   level: off          # off | error | info | debug
-  path: ""            # empty = <ProgramData>\dns-client\dns-client.log
+  path: ""            # empty = <ProgramData>\SigilDNS\sigildns.log
   max_size_mb: 10
   keep_mb: 3
 profiles:
@@ -498,7 +498,7 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   `reload` = disable (restore) → enable with last-known-good rollback; no manual restart required.
 
 **Manifest elevation (deviation from §15.3.8).** The shipped Windows binary embeds an application
-manifest (`cmd/dns-client/dns-client.manifest`) with
+manifest (`cmd/sigildns/sigildns.manifest`) with
 `<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>`. Windows therefore shows a
 UAC prompt on **every** launch and the process runs elevated for its lifetime. This is a deliberate
 **user decision** that overrides the "no persistent elevated process" clause of §15.3.8; the rest of
@@ -511,15 +511,15 @@ consent gate is replaced by per-launch consent: the GUI holds an admin token for
 while the helper's re-validation, field allowlist, and ACL-enforced atomic write are unchanged.
 
 ### 15.2 Sensitive data
-- Resolver ids live **only** in `%ProgramData%\dns-client\config.yaml` (SYSTEM+Administrators).
+- Resolver ids live **only** in `%ProgramData%\SigilDNS\config.yaml` (SYSTEM+Administrators).
 - Never on the status pipe, **never logged**, never on argv/environment (argv is cross-process
   readable). The GUI *code* never reads `config.yaml` directly — full-fidelity reads happen only inside
   the elevated helper, regardless of whether the GUI process itself is elevated.
 - Editing is **replace-only** (empty id field, or an empty custom-upstream URL field, = keep); display is
   masked (`••••`); no reveal on the AU pipe.
-- `--apply` staging: `%LOCALAPPDATA%\dns-client\staging\<uuid>.bin`, **DPAPI** user-scope, deleted
+- `--apply` staging: `%LOCALAPPDATA%\SigilDNS\staging\<uuid>.bin`, **DPAPI** user-scope, deleted
   after read.
-- `%LOCALAPPDATA%\dns-client\gui.json` (user scope) holds window geometry, theme, last selection
+- `%LOCALAPPDATA%\SigilDNS\gui.json` (user scope) holds window geometry, theme, last selection
   (no id) and a cached last status — never secrets, never an authorization input.
 - Concurrency: `config_summary` carries a revision token (**mtime + size**, *not* a file hash — ids
   are low-entropy and a hash is brute-forceable); the helper aborts on a revision mismatch.

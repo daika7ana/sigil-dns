@@ -46,13 +46,13 @@ jobs:
           $version = $env:GITHUB_REF_NAME
           if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           Write-Host "Building version $version"
-          $stamp = "-X github.com/daika7ana/dns-client/internal/version.Version=$version"
+          $stamp = "-X github.com/daika7ana/sigil-dns/internal/version.Version=$version"
 
           # Console subsystem: CLI + service host + headless --apply helper.
-          go build -trimpath -ldflags "-s -w $stamp" -o dist/dns-client.exe ./cmd/dns-client
+          go build -trimpath -ldflags "-s -w $stamp" -o dist/sigildns.exe ./cmd/sigildns
           # GUI subsystem: same program; no console window; opens the status
           # window with no arguments. Still --apply-capable for elevation.
-          go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/dns-client-gui.exe ./cmd/dns-client
+          go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/sigildns-gui.exe ./cmd/sigildns
 
       - name: Sign (optional)
         id: sign
@@ -66,8 +66,8 @@ jobs:
           $pfxBase64 = $env:WINDOWS_CERT_PFX_BASE64
           $pfxPassword = $env:WINDOWS_CERT_PASSWORD
           $exes = @(
-            (Join-Path $PWD 'dist/dns-client.exe')
-            (Join-Path $PWD 'dist/dns-client-gui.exe')
+            (Join-Path $PWD 'dist/sigildns.exe')
+            (Join-Path $PWD 'dist/sigildns-gui.exe')
           )
 
           if ([string]::IsNullOrWhiteSpace($pfxBase64) -or [string]::IsNullOrWhiteSpace($pfxPassword)) {
@@ -110,26 +110,26 @@ jobs:
           }
           Write-Host "Packaging version $version"
 
-          $stage = Join-Path $env:RUNNER_TEMP 'dns-client-stage'
+          $stage = Join-Path $env:RUNNER_TEMP 'sigildns-stage'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $stage 'installer') | Out-Null
 
-          Copy-Item 'dist/dns-client.exe'        $stage -Force
-          Copy-Item 'dist/dns-client-gui.exe'    $stage -Force
+          Copy-Item 'dist/sigildns.exe'        $stage -Force
+          Copy-Item 'dist/sigildns-gui.exe'    $stage -Force
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
           Copy-Item 'installer/install.ps1'      (Join-Path $stage 'installer') -Force
           Copy-Item 'installer/uninstall.ps1'    (Join-Path $stage 'installer') -Force
 
-          $zip = "dist/dns-client_${version}_windows_amd64.zip"
+          $zip = "dist/sigildns_${version}_windows_amd64.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
           Write-Host "Created $zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: dns-client-windows-amd64
+          name: sigildns-windows-amd64
           path: dist/*.zip
           if-no-files-found: error
 

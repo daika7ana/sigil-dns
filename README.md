@@ -1,10 +1,10 @@
-<p align="center"><img src="docs/icon.png" width="112" alt="dns-client icon"></p>
+<p align="center"><img src="docs/icon.png" width="112" alt="Sigil DNS icon"></p>
 
-<h1 align="center">dns-client</h1>
+<h1 align="center">Sigil DNS</h1>
 
 <p align="center"><strong>System-wide encrypted DNS for Windows 11 — no kernel driver, no per-adapter fiddling.</strong></p>
 
-`dns-client` quietly points Windows at a DNS resolver you trust. It runs a small
+Sigil DNS quietly points Windows at a DNS resolver you trust. It runs a small
 loopback DNS server on `127.0.0.1:53` and `[::1]:53`, then installs a **single
 NRPT rule** covering every namespace. Your apps keep using the normal OS
 resolver — their queries just travel encrypted (DoH / DoT / DoQ) to the provider
@@ -79,7 +79,7 @@ From an **elevated PowerShell**:
 ```
 
 The installer registers the Windows service and drops a **Start Menu shortcut**
-named `dns-client` that launches the GUI. Just run it from there whenever you
+named Sigil DNS that launches the GUI. Just run it from there whenever you
 want to change something.
 
 ### Option B — manual
@@ -87,14 +87,14 @@ want to change something.
 From an **elevated PowerShell**, after building or downloading the binary:
 
 ```powershell
-dns-client config init            # writes a default config if none exists
-dns-client service install        # register the service (runs as LocalSystem)
-dns-client service start
+sigildns config init            # writes a default config if none exists
+sigildns service install        # register the service (runs as LocalSystem)
+sigildns service start
 ```
 
 `service install` registers the service to start automatically and points it at
 the current executable with the `--service` argument. Uninstall with
-`dns-client service uninstall` (which stops the service first and restores
+`sigildns service uninstall` (which stops the service first and restores
 interception).
 
 > The service runs as **LocalSystem** in v1. The least-privilege virtual account
@@ -107,7 +107,7 @@ interception).
 
 ### With the GUI
 
-1. Launch **dns-client** from the Start Menu (or run `dns-client-gui.exe` with no
+1. Launch **Sigil DNS** from the Start Menu (or run `sigildns-gui.exe` with no
    arguments).
 2. On **Settings**, pick a provider / variant / protocol in the profile editor
    and hit **Save**.
@@ -120,23 +120,23 @@ applied. Everything the GUI does is available on the CLI too.
 
 ```powershell
 # 1. Create a config (never clobbers an existing file)
-dns-client config init
+sigildns config init
 
 # 2. Pick a provider and print its generated upstream block
-dns-client providers list
-dns-client providers show quad9/secure/doh
-dns-client providers show nextdns/ultralow/doh --id <profile-id>
-dns-client providers show controld/p1/doh
+sigildns providers list
+sigildns providers show quad9/secure/doh
+sigildns providers show nextdns/ultralow/doh --id <profile-id>
+sigildns providers show controld/p1/doh
 
 #    Paste the printed upstreams/bootstrap into your config, then set mode: on.
 #    (The default config points at ControlD free p0 and is mode: off.)
 
 # 3. Install and start the service (elevated)
-dns-client service install
-dns-client service start
+sigildns service install
+sigildns service start
 
 # 4. Verify (the binary always requests admin, so this elevates too)
-dns-client status
+sigildns status
 ```
 
 With `mode: on`, starting the service enables interception (bind → two-stage
@@ -147,14 +147,14 @@ Want to try the resolver **without touching the system**? Run it in the
 foreground:
 
 ```powershell
-dns-client run --upstream https://dns.quad9.net/dns-query
+sigildns run --upstream https://dns.quad9.net/dns-query
 ```
 
 ---
 
 ## GUI
 
-`dns-client-gui.exe` is the full configuration client, in two pages:
+`sigildns-gui.exe` is the full configuration client, in two pages:
 
 - **Status** — a banner, a single power control (Enable / Disable, plus Restore
   for a crash-leftover state), and profile / filtering / cache cards.
@@ -166,16 +166,16 @@ dns-client run --upstream https://dns.quad9.net/dns-query
 Enable starts the service and applies interception; Disable removes it. The
 binary requests admin via an embedded manifest, so Windows shows **one UAC prompt
 when you launch it** and the window runs elevated until you close it — this
-applies to every `dns-client.exe` invocation, not just the GUI. A `gui.lock` next
+applies to every `sigildns.exe` invocation, not just the GUI. A `gui.lock` next
 to `gui.json` keeps a single instance. Launch it from the Start Menu shortcut, or
-run `dns-client-gui.exe` with no arguments (`--gui` opens it explicitly). See
+run `sigildns-gui.exe` with no arguments (`--gui` opens it explicitly). See
 [docs/GUI.md](docs/GUI.md).
 
 ---
 
 ## Providers
 
-Run `dns-client providers list` for the live catalog.
+Run `sigildns providers list` for the live catalog.
 
 | Provider | Variants | Notes |
 |---|---|---|
@@ -198,8 +198,8 @@ Configuration is a single YAML file:
 
 | Platform | Config path |
 |---|---|
-| Windows | `%ProgramData%\dns-client\config.yaml` |
-| Linux/dev | `$XDG_CONFIG_HOME/dns-client/config.yaml`, else `~/.config/dns-client/config.yaml` |
+| Windows | `%ProgramData%\SigilDNS\config.yaml` |
+| Linux/dev | `$XDG_CONFIG_HOME/sigildns/config.yaml`, else `~/.config/sigildns/config.yaml` |
 
 Precedence when starting: **command-line flags > config file > built-in
 defaults**.
@@ -215,11 +215,11 @@ Administrators:
 
 | Platform | State path |
 |---|---|
-| Windows | `%ProgramData%\dns-client\state.json` |
-| Linux/dev | `$XDG_STATE_HOME/dns-client/state.json`, else `~/.local/state/dns-client/state.json` |
+| Windows | `%ProgramData%\SigilDNS\state.json` |
+| Linux/dev | `$XDG_STATE_HOME/sigildns/state.json`, else `~/.local/state/sigildns/state.json` |
 
 The GUI keeps its own window size, theme, and last-known summary in
-`%LOCALAPPDATA%\dns-client\gui.json` (user scope; **never** secrets). Delete it
+`%LOCALAPPDATA%\SigilDNS\gui.json` (user scope; **never** secrets). Delete it
 to reset the window to defaults. While the service is stopped, the Settings
 editor shows the saved `config.yaml` so you can still review and edit it.
 
@@ -228,7 +228,7 @@ editor shows the saved `config.yaml` so you can still review and edit it.
 ## Known limitations
 
 The table below is the honest interception surface. Anything that does not use
-the OS resolver bypasses `dns-client` entirely.
+the OS resolver bypasses Sigil DNS entirely.
 
 | Scenario | Intercepted? |
 |---|---|
@@ -249,7 +249,7 @@ the IPS/port-53 caveat.
 ## CLI reference
 
 ```
-dns-client <command> [flags]
+sigildns <command> [flags]
 ```
 
 | Command | Description |
@@ -299,19 +299,19 @@ The repo ships a Docker wrapper so no host Go toolchain is needed:
 ```sh
 dev/go build ./...          # compile check (Linux)
 dev/go test ./...           # unit tests
-GOOS=windows GOARCH=amd64 dev/go build -o dns-client.exe ./cmd/dns-client
+GOOS=windows GOARCH=amd64 dev/go build -o sigildns.exe ./cmd/sigildns
 
 # GUI binary (same module, GUI subsystem)
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H windowsgui" -o dns-client-gui.exe ./cmd/dns-client
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H windowsgui" -o sigildns-gui.exe ./cmd/sigildns
 ```
 
 Cross-compiling to Windows is pure Go. Release builds produce **two binaries**
-from the one module: `dns-client.exe` (console subsystem — CLI, service host,
-and the `--apply` helper) and `dns-client-gui.exe` (GUI subsystem,
+from the one module: `sigildns.exe` (console subsystem — CLI, service host,
+and the `--apply` helper) and `sigildns-gui.exe` (GUI subsystem,
 `-tags gui -ldflags "-H windowsgui"` — the full Status + Settings client, still
 `--apply`-capable). A single exe cannot cleanly be both: a console-subsystem GUI
 leaves a stray console window, and a `windowsgui` CLI loses stdout (breaking
-`dns-client status`). The plain console build stays `dns-client.exe` with no gui
+`sigildns status`). The plain console build stays `sigildns.exe` with no gui
 tag.
 
 CI runs on `windows-latest` (`.github/workflows/ci.yml`); tagged releases build
@@ -333,8 +333,8 @@ the service over two SDDL-locked named pipes:
 
 | Pipe | Purpose | Access |
 |---|---|---|
-| `\\.\pipe\dns-client` | State-changing operations | SYSTEM + Administrators (`D:P(A;;GA;;;SY)(A;;GA;;;BA)`) |
-| `\\.\pipe\dns-client-status` | Read-only status | SYSTEM + Authenticated Users, read+write (`D:P(A;;GA;;;SY)(A;;GRGW;;;AU)`) |
+| `\\.\pipe\sigildns` | State-changing operations | SYSTEM + Administrators (`D:P(A;;GA;;;SY)(A;;GA;;;BA)`) |
+| `\\.\pipe\sigildns-status` | Read-only status | SYSTEM + Authenticated Users, read+write (`D:P(A;;GA;;;SY)(A;;GRGW;;;AU)`) |
 
 The status payload is a sanitized DTO that omits the active upstream id and
 interface GUIDs. There is no local HTTP control channel.

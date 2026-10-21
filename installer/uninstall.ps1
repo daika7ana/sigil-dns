@@ -1,4 +1,4 @@
-# installer/uninstall.ps1 - elevated Windows uninstaller for dns-client.
+# installer/uninstall.ps1 - elevated Windows uninstaller for sigildns.
 #
 # Stops the service, restores interception (best-effort) so no NRPT rule points
 # at a dead resolver, removes the service, deletes the GUI shortcuts, and deletes
@@ -13,14 +13,14 @@
 param(
     [switch] $RemoveData,
 
-    [string] $InstallDir = (Join-Path $env:ProgramFiles 'dns-client'),
-    [string] $DataDir = (Join-Path $env:ProgramData 'dns-client')
+    [string] $InstallDir = (Join-Path $env:ProgramFiles 'SigilDNS'),
+    [string] $DataDir = (Join-Path $env:ProgramData 'SigilDNS')
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$serviceName = 'dns-client'
+$serviceName = 'sigildns'
 
 function Assert-Elevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -32,7 +32,7 @@ function Assert-Elevated {
 
 Assert-Elevated
 
-$targetExe = Join-Path $InstallDir 'dns-client.exe'
+$targetExe = Join-Path $InstallDir 'sigildns.exe'
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
 if (Test-Path -LiteralPath $targetExe) {
@@ -62,13 +62,13 @@ elseif ($null -ne $existingService) {
     throw "'$serviceName' is registered but '$targetExe' is missing; remove it with 'sc.exe delete $serviceName' and re-run."
 }
 else {
-    Write-Host 'No installed dns-client service or binary found.'
+    Write-Host 'No installed Sigil DNS service or binary found.'
 }
 
 # Remove the GUI shortcuts (Start Menu + Desktop) created by the installer.
 foreach ($shortcut in @(
-    (Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'dns-client.lnk'),
-    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'dns-client.lnk')
+    (Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'Sigil DNS.lnk'),
+    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Sigil DNS.lnk')
 )) {
     if (Test-Path -LiteralPath $shortcut) {
         Remove-Item -Force -LiteralPath $shortcut
@@ -91,4 +91,4 @@ else {
     Write-Host "Kept data directory $DataDir (pass -RemoveData to delete config and state)."
 }
 
-Write-Host 'dns-client uninstalled.'
+Write-Host 'Sigil DNS uninstalled.'

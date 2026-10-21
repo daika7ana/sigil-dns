@@ -4,7 +4,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/daika7ana/dns-client/internal/filter"
+	"github.com/daika7ana/sigil-dns/internal/filter"
 	"github.com/miekg/dns"
 )
 

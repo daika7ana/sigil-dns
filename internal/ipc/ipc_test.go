@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // testEndpoint returns a unique, platform-appropriate endpoint: a named pipe on
@@ -25,7 +25,7 @@ func testEndpoint(t *testing.T) (endpoint string) {
 	t.Helper()
 
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\dns-client-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\sigildns-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 
 	return filepath.Join(t.TempDir(), "ipc.sock")

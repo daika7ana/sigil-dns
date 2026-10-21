@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/health"
-	"github.com/daika7ana/dns-client/internal/resolver"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/health"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // testResolver is a resolverHandle that records Start/Shutdown into a shared
@@ -34,7 +34,7 @@ func (r *testResolver) Shutdown(context.Context) error {
 	return nil
 }
 
-func (r *testResolver) SyntheticName() string              { return "probe.dns-client-test.invalid." }
+func (r *testResolver) SyntheticName() string              { return "probe.sigildns-test.invalid." }
 func (r *testResolver) UDPAddrs() []string                 { return []string{"127.0.0.1:53"} }
 func (r *testResolver) RefreshLists(context.Context) error { return nil }
 

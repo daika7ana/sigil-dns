@@ -9,7 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/daika7ana/dns-client/internal/filter"
+	"github.com/daika7ana/sigil-dns/internal/filter"
 )
 
 // writeList writes a filter list to a temp file and returns its path.

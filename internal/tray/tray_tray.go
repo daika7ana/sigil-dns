@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // Run starts the tray UI.  TODO(phase 4b): implement with fyne.io/systray,

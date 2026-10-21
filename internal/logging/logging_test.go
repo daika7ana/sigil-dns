@@ -13,7 +13,7 @@ import (
 // TestOpenOffOpensNoFile verifies level off returns a discard logger and never
 // creates the file (LOGGING_PLAN §1.5).
 func TestOpenOffOpensNoFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := Open(Options{Level: "off", Path: path})
 	if err != nil {
@@ -34,7 +34,7 @@ func TestOpenOffOpensNoFile(t *testing.T) {
 // logger with an error, never a panic (LOGGING_PLAN §1.5).
 func TestOpenFailOpenUnwritable(t *testing.T) {
 	// The parent directory does not exist, so OpenFile fails.
-	path := filepath.Join(t.TempDir(), "missing", "dns-client.log")
+	path := filepath.Join(t.TempDir(), "missing", "sigildns.log")
 
 	l, closer, err := Open(Options{Level: "info", Path: path})
 	if err == nil {
@@ -53,7 +53,7 @@ func TestOpenFailOpenUnwritable(t *testing.T) {
 // TestRotateKeepsNewestLinesOnBoundary verifies rotation keeps the newest
 // keep_bytes trimmed to a line boundary (LOGGING_PLAN §1.7).
 func TestRotateKeepsNewestLinesOnBoundary(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	// Mirrors Open: no O_APPEND, since an append handle cannot be truncated on
 	// Windows (H1).
@@ -84,7 +84,7 @@ func TestRotateKeepsNewestLinesOnBoundary(t *testing.T) {
 // TestOpenWritesAndAcls verifies a normal open writes through a redacting
 // handler without error.
 func TestOpenWritesAndAcls(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := Open(Options{Level: "debug", Path: path, Secrets: []string{"SECRETID"}})
 	if err != nil {
@@ -112,7 +112,7 @@ func TestOpenWritesAndAcls(t *testing.T) {
 // first (L1: no short, zero-filled ReadAt) and still truncates+rewrites (H1:
 // the handle is writable, unlike an O_APPEND handle on Windows).
 func TestRotateResyncsSizeAndTruncates(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestRotateResyncsSizeAndTruncates(t *testing.T) {
 // TestWriteAppendsAtEOF verifies an existing file is appended to, not
 // overwritten from offset 0, after the O_APPEND removal.
 func TestWriteAppendsAtEOF(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -178,7 +178,7 @@ func TestWriteAppendsAtEOF(t *testing.T) {
 // TestUpdateSecretsReseeds verifies M1: a logger built by Open can be reseeded
 // at runtime so a reload's new id is scrubbed.
 func TestUpdateSecretsReseeds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := Open(Options{Level: "debug", Path: path, Secrets: []string{"OLDID"}})
 	if err != nil {
@@ -210,7 +210,7 @@ func TestUpdateSecretsReseeds(t *testing.T) {
 // dumps are rendered with spaces, not the TextHandler's \t escape, while an
 // ordinary value is left unchanged.
 func TestOpenExpandsTabsInStringValues(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := Open(Options{Level: "debug", Path: path})
 	if err != nil {

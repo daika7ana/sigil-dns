@@ -11,8 +11,8 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 // TestDraftFromSnapshot checks the seeded editor buffer.  The resolver id and

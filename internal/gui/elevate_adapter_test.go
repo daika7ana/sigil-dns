@@ -5,8 +5,8 @@ package gui
 import (
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/elevate"
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/elevate"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // TestElevateActionFor covers the full GUI-action -> elevate.Action mapping.

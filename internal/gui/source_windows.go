@@ -11,8 +11,8 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/service"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/service"
 )
 
 // liveBase performs the SCM query and, when the service is running, the dial and
@@ -108,7 +108,7 @@ func connFD(c net.Conn) (fd uintptr, ok bool) {
 	return f.Fd(), true
 }
 
-// serviceProcess reports the dns-client service's PID, whether it is running,
+// serviceProcess reports the sigildns service's PID, whether it is running,
 // whether it is installed, and its state name from the SCM.  Querying status
 // needs no elevation (SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS are granted to
 // authenticated users).

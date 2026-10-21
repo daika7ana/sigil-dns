@@ -1,4 +1,4 @@
-module github.com/daika7ana/dns-client
+module github.com/daika7ana/sigil-dns
 
 go 1.26.9
 

@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/daika7ana/dns-client/internal/winacl"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 // rotatingWriter is a single-file, size-capped sink.  When a write would exceed

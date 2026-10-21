@@ -119,7 +119,7 @@ func currentDNSServers(ctx context.Context) (servers []string) {
 func (nrptController) Disable(ctx context.Context) (err error) {
 	const script = `
 $ErrorActionPreference = 'SilentlyContinue'
-Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' } |
+Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } |
     Remove-DnsClientNrptRule -Force
 `
 	_, err = runPS(ctx, script)
@@ -268,9 +268,9 @@ func toDNSEntries(entries []AdapterEntry) (out []dnsEntry) {
 func ProbeNRPT(ctx context.Context) (st NRPTState, err error) {
 	const script = `
 $ErrorActionPreference = 'SilentlyContinue'
-$ours = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' }).Count
+$ours = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' }).Count
 Write-Output "ours=$ours"
-Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'dns-client' } | ForEach-Object {
+Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'Sigil DNS' } | ForEach-Object {
     Write-Output ("foreign={0}|{1}" -f $_.DisplayName, $_.Namespace)
 }
 `

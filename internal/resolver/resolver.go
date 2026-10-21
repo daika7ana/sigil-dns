@@ -17,7 +17,7 @@ import (
 
 	"github.com/AdguardTeam/dnsproxy/proxy"
 	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/daika7ana/dns-client/internal/filter"
+	"github.com/daika7ana/sigil-dns/internal/filter"
 	"github.com/miekg/dns"
 )
 
@@ -386,7 +386,7 @@ func rulesToLines(rules []Rule) (lines []string, err error) {
 func (r *Resolver) SyntheticName() (name string) { return r.handler.synthetic }
 
 // SyntheticName generates a fresh random probe name.
-func SyntheticName() (name string) { return rand.Text() + ".dns-client-probe.invalid." }
+func SyntheticName() (name string) { return rand.Text() + ".sigildns-probe.invalid." }
 
 // Start binds the listeners and begins serving.  If the dual-stack listen set
 // fails (e.g. IPv6 is disabled), it retries IPv4-only so enabling is not
@@ -440,7 +440,7 @@ func (r *Resolver) build(addrs []string) (p *proxy.Proxy, err error) {
 		RequestHandler: r.handler,
 		CacheEnabled:   !r.cacheDisabled,
 		CacheSizeBytes: r.cacheSize,
-		// Ask validating upstreams for AD/RRSIGs; dns-client does not validate itself.
+		// Ask validating upstreams for AD/RRSIGs; sigildns does not validate itself.
 		DNSSECEnabled: true,
 	})
 }

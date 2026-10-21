@@ -1,6 +1,6 @@
-# installer/install.ps1 - elevated Windows installer for dns-client.
+# installer/install.ps1 - elevated Windows installer for sigildns.
 #
-# Copies dns-client.exe into Program Files, creates the data directory, and
+# Copies sigildns.exe into Program Files, creates the data directory, and
 # registers + starts the service using the product's own `service` commands so
 # behaviour matches the app.  Idempotent / upgrade-safe: an existing service is
 # stopped and removed before the binary is replaced.
@@ -10,16 +10,16 @@
 #
 # Usage (from an elevated PowerShell):
 #   .\install.ps1
-#   .\install.ps1 -Source C:\path\to\dns-client.exe
+#   .\install.ps1 -Source C:\path\to\sigildns.exe
 #   .\install.ps1 -DesktopShortcut
 
 [CmdletBinding()]
 param(
-    # Path to the dns-client.exe to install.  Defaults to the copy next to the
+    # Path to the sigildns.exe to install.  Defaults to the copy next to the
     # installer's parent directory (as laid out in the release zip).
     [string] $Source,
 
-    # Path to the dns-client-gui.exe to install.  Defaults to the sibling copy
+    # Path to the sigildns-gui.exe to install.  Defaults to the sibling copy
     # in the release zip.  Optional: a missing GUI binary warns and installs the
     # service + CLI only.
     [string] $GuiSource,
@@ -27,14 +27,14 @@ param(
     # Also create a Desktop shortcut (a Start Menu shortcut is always created).
     [switch] $DesktopShortcut,
 
-    [string] $InstallDir = (Join-Path $env:ProgramFiles 'dns-client'),
-    [string] $DataDir = (Join-Path $env:ProgramData 'dns-client')
+    [string] $InstallDir = (Join-Path $env:ProgramFiles 'SigilDNS'),
+    [string] $DataDir = (Join-Path $env:ProgramData 'SigilDNS')
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$serviceName = 'dns-client'
+$serviceName = 'sigildns'
 
 function Assert-Elevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -52,7 +52,7 @@ function Invoke-Cli {
 
     & $Exe @CliArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "dns-client $($CliArgs -join ' ') failed with exit code $LASTEXITCODE"
+        throw "Sigil DNS $($CliArgs -join ' ') failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -67,25 +67,25 @@ function New-GuiShortcut {
     $lnk.TargetPath = $Target
     $lnk.WorkingDirectory = $InstallDir
     $lnk.IconLocation = "$Target,0"
-    $lnk.Description = 'dns-client status window'
+    $lnk.Description = 'Sigil DNS status window'
     $lnk.Save()
 }
 
 Assert-Elevated
 
 if (-not $Source) {
-    $Source = Join-Path (Split-Path -Parent $PSScriptRoot) 'dns-client.exe'
+    $Source = Join-Path (Split-Path -Parent $PSScriptRoot) 'sigildns.exe'
 }
 if (-not (Test-Path -LiteralPath $Source)) {
-    throw "dns-client.exe not found at '$Source'. Pass -Source <path-to-exe>."
+    throw "sigildns.exe not found at '$Source'. Pass -Source <path-to-exe>."
 }
 
 if (-not $GuiSource) {
-    $GuiSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'dns-client-gui.exe'
+    $GuiSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'sigildns-gui.exe'
 }
 
-$targetExe = Join-Path $InstallDir 'dns-client.exe'
-$guiExe = Join-Path $InstallDir 'dns-client-gui.exe'
+$targetExe = Join-Path $InstallDir 'sigildns.exe'
+$guiExe = Join-Path $InstallDir 'sigildns-gui.exe'
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
 # Upgrade path: stop and remove any existing service (stop restores NRPT via the
@@ -120,7 +120,7 @@ if ($guiInstalled) {
     Copy-Item -LiteralPath $GuiSource -Destination $guiExe -Force
 }
 else {
-    Write-Warning "dns-client-gui.exe not found at '$GuiSource'; installing the service + CLI only."
+    Write-Warning "sigildns-gui.exe not found at '$GuiSource'; installing the service + CLI only."
 }
 
 # Seed a default config if none exists (config init ACLs the file + dir).  An
@@ -143,22 +143,22 @@ Invoke-Cli -Exe $targetExe -CliArgs @('service', 'install')
 Invoke-Cli -Exe $targetExe -CliArgs @('service', 'start')
 
 if ($guiInstalled) {
-    $shortcut = Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'dns-client.lnk'
+    $shortcut = Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') 'Sigil DNS.lnk'
     New-GuiShortcut -Path $shortcut -Target $guiExe
     Write-Host "Created Start Menu shortcut: $shortcut"
 
     if ($DesktopShortcut) {
-        $desktop = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'dns-client.lnk'
+        $desktop = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Sigil DNS.lnk'
         New-GuiShortcut -Path $desktop -Target $guiExe
         Write-Host "Created Desktop shortcut: $desktop"
     }
 }
 
 Write-Host ''
-Write-Host "dns-client installed."
+Write-Host "Sigil DNS installed."
 Write-Host "  Binary: $targetExe"
 if ($guiInstalled) {
-    Write-Host "  GUI:    $guiExe (Start Menu > dns-client)"
+    Write-Host "  GUI:    $guiExe (Start Menu > Sigil DNS)"
 }
 Write-Host "  Data:   $DataDir"
 Write-Host ''

@@ -1,4 +1,4 @@
-# Releasing dns-client
+# Releasing Sigil DNS
 
 This document is for maintainers. It describes how to cut a release, what the
 `release` workflow does, and how to configure or bypass code signing.
@@ -8,11 +8,11 @@ process.
 
 ## What ships (v1)
 
-The release zip is `dns-client_<version>_windows_amd64.zip` and contains:
+The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
 
-- `dns-client.exe` — the console-subsystem binary: CLI, service host, and the
+- `sigildns.exe` — the console-subsystem binary: CLI, service host, and the
   headless `--apply` elevation helper.
-- `dns-client-gui.exe` — the GUI-subsystem configuration client (Status +
+- `sigildns-gui.exe` — the GUI-subsystem configuration client (Status +
   Settings), built `-tags gui -ldflags "-H windowsgui"`.
 - `config.example.yaml`, `README.md`, `LICENSE`.
 - `installer/install.ps1`, `installer/uninstall.ps1`.
@@ -20,7 +20,7 @@ The release zip is `dns-client_<version>_windows_amd64.zip` and contains:
 Release builds use the `gui` tag (never `-tags tray`); the **tray UI is deferred
 to v1.1**.
 
-Both binaries embed `cmd/dns-client/dns-client.manifest`, which requests
+Both binaries embed `cmd/sigildns/sigildns.manifest`, which requests
 `requireAdministrator`: Windows shows a UAC prompt on every launch and the
 process runs elevated for its lifetime (a deliberate deviation from SPEC
 §15.3.8).
@@ -28,7 +28,7 @@ process runs elevated for its lifetime (a deliberate deviation from SPEC
 The two binaries come from the same Go module. A single Windows exe cannot
 cleanly be both console and GUI subsystem: a console-subsystem GUI leaves a
 stray console window, and a `windowsgui` CLI loses stdout (breaking
-`dns-client status`). The console binary keeps stdout; the GUI binary opens the
+`sigildns status`). The console binary keeps stdout; the GUI binary opens the
 window when launched with no arguments.
 
 ## Cutting a release
@@ -54,11 +54,11 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 1. `actions/checkout@v7`, `actions/setup-go@v7` (`go-version-file: go.mod`).
 2. `go vet ./...` and `go test ./...` (on Windows, so the Windows-only tests run).
 3. Builds **both** binaries:
-   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/dns-client.exe ./cmd/dns-client`
+   `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/sigildns.exe ./cmd/sigildns`
    and
-   `GOOS=windows GOARCH=amd64 go build -trimpath -tags gui -ldflags "-s -w -H windowsgui" -o dist/dns-client-gui.exe ./cmd/dns-client`.
+   `GOOS=windows GOARCH=amd64 go build -trimpath -tags gui -ldflags "-s -w -H windowsgui" -o dist/sigildns-gui.exe ./cmd/sigildns`.
 4. **Optional signing** — signs **both** binaries (see below).
-5. Packages `dist/dns-client_<version>_windows_amd64.zip` containing both
+5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
    binaries, `config.example.yaml`, `README.md`, `LICENSE`, and both installer
    scripts.
 6. Uploads the zip as a build artifact, and for tag builds creates (or updates)
@@ -99,15 +99,15 @@ this project does not ship. Never commit the `.pfx` or its password.
 
 ## What the signing step runs
 
-Both release binaries are signed — `dns-client.exe` and `dns-client-gui.exe`. The
+Both release binaries are signed — `sigildns.exe` and `sigildns-gui.exe`. The
 workflow locates `signtool.exe` under the Windows SDK and runs:
 
 ```powershell
 signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-    /f <decoded-pfx> /p <password> dist\dns-client.exe dist\dns-client-gui.exe
+    /f <decoded-pfx> /p <password> dist\sigildns.exe dist\sigildns-gui.exe
 
-signtool verify /pa dist\dns-client.exe
-signtool verify /pa dist\dns-client-gui.exe
+signtool verify /pa dist\sigildns.exe
+signtool verify /pa dist\sigildns-gui.exe
 ```
 
 `/fd SHA256` sets the file digest, `/td SHA256` the timestamp digest, and `/tr`
@@ -121,15 +121,15 @@ If you need to sign outside CI:
 ```powershell
 # From a Developer Command Prompt / with the Windows SDK on PATH:
 signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-    /f codesign.pfx /p '<password>' .\dns-client.exe
+    /f codesign.pfx /p '<password>' .\sigildns.exe
 
-signtool verify /pa .\dns-client.exe
+signtool verify /pa .\sigildns.exe
 ```
 
 Verify the signature and timestamp afterwards with:
 
 ```powershell
-Get-AuthenticodeSignature .\dns-client.exe | Format-List Status, SignerCertificate, TimeStamperCertificate
+Get-AuthenticodeSignature .\sigildns.exe | Format-List Status, SignerCertificate, TimeStamperCertificate
 ```
 
 ## After publishing

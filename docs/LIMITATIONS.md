@@ -1,6 +1,6 @@
 # Limitations and interception surface
 
-`dns-client` intercepts the **Windows DNS Client** path — the resolver that
+Sigil DNS intercepts the **Windows DNS Client** path — the resolver that
 normal Windows applications use. It does not, and without a kernel driver
 cannot, intercept traffic that never asks the OS resolver. This page is the
 honest version of that boundary.
@@ -21,7 +21,7 @@ honest version of that boundary.
 |---|---|
 | **Apps with hardcoded resolver IPs or their own stub resolver** | They send DNS straight to `8.8.8.8` or a DoH endpoint themselves and never consult the OS resolver. |
 | **Browsers with built-in Secure DNS (DoH)** | The browser resolves names itself over HTTPS to its own chosen provider. You must disable Secure DNS in each browser. |
-| **`hosts` file / LLMNR / mDNS / NetBIOS** | These resolve locally without DNS at all. `dns-client` never sees them. |
+| **`hosts` file / LLMNR / mDNS / NetBIOS** | These resolve locally without DNS at all. Sigil DNS never sees them. |
 | **DNS-level blocklists** | The blocklists only see traffic that reaches the resolver, so they inherit every gap above. |
 
 ## DNSSEC
@@ -31,7 +31,7 @@ DNSSEC validation is delegated to the upstream resolver. With the cache enabled
 Cloudflare, NextDNS, ControlD) return authenticated answers and signatures are
 cached.
 
-`dns-client` does not validate DNSSEC itself, and cannot without a validating
+Sigil DNS does not validate DNSSEC itself, and cannot without a validating
 recursor: block, hosts and rewrite answers are synthesized locally and can never
 carry a valid signature. Filtered names are therefore intentionally unsigned.
 A plain UDP/53 custom upstream can also have the upstream's AD bit stripped by
@@ -57,9 +57,9 @@ A VPN can install an equal-or-more-specific NRPT rule (for example a catch-all
 - our rule may be **overridden** for the VPN's namespaces, and
 - the VPN's own DNS may **hard-break** because it expects to own resolution.
 
-`dns-client` detects conflicting foreign NRPT rules and **warns instead of
+Sigil DNS detects conflicting foreign NRPT rules and **warns instead of
 fighting them**. It does not rewrite the VPN's rules. If VPN DNS stops working,
-remove the VPN or stop `dns-client`.
+remove the VPN or stop Sigil DNS.
 
 ### Per-domain bypass rules
 
@@ -72,11 +72,11 @@ interface DNS for those names.
   encrypted upstream, the blocklists/filtering, or the cache; they go out however
   the machine's normal DNS is configured (often plaintext UDP/TCP 53).
 - **The exemption is verified and has a fallback.** The empty-name-server NRPT
-  encoding is not first-class in the Windows DnsClient cmdlets, so `dns-client`
+  encoding is not first-class in the Windows DnsClient cmdlets, so Sigil DNS
   verifies the exemption after enabling. If it did not take effect, it pins the
   interface's current non-loopback DNS servers for that namespace instead; if
   even that cannot be verified it logs a warning and the domain keeps being
-  resolved by `dns-client` normally. An enable never fails because one bypass
+  resolved by Sigil DNS normally. An enable never fails because one bypass
   could not be applied.
 - **Multi-homed fallback.** The fallback uses the union of non-loopback DNS
   servers across interfaces, which is not necessarily Windows' normal
@@ -91,7 +91,7 @@ Before you authenticate to a Wi-Fi captive portal, the portal works by
 intercepting plain DNS and HTTP. With encrypted upstreams and NRPT interception
 active, the bootstrap lookup for the DoH endpoint fails and you may be unable to
 reach the login page. v1 backs off on failure so you can reach the portal, but
-this is a known rough edge: **disable `dns-client` first on a network you have
+this is a known rough edge: **disable Sigil DNS first on a network you have
 not yet authenticated to.**
 
 ### Persistent drift
@@ -134,7 +134,7 @@ untouched.
 ## WSL
 
 WSL2 on the default NAT network does not always route through the Windows
-loopback, so WSL workloads can bypass `dns-client`. Options:
+loopback, so WSL workloads can bypass Sigil DNS. Options:
 
 - **`dnsTunneling`** (`.wslconfig`): WSL can tunnel DNS to the Windows host
   resolver, in which case WSL DNS follows Windows and is intercepted.

@@ -30,11 +30,11 @@ func TestNrptEnableScript(t *testing.T) {
 	if !strings.Contains(script, "Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue") {
 		t.Errorf("script lacks the removal preamble:\n%s", script)
 	}
-	if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'dns-client'") {
+	if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'Sigil DNS'") {
 		t.Errorf("script lacks the catch-all:\n%s", script)
 	}
 	for _, ns := range []string{"'.a.example'", "'.b.example'"} {
-		if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace "+ns+" -DisplayName 'dns-client'") {
+		if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace "+ns+" -DisplayName 'Sigil DNS'") {
 			t.Errorf("script lacks exemption for %s:\n%s", ns, script)
 		}
 	}
@@ -63,7 +63,7 @@ func TestNrptFallbackScript(t *testing.T) {
 	script := nrptFallbackScript([]string{".a.example"}, []string{"9.9.9.9", "149.112.112.112"})
 
 	rm := strings.Index(script, "Remove-DnsClientNrptRule")
-	add := strings.Index(script, "Add-DnsClientNrptRule -Namespace '.a.example' -NameServers '9.9.9.9','149.112.112.112' -DisplayName 'dns-client'")
+	add := strings.Index(script, "Add-DnsClientNrptRule -Namespace '.a.example' -NameServers '9.9.9.9','149.112.112.112' -DisplayName 'Sigil DNS'")
 	if rm < 0 || add < 0 {
 		t.Fatalf("fallback script missing remove or add:\n%s", script)
 	}

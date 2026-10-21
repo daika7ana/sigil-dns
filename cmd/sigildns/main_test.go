@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/lifecycle"
-	"github.com/daika7ana/dns-client/internal/logging"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/lifecycle"
+	"github.com/daika7ana/sigil-dns/internal/logging"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // TestServiceLifecycleDegradedEnable verifies the service can boot and run
@@ -151,7 +151,7 @@ func TestReloadRollsBackOnEnableFailure(t *testing.T) {
 // TestReloadRollbackReseeds verifies N2: when the new config fails to enable,
 // the old profile's redaction seeds are restored, not left on the new profile.
 func TestReloadRollbackReseeds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := logging.Open(logging.Options{Level: "error", Path: path, Secrets: []string{"OLDID12"}})
 	if err != nil {
@@ -188,7 +188,7 @@ func TestReloadRollbackReseeds(t *testing.T) {
 // ids are seeded while the old lifecycle is still serving, and only the new one
 // remains after a successful swap.
 func TestReloadUnionSeedsDuringSwap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-client.log")
+	path := filepath.Join(t.TempDir(), "sigildns.log")
 
 	l, closer, err := logging.Open(logging.Options{Level: "error", Path: path, Secrets: []string{"OLDID12"}})
 	if err != nil {

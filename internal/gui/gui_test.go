@@ -15,8 +15,8 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // fakeSource is a statusSource that returns a fixed snapshot, so the window can
@@ -151,7 +151,7 @@ func TestWindowRendersEachState(t *testing.T) {
 			app.snap = snap
 
 			w := gogui.NewTestWindow(t, gogui.WindowCfg{
-				Title:  "dns-client",
+				Title:  "Sigil DNS",
 				Width:  defaultWidth,
 				Height: defaultHeight,
 				State:  app,

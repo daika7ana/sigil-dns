@@ -16,7 +16,7 @@ const clientTimeout = 10 * time.Second
 // (health check included).
 const reloadTimeout = 2 * time.Minute
 
-// Client talks to a running dns-client service over the IPC transport.
+// Client talks to a running sigildns service over the IPC transport.
 type Client struct {
 	endpoint string
 }

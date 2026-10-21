@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // fakeAgentLC is an in-memory service.Lifecycle.
@@ -57,7 +57,7 @@ func testEndpoint(t *testing.T, kind string) (endpoint string) {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
 
-		return `\\.\pipe\dns-client-test-` + kind + "-" + hex.EncodeToString(b[:])
+		return `\\.\pipe\sigildns-test-` + kind + "-" + hex.EncodeToString(b[:])
 	}
 
 	return filepath.Join(t.TempDir(), kind+".sock")

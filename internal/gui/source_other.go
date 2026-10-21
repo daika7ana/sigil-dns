@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // liveBase dials the status socket shared by Read and ReadLive.  Off Windows

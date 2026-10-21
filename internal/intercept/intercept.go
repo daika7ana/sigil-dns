@@ -71,12 +71,12 @@ func nrptNormalize(ns string) string { return strings.Trim(strings.TrimSpace(ns)
 func nrptEnableScript(namespaces []string) string {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
-	b.WriteString("Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n")
-	b.WriteString("Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'dns-client' | Out-Null\n")
+	b.WriteString("Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n")
+	b.WriteString("Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'Sigil DNS' | Out-Null\n")
 	for _, ns := range namespaces {
 		// A rejected exemption must not abort the whole enable: verification
 		// below reports it and the fallback retries it with explicit servers.
-		fmt.Fprintf(&b, "try { Add-DnsClientNrptRule -Namespace %s -DisplayName 'dns-client' -ErrorAction Stop | Out-Null } catch { }\n", psQuote(ns))
+		fmt.Fprintf(&b, "try { Add-DnsClientNrptRule -Namespace %s -DisplayName 'Sigil DNS' -ErrorAction Stop | Out-Null } catch { }\n", psQuote(ns))
 	}
 	b.WriteString(nrptPrintRules)
 
@@ -109,8 +109,8 @@ func nrptFallbackScript(namespaces []string, servers []string) string {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
 	for _, ns := range namespaces {
-		fmt.Fprintf(&b, "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' -and $_.Namespace -eq %s } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n", psQuote(ns))
-		fmt.Fprintf(&b, "try { Add-DnsClientNrptRule -Namespace %s -NameServers %s -DisplayName 'dns-client' -ErrorAction Stop | Out-Null } catch { }\n", psQuote(ns), psList(servers))
+		fmt.Fprintf(&b, "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' -and $_.Namespace -eq %s } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n", psQuote(ns))
+		fmt.Fprintf(&b, "try { Add-DnsClientNrptRule -Namespace %s -NameServers %s -DisplayName 'Sigil DNS' -ErrorAction Stop | Out-Null } catch { }\n", psQuote(ns), psList(servers))
 	}
 	b.WriteString(nrptPrintRules)
 
@@ -118,7 +118,7 @@ func nrptFallbackScript(namespaces []string, servers []string) string {
 }
 
 // nrptPrintRules emits one rule=<Namespace> line per rule we own.
-const nrptPrintRules = "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'dns-client' } | ForEach-Object { Write-Output ('rule=' + $_.Namespace) }\n"
+const nrptPrintRules = "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | ForEach-Object { Write-Output ('rule=' + $_.Namespace) }\n"
 
 // psQuote renders s as a single-quoted PowerShell string literal.
 func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }

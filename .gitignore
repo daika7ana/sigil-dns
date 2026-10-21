@@ -5,7 +5,7 @@
 *.dll
 *.syso
 # ...except the committed Windows manifest resource (admin/UAC).
-!cmd/dns-client/rsrc_windows_amd64.syso
+!cmd/sigildns/rsrc_windows_amd64.syso
 *.test
 *.out
 
@@ -14,7 +14,7 @@ vendor/
 
 # App runtime state (must never be committed)
 *.state.json
-dns-client.log*
+sigildns.log*
 
 # Editors / OS
 .idea/

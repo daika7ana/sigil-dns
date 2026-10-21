@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-// TestCanonicalServiceExe pins the two-binary (dns-client.exe +
-// dns-client-gui.exe) resolution used for install and the anti-hijack check.
+// TestCanonicalServiceExe pins the two-binary (sigildns.exe +
+// sigildns-gui.exe) resolution used for install and the anti-hijack check.
 func TestCanonicalServiceExe(t *testing.T) {
 	dir := filepath.Join("C:", "app")
-	gui := filepath.Join(dir, "dns-client-gui.exe")
-	plain := filepath.Join(dir, "dns-client.exe")
+	gui := filepath.Join(dir, "sigildns-gui.exe")
+	plain := filepath.Join(dir, "sigildns.exe")
 
 	exists := func(string) bool { return true }
 	missing := func(string) bool { return false }

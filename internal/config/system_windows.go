@@ -18,7 +18,7 @@ func SystemDir() (dir string) {
 		return ""
 	}
 
-	return filepath.Join(root, "dns-client")
+	return filepath.Join(root, "SigilDNS")
 }
 
 // SystemPath returns the fixed, machine-wide config path derived from the

@@ -366,7 +366,7 @@ func TestRulesRuleKind(t *testing.T) {
 	}
 
 	// The bypass row states where its domains resolve; the upstream row does not.
-	const want = "Resolved by the system's normal DNS, not by dns-client."
+	const want = "Resolved by the system's normal DNS, not by Sigil DNS."
 	if !textSet(mustFindLayout(t, w, root, "gui:rule:1"))[want] {
 		t.Errorf("bypass row does not show %q", want)
 	}

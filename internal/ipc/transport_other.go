@@ -12,12 +12,12 @@ import (
 // DefaultEndpoint is the Unix socket used off Windows (Windows uses named
 // pipes).
 func DefaultEndpoint() (endpoint string) {
-	return filepath.Join(os.TempDir(), "dns-client-ipc.sock")
+	return filepath.Join(os.TempDir(), "sigildns-ipc.sock")
 }
 
 // StatusEndpoint is the read-only status socket used off Windows.
 func StatusEndpoint() (endpoint string) {
-	return filepath.Join(os.TempDir(), "dns-client-ipc-status.sock")
+	return filepath.Join(os.TempDir(), "sigildns-ipc-status.sock")
 }
 
 // Listen creates the control Unix socket, removing any stale socket first.

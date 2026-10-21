@@ -35,7 +35,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build CLI
-        run: go build -o dns-client.exe ./cmd/dns-client
+        run: go build -o sigildns.exe ./cmd/sigildns
       - name: NRPT integration test
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/ci-windows-integration.ps1

@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // readTimeout bounds one status read so a stuck server cannot hang the poller.
@@ -19,7 +19,7 @@ const readTimeout = 8 * time.Second
 type trustKind int
 
 const (
-	// trustVerified means the status source is the dns-client service (on
+	// trustVerified means the status source is the sigildns service (on
 	// Windows: the pipe server PID matches the SCM-reported ProcessId).
 	trustVerified trustKind = iota
 	// trustUnverified means the identity could not be confirmed, so the
@@ -38,7 +38,7 @@ type snapshot struct {
 	trust   trustKind
 	running bool
 
-	// installed reports whether the dns-client service is registered with the
+	// installed reports whether the sigildns service is registered with the
 	// SCM, and scmState is its state name ("running", "stopped",
 	// "not installed", "unsupported", ...).  Off Windows there is no SCM, so
 	// the state is "unsupported".

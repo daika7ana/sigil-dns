@@ -65,13 +65,13 @@ func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powe
 
 	switch {
 	case !trusted:
-		ps.note = "Actions are unavailable until the dns-client service identity is verified."
+		ps.note = "Actions are unavailable until the Sigil DNS service identity is verified."
 	case busy:
 		// The in-flight note replaces the guidance while an action runs.
 	case kind == kindDirty:
 		ps.note = "Interception is still applied from a previous session."
 	case !installed:
-		ps.note = "Install the dns-client service in Settings to turn on protection."
+		ps.note = "Install the Sigil DNS service in Settings to turn on protection."
 	case kind == kindStopped && running:
 		ps.note = "The service is running but protection is off."
 	case kind == kindStopped:

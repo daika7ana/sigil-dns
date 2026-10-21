@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/logging"
-	"github.com/daika7ana/dns-client/internal/providers"
-	"github.com/daika7ana/dns-client/internal/redact"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/logging"
+	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/redact"
 )
 
 // Info is the version/capability payload returned by the info method.

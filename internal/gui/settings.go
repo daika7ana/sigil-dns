@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // Theme preference values stored in gui.json.
@@ -37,18 +37,18 @@ type settings struct {
 	Summary *ipc.ConfigSummary `json:"summary,omitempty"`
 }
 
-// defaultGuiPath returns %LOCALAPPDATA%\dns-client\gui.json, falling back to
+// defaultGuiPath returns %LOCALAPPDATA%\sigildns\gui.json, falling back to
 // the per-user config dir off Windows.
 func defaultGuiPath() (path string) {
 	if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
-		return filepath.Join(dir, "dns-client", "gui.json")
+		return filepath.Join(dir, "SigilDNS", "gui.json")
 	}
 
 	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "dns-client", "gui.json")
+		return filepath.Join(dir, "sigildns", "gui.json")
 	}
 
-	return filepath.Join(os.TempDir(), "dns-client", "gui.json")
+	return filepath.Join(os.TempDir(), "sigildns", "gui.json")
 }
 
 // loadSettings reads gui.json.  A missing or corrupt file yields the zero

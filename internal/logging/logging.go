@@ -14,9 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/redact"
-	"github.com/daika7ana/dns-client/internal/winacl"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/redact"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 // DefaultPath returns the machine-wide log path next to config.yaml/state.json
@@ -28,7 +28,7 @@ func DefaultPath() (p string) {
 		return ""
 	}
 
-	return filepath.Join(dir, "dns-client.log")
+	return filepath.Join(dir, "sigildns.log")
 }
 
 // Options configures Open.

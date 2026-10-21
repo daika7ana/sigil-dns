@@ -9,8 +9,8 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
-	"github.com/daika7ana/dns-client/internal/providers"
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // settingsPage is the configuration screen: the service lifecycle, the profile
@@ -92,7 +92,7 @@ func editNotice(t gogui.Theme, app *App) gogui.View {
 	if !canEdit(app.snap) {
 		return notice(t, noticeWarning,
 			"Service identity not verified",
-			"Editing is unavailable until the dns-client service is verified.")
+			"Editing is unavailable until the Sigil DNS service is verified.")
 	}
 	if hint := editingHint(app); hint != "" {
 		return notice(t, noticeInfo, "Offline editing", hint)
@@ -195,7 +195,7 @@ func (a *App) refreshProfiles() {
 // and turns protection on, no-opping the install when it is already running),
 // and Stop stops the service — protection goes off with it, but the service
 // stays installed.  Keying on interception means a running-but-off state (a
-// failed Enable, a `dns-client disable`, or a degraded boot) still offers Start
+// failed Enable, a `sigildns disable`, or a degraded boot) still offers Start
 // so the user can turn protection back on.  The SCM state badge lives in the
 // header beside the app name.  Writes are gated by the unverified-trust rule and
 // the busy flag.
@@ -899,7 +899,7 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 			Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
 			VAlign: gogui.VAlignMiddle,
 			Content: []gogui.View{
-				caption(t, "Resolved by the system's normal DNS, not by dns-client."),
+				caption(t, "Resolved by the system's normal DNS, not by Sigil DNS."),
 				ruleControls(t, i, r.enabled, disabled),
 			},
 		})

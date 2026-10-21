@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Windows 11 system-wide encrypted DNS client (YogaDNS-class, no kernel driver).
-Go module `github.com/daika7ana/dns-client`.
+Go module `github.com/daika7ana/sigil-dns`.
 
 `SPEC.md` is the **authoritative design** — read §15 (GUI/privilege), §4.7 (IPC security),
 §10 (packaging) before changing behaviour. `README.md` + `docs/{CONFIG,LIMITATIONS,TROUBLESHOOTING,RELEASE}.md`
@@ -14,7 +14,7 @@ Use the Docker wrapper `dev/go` — never call `go` directly, never install a to
 ./dev/go build ./...                            # default build (GUI-free)
 ./dev/go build -tags gui ./...                  # include the GUI
 GOOS=windows GOARCH=amd64 ./dev/go build ./...  # real cross-compile (pure Go)
-./dev/go generate ./cmd/dns-client               # regenerate the admin/UAC manifest resource
+./dev/go generate ./cmd/sigildns               # regenerate the admin/UAC manifest resource
 ./dev/go vet ./...
 GOOS=windows GOARCH=amd64 ./dev/go vet ./...    # also compiles Windows-only _test.go files
 ./dev/go test ./...
@@ -24,7 +24,7 @@ GOOS=windows GOARCH=amd64 ./dev/go vet ./...    # also compiles Windows-only _te
 
 `dev/go` runs `golang:1.26` with the repo mounted at `/w` and forwards `GOOS`/`GOARCH`/`CGO_ENABLED`.
 Host is Linux; the product target is **Windows x64 only** (pure Go — no cgo, no MinGW, no Node/WebView2).
-The Windows binary embeds `cmd/dns-client/dns-client.manifest` (`requireAdministrator`), so it requests
+The Windows binary embeds `cmd/sigildns/sigildns.manifest` (`requireAdministrator`), so it requests
 admin/UAC on every launch.
 
 ## Environment gotchas
@@ -36,7 +36,7 @@ admin/UAC on every launch.
 - `integration-windows` depends on real Quad9 DoH and is **occasionally flaky** (transient `upstream unreachable`); `gh run rerun <id> --failed` once before believing it.
 
 ## Architecture (the non-obvious parts)
-One binary, entrypoint `cmd/dns-client/main.go`, many modes: CLI commands, `--service` (SCM host),
+One binary, entrypoint `cmd/sigildns/main.go`, many modes: CLI commands, `--service` (SCM host),
 `--apply <path>` (elevated headless helper), `--gui`, `--tray`.
 
 `internal/`: `lifecycle` (enable/disable/restore orchestration) · `state` (atomic JSON + dirty marker +
@@ -79,7 +79,7 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   DoT/DoQ.
 - **Logging** (`internal/logging` + `redact.Handler`): opt-in service-owned file log from the top-level
   `log:` config block (default `off`; `level` off|error|info|debug; `path` defaults beside `config.yaml`;
-  10 MB cap, newest 3 MB kept). `cmd/dns-client` `serviceLogger()` is the single choke point; the
+  10 MB cap, newest 3 MB kept). `cmd/sigildns` `serviceLogger()` is the single choke point; the
   redacting handler (seeded via `providers.ExtractIDs`, **re-seeded on every reload**) scrubs resolver
   ids (DoH-path and DoT/DoQ hostname label), URL userinfo/query and `sdns://` at all levels, while
   `debug` exposes query names. The GUI **tails the file directly** — no IPC method. The file is opened
@@ -102,8 +102,8 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 - Resolver ids live only in the admin-only config. **Never** put them on argv/env or send them over IPC;
   the redacting `redact.Handler` keeps them out of logs at every level. `debug` is the deliberate
   exception for query names (not credentials). The status pipe carries only sanitized DTOs.
-- Control pipe `\\.\pipe\dns-client` = SYSTEM + Administrators only. Status pipe
-  `\\.\pipe\dns-client-status` = read-only, sanitized. Never grant `AU` access to the control pipe.
+- Control pipe `\\.\pipe\sigildns` = SYSTEM + Administrators only. Status pipe
+  `\\.\pipe\sigildns-status` = read-only, sanitized. Never grant `AU` access to the control pipe.
 - Elevation is explicit (`elevate.Apply` → `ShellExecuteExW runas` → `--apply`). The shipped exe also
   embeds a `requireAdministrator` manifest (see above), so it is elevated for its lifetime; the
   `--apply` helper stays one-shot per write and re-validates everything, applying only the allowlisted

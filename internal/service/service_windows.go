@@ -13,11 +13,11 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-// Registration (equivalent to the CLI's `dns-client service install`):
+// Registration (equivalent to the CLI's `sigildns service install`):
 //
-//	sc create dns-client binPath= "\"C:\path\to\dns-client.exe\" --service" ^
+//	sc create sigildns binPath= "\"C:\path\to\sigildns.exe\" --service" ^
 //	    start= auto obj= "LocalSystem"
-//	sc description dns-client "System-wide encrypted DNS client (loopback resolver + NRPT interception)."
+//	sc description sigildns "System-wide encrypted DNS client (loopback resolver + NRPT interception)."
 //
 // v1 runs as LocalSystem (see SPEC §2): the least-privilege virtual account
 // cannot own the pipe instances, is locked out of its own state file, and
@@ -93,7 +93,7 @@ func Run(agent *Agent) (err error) {
 }
 
 // Executable returns the canonical service binary for this process image: the
-// non-GUI sibling dns-client.exe when running as the GUI exe and that sibling
+// non-GUI sibling sigildns.exe when running as the GUI exe and that sibling
 // exists, else the current executable.
 func Executable() (exe string, err error) {
 	cur, err := os.Executable()

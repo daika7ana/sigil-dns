@@ -11,7 +11,7 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // countingSource counts full and live reads and returns fixed snapshots, so the

@@ -44,7 +44,7 @@ type Result struct {
 }
 
 // RandomName returns a random uncached probe name.
-func RandomName() (name string) { return randomLabel() + ".dns-client-health.invalid." }
+func RandomName() (name string) { return randomLabel() + ".sigildns-health.invalid." }
 
 // randomLabel returns a random 16-character hex label.
 func randomLabel() (label string) {

@@ -1,6 +1,6 @@
 # GUI
 
-`dns-client-gui.exe` is the full configuration client for the service. It has a
+`sigildns-gui.exe` is the full configuration client for the service. It has a
 **Status** page (banner + profile / filtering / cache cards), a **Settings** page
 (service Start / Stop and install / remove, profile management, and a
 per-profile editor), a **Rules** page (filter lists + per-domain routing with a
@@ -14,15 +14,15 @@ manifest that requests **administrator**, so Windows shows one UAC prompt at
 The GUI is a **client of the service**: it holds no DNS logic and never edits
 `config.yaml` itself — writes go through the elevated `--apply` helper. Install
 and start the service first (see the [installer](RELEASE.md) or
-`dns-client service install` + `service start`); without it the window stays in
+`sigildns service install` + `service start`); without it the window stays in
 the "Not running" state. A `gui.lock` beside `gui.json` keeps a single instance
 running.
 
 ## Launching
 
 - **Start Menu** — the packaged installer creates a shortcut named
-  `dns-client` that targets `dns-client-gui.exe`.
-- **Directly** — run `dns-client-gui.exe` with **no arguments**. The GUI binary
+  Sigil DNS that targets `sigildns-gui.exe`.
+- **Directly** — run `sigildns-gui.exe` with **no arguments**. The GUI binary
   is built with `-ldflags "-H windowsgui"`, so it opens the window and there is
   no console behind it. `--gui` opens the window explicitly.
 
@@ -55,7 +55,7 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 - Each per-domain rule row has a **Rule type** selector — **Upstream** or
   **Bypass**. An **Upstream** row takes the target resolver; a **Bypass** row
   resolves the domains via the system's normal DNS and replaces the input with
-  the caption *"Resolved by the system's normal DNS, not by dns-client."* The
+  the caption *"Resolved by the system's normal DNS, not by Sigil DNS."* The
   Enable / Remove controls are identical for both kinds.
 
 **Logging** shows:
@@ -70,12 +70,12 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 
 **About** shows:
 
-- App name `dns-client`.
+- App name `Sigil DNS`.
 - Version — the `internal/version` `Version` value (`dev` unless stamped at
   build time).
 - IPC protocol version — currently `1`.
 - Author `daika7ana`.
-- Repository — <https://github.com/daika7ana/dns-client>.
+- Repository — <https://github.com/daika7ana/sigil-dns>.
 - License GPLv3 (the project statically links `AdguardTeam/urlfilter`, which is
   GPL-3.0).
 
@@ -87,7 +87,7 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 | **Not running** | The service is stopped. |
 | **Restore needed** | A dirty marker from a previous session — interception was applied but not cleanly restored. |
 | **Needs attention** | The service is running but degraded: the config could not be loaded, or the health check failed. |
-| **Unverified** | The status pipe's server process is not the dns-client service. Reads are not trusted and all actions are refused. |
+| **Unverified** | The status pipe's server process is not the Sigil DNS service. Reads are not trusted and all actions are refused. |
 
 ## Controls
 
@@ -118,11 +118,11 @@ is that the window holds an admin token for its whole lifetime.
 These are the SPEC §15 rules as the window enforces them:
 
 - **Sanitized reads.** Reads go over the read-only status pipe
-  (`\\.\pipe\dns-client-status`), which carries only sanitized data — labels,
+  (`\\.\pipe\sigildns-status`), which carries only sanitized data — labels,
   flags, counts, hosts, and non-secret IP literals. It never carries resolver
   ids or credential-bearing URLs.
 - **Admin-only actions.** Actions go over the control pipe
-  (`\\.\pipe\dns-client`, SYSTEM + Administrators only), through the `--apply`
+  (`\\.\pipe\sigildns`, SYSTEM + Administrators only), through the `--apply`
   helper, which only a process holding an admin token can drive.
 - **Consent at launch, not per action.** The manifest prompts UAC when the exe
   starts; the window is then elevated for its lifetime. Actions still go via
@@ -139,5 +139,5 @@ These are the SPEC §15 rules as the window enforces them:
 The window defaults to 1280 × 720 and cannot be resized below 980 × 620. The
 left navigation rail (Status / Settings / Rules / Logging / About) is intentionally narrow.
 Window geometry and the theme preference live in
-`%LOCALAPPDATA%\dns-client\gui.json` (user scope, never secrets). Delete that
+`%LOCALAPPDATA%\SigilDNS\gui.json` (user scope, never secrets). Delete that
 file to reset the window size and theme to defaults.

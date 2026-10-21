@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/providers"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/state"
 
 	"gopkg.in/yaml.v3"
 )
@@ -865,8 +865,8 @@ func TestApplyShouldReload(t *testing.T) {
 
 // TestServiceBinaryMatches pins the anti-hijack registration check.
 func TestServiceBinaryMatches(t *testing.T) {
-	exe := `C:\Program Files\dns-client\dns-client.exe`
-	plain := `C:\dns-client\dns-client.exe`
+	exe := `C:\Program Files\sigildns\sigildns.exe`
+	plain := `C:\sigildns\sigildns.exe`
 
 	cases := []struct {
 		name    string
@@ -893,7 +893,7 @@ func TestServiceBinaryMatches(t *testing.T) {
 
 // TestApplyLogPatch covers the logging patch surface (LOGGING_PLAN §4.4).
 func TestApplyLogPatch(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "dns-client.log")
+	logPath := filepath.Join(t.TempDir(), "sigildns.log")
 
 	cfg := config.Default()
 	req := Request{Action: ActionApply, UUID: "u", Patch: Patch{
@@ -924,7 +924,7 @@ func TestApplyLogPatch(t *testing.T) {
 
 	// Missing parent directory rejected: otherwise the service silently fails
 	// open to stderr and the user gets no file.
-	missing := filepath.Join(t.TempDir(), "absent", "dns-client.log")
+	missing := filepath.Join(t.TempDir(), "absent", "sigildns.log")
 	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: ptr(missing)}}
 	if err := applyRequest(config.Default(), missReq, "rev"); err == nil {
 		t.Fatal("log path with a missing parent directory accepted")

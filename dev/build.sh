@@ -12,14 +12,14 @@ export GOOS="${GOOS:-windows}"
 export GOARCH="${GOARCH:-amd64}"
 
 version="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-stamp="-X github.com/daika7ana/dns-client/internal/version.Version=$version"
+stamp="-X github.com/daika7ana/sigil-dns/internal/version.Version=$version"
 
 mkdir -p dist
 
-echo "Building dns-client.exe ($version)"
-./dev/go build -trimpath -ldflags "-s -w $stamp" -o dist/dns-client.exe ./cmd/dns-client
+echo "Building sigildns.exe ($version)"
+./dev/go build -trimpath -ldflags "-s -w $stamp" -o dist/sigildns.exe ./cmd/sigildns
 
-echo "Building dns-client-gui.exe ($version)"
-./dev/go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/dns-client-gui.exe ./cmd/dns-client
+echo "Building sigildns-gui.exe ($version)"
+./dev/go build -trimpath -tags gui -ldflags "-s -w -H windowsgui $stamp" -o dist/sigildns-gui.exe ./cmd/sigildns
 
 ls -l dist/*.exe

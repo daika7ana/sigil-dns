@@ -50,7 +50,7 @@ func TestCheckSyntheticNotOurs(t *testing.T) {
 	defer cancel()
 
 	r := Check(ctx, Target{
-		Synthetic: "deadbeef.dns-client-probe.invalid.",
+		Synthetic: "deadbeef.sigildns-probe.invalid.",
 		UDPAddrs:  []string{pc.LocalAddr().String()},
 	})
 	if r.Ours {

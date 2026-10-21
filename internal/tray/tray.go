@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // ErrNotBuilt is returned when the binary was built without tray support.

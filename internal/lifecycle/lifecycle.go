@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/health"
-	"github.com/daika7ana/dns-client/internal/intercept"
-	"github.com/daika7ana/dns-client/internal/resolver"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/health"
+	"github.com/daika7ana/sigil-dns/internal/intercept"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // ErrNotRunning is returned when a resolver-scoped operation is requested while

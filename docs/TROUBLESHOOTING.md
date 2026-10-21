@@ -4,20 +4,20 @@
 
 | Item | Windows path |
 |---|---|
-| Config | `%ProgramData%\dns-client\config.yaml` |
-| State | `%ProgramData%\dns-client\state.json` |
-| Lock | `%ProgramData%\dns-client\state.json.lock` |
-| NRPT rule | Display name `dns-client`, namespace `.` |
+| Config | `%ProgramData%\SigilDNS\config.yaml` |
+| State | `%ProgramData%\SigilDNS\state.json` |
+| Lock | `%ProgramData%\SigilDNS\state.json.lock` |
+| NRPT rule | Display name `Sigil DNS`, namespace `.` |
 
-Find the resolved config path with `dns-client config path`. The state file is
-owned by the service (SYSTEM + Administrators). `dns-client status` reads it
+Find the resolved config path with `sigildns config path`. The state file is
+owned by the service (SYSTEM + Administrators). `sigildns status` reads it
 through the service/binary, which requests admin at launch, so the command
 prompts UAC like every other invocation; editing the file by hand is not
 supported.
 
 ## Reading `status`
 
-`dns-client status` prints the persisted state as JSON:
+`sigildns status` prints the persisted state as JSON:
 
 ```json
 {
@@ -100,7 +100,7 @@ Quick manual check:
 # Is our resolver answering?
 Resolve-DnsName example.com -Server 127.0.0.1 -Type A
 # Does the upstream work at all?
-dns-client run --upstream https://dns.quad9.net/dns-query --bootstrap 9.9.9.9:53
+sigildns run --upstream https://dns.quad9.net/dns-query --bootstrap 9.9.9.9:53
 ```
 
 ## `dirty` state — recovery with `restore`
@@ -114,9 +114,9 @@ re-snapshots a loopbacked machine (which would capture `127.0.0.1` as the
 To recover manually:
 
 ```powershell
-dns-client status     # confirm "dirty": true
-dns-client restore    # remove NRPT/interception, flush DNS, clear dirty
-dns-client status     # expect "dirty": false, "mode": "off"
+sigildns status     # confirm "dirty": true
+sigildns restore    # remove NRPT/interception, flush DNS, clear dirty
+sigildns status     # expect "dirty": false, "mode": "off"
 ```
 
 `restore` is idempotent, can reclaim a stale lock left by a dead process, and
@@ -131,7 +131,7 @@ on the next enable.
 
 A VPN (or another DNS tool) may install a catch-all or more-specific NRPT rule.
 Windows gives more specific rules precedence, so ours can be overridden and VPN
-DNS can hard-break. `dns-client` logs a warning and does not modify foreign
+DNS can hard-break. Sigil DNS logs a warning and does not modify foreign
 rules:
 
 ```
@@ -144,8 +144,8 @@ Inspect rules:
 Get-DnsClientNrptRule | Format-Table DisplayName, Namespace, NameServers
 ```
 
-Only one of the VPN or `dns-client` should own DNS for a given namespace. If VPN
-DNS is broken, either stop `dns-client` (`service stop`) or disconnect the VPN.
+Only one of the VPN or Sigil DNS should own DNS for a given namespace. If VPN
+DNS is broken, either stop Sigil DNS (`service stop`) or disconnect the VPN.
 
 ## Config parse errors
 
@@ -165,14 +165,14 @@ Config errors are reported on `enable`/`run`. Examples:
 | `profile "x": per_domain N is a bypass rule with an upstream` | A `bypass: true` rule must not set `upstream`. |
 
 A `bypass: true` rule is intentional: those domains are resolved by the system's
-normal DNS, not by `dns-client` — see [LIMITATIONS](LIMITATIONS.md).
+normal DNS, not by Sigil DNS — see [LIMITATIONS](LIMITATIONS.md).
 
 If a config file is unreadable at service start, the service **still starts in a
 degraded state** so `restore` and status work; enabling then fails with
 `configuration unavailable: ...` until the file is fixed. Restart the service
 after fixing it.
 
-## "another dns-client instance is running"
+## "another Sigil DNS instance is running"
 
 A single-instance lock (`state.json.lock`) guards the snapshot. This error means
 a live process holds it. If the holder crashed, a stale lock is reclaimed
@@ -180,7 +180,7 @@ automatically when its recorded pid is dead; `restore` will reclaim it. If it
 persists, check for a leftover process:
 
 ```powershell
-Get-Process dns-client
+Get-Process sigildns
 ```
 
 ## Service will not start or is degraded
@@ -205,5 +205,5 @@ Get-DnsClientNrptRule | Format-Table DisplayName, Namespace, NameServers
 ipconfig /flushdns
 ```
 
-If a VPN is connected, its rules may still be in effect after `dns-client` is
+If a VPN is connected, its rules may still be in effect after Sigil DNS is
 off — that is the VPN's, not ours.

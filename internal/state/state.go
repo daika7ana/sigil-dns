@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/winacl"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 // SchemaVersion is the current state file schema version.  Bump it on any
@@ -50,7 +50,7 @@ var ErrNoState = errors.New("no state file")
 var ErrDirtySnapshot = errors.New("refusing to overwrite snapshot while dirty")
 
 // ErrLocked is returned by AcquireLock when another instance holds the lock.
-var ErrLocked = errors.New("another dns-client instance is running")
+var ErrLocked = errors.New("another Sigil DNS instance is running")
 
 // InterfaceDNS is the captured per-interface DNS configuration used by the
 // per-adapter fallback mechanism.  GUID is stable; InterfaceIndex is not.

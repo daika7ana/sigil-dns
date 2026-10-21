@@ -1,5 +1,5 @@
 // Package ipc implements the versioned request/response protocol spoken over
-// the dns-client named pipe (SPEC §2, §4.7, §15).
+// the sigildns named pipe (SPEC §2, §4.7, §15).
 //
 // The transport is abstracted so the protocol is testable off Windows: Windows
 // uses a named pipe with a locking SDDL; other platforms use a Unix socket.
@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // ProtocolVersion is the current IPC protocol version.  Peers must send it in

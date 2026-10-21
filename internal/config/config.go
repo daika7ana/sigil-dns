@@ -16,9 +16,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/daika7ana/dns-client/internal/providers"
-	"github.com/daika7ana/dns-client/internal/resolver"
-	"github.com/daika7ana/dns-client/internal/winacl"
+	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 
 	"gopkg.in/yaml.v3"
 )
@@ -239,18 +239,18 @@ func Default() (c *Config) {
 // DefaultPath returns the platform-appropriate config file path.
 func DefaultPath() (p string) {
 	if dir := os.Getenv("ProgramData"); dir != "" {
-		return filepath.Join(dir, "dns-client", "config.yaml")
+		return filepath.Join(dir, "SigilDNS", "config.yaml")
 	}
 
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "dns-client", "config.yaml")
+		return filepath.Join(dir, "sigildns", "config.yaml")
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "dns-client", "config.yaml")
+		return filepath.Join(home, ".config", "sigildns", "config.yaml")
 	}
 
-	return filepath.Join(os.TempDir(), "dns-client", "config.yaml")
+	return filepath.Join(os.TempDir(), "sigildns", "config.yaml")
 }
 
 // Load reads and normalizes the config at path.  It returns ErrNoConfig if the

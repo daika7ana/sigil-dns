@@ -13,10 +13,10 @@ import (
 // Named pipe endpoints.  Both are documented in README and SPEC §2/§4.7.
 const (
 	// PipeName is the control pipe: state-changing methods, admin/SYSTEM only.
-	PipeName = `\\.\pipe\dns-client`
+	PipeName = `\\.\pipe\sigildns`
 
 	// StatusPipeName is the read-only status pipe.
-	StatusPipeName = `\\.\pipe\dns-client-status`
+	StatusPipeName = `\\.\pipe\sigildns-status`
 )
 
 // PipeSDDL is the control-pipe security descriptor: Generic All to SYSTEM (the

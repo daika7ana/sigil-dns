@@ -11,7 +11,7 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // appIconPNG is the window icon (title bar + taskbar), embedded so the run
@@ -33,7 +33,7 @@ const (
 
 // windowTitle is the native window title.  The position shim finds this
 // process's window by it.
-const windowTitle = "dns-client"
+const windowTitle = "Sigil DNS"
 
 // pollInterval is the live status refresh cadence while the window is focused
 // (SPEC §15.4: 1 s).

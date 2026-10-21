@@ -8,8 +8,8 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // statusKind is the one state the window presents at a time.
@@ -305,10 +305,10 @@ func pageName(p pageKind) (name string) {
 // About metadata.  Plain constants, so the page needs no service read or config
 // file and renders the same in every state.
 const (
-	appName        = "dns-client"
+	appName        = "Sigil DNS"
 	appAuthor      = "daika7ana"
 	appAuthorURL   = "https://github.com/daika7ana"
-	appRepoURL     = "https://github.com/daika7ana/dns-client"
+	appRepoURL     = "https://github.com/daika7ana/sigil-dns"
 	appLicense     = "GPLv3"
 	appLicenseNote = "This program links AdguardTeam/urlfilter, which is licensed under GPL-3.0."
 )
@@ -483,7 +483,7 @@ func brand(t gogui.Theme, app *App, caption string) gogui.View {
 						VAlign:     gogui.VAlignMiddle,
 						Content: []gogui.View{
 							gogui.Text(gogui.TextCfg{
-								Text:      "dns-client",
+								Text:      "Sigil DNS",
 								TextStyle: t.TextStyleTitle,
 								Sizing:    gogui.FitFit,
 							}),
@@ -906,7 +906,7 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 		return statusVisual{
 			kind:          kindUnverified,
 			headline:      "Unverified",
-			detail:        "The status source could not be confirmed as the dns-client service, so its data is not shown.",
+			detail:        "The status source could not be confirmed as the Sigil DNS service, so its data is not shown.",
 			headlineStyle: t.TextStyleError,
 			bg:            t.ColorErrorSubtle,
 			accent:        t.TextStyleError.Color,
@@ -916,7 +916,7 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 			return statusVisual{
 				kind:          kindStopped,
 				headline:      "Stopped",
-				detail:        "The dns-client service is installed but not running.",
+				detail:        "The Sigil DNS service is installed but not running.",
 				headlineStyle: t.TextStyleTitleSmall,
 				bg:            t.ColorPanel,
 				accent:        t.TextStyleSecondary.Color,
@@ -926,7 +926,7 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 		return statusVisual{
 			kind:          kindStopped,
 			headline:      "Not installed",
-			detail:        "The dns-client service is not installed yet.",
+			detail:        "The Sigil DNS service is not installed yet.",
 			headlineStyle: t.TextStyleTitleSmall,
 			bg:            t.ColorPanel,
 			accent:        t.TextStyleSecondary.Color,
@@ -958,7 +958,7 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 		return statusVisual{
 			kind:          kindRunning,
 			headline:      "Protected",
-			detail:        "DNS queries are handled by the dns-client loopback resolver.",
+			detail:        "DNS queries are handled by the Sigil DNS loopback resolver.",
 			headlineStyle: t.TextStyleSuccess,
 			bg:            t.ColorPanel,
 			accent:        t.TextStyleSuccess.Color,

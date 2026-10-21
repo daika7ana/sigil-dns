@@ -1,4 +1,4 @@
-// Package service hosts dns-client as a Windows service and owns the loopback
+// Package service hosts sigildns as a Windows service and owns the loopback
 // resolver, interception, and state (SPEC §2).  The OS-agnostic core (Agent) is
 // kept separate from the SCM plumbing so it is testable off Windows.
 package service
@@ -12,19 +12,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/drift"
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/drift"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 // Service identity.  v1 runs as LocalSystem: the least-privilege virtual account
 // cannot own the pipe instances or perform NRPT/adapter writes (SPEC §2).
 const (
 	// Name is the SCM service name.
-	Name = "dns-client"
+	Name = "sigildns"
 
 	// DisplayName is the human-readable service name.
-	DisplayName = "dns-client loopback DNS"
+	DisplayName = "Sigil DNS"
 
 	// Description is the service description.
 	Description = "System-wide encrypted DNS client (loopback resolver + NRPT interception)."

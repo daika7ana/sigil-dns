@@ -1,4 +1,4 @@
-// Command dns-client is the CLI for the dns-client loopback DNS resolver.
+// Command sigildns is the CLI for the sigildns loopback DNS resolver.
 //
 // Commands:
 //
@@ -25,20 +25,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/drift"
-	"github.com/daika7ana/dns-client/internal/elevate"
-	"github.com/daika7ana/dns-client/internal/filter"
-	"github.com/daika7ana/dns-client/internal/gui"
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/lifecycle"
-	"github.com/daika7ana/dns-client/internal/logging"
-	"github.com/daika7ana/dns-client/internal/providers"
-	"github.com/daika7ana/dns-client/internal/redact"
-	"github.com/daika7ana/dns-client/internal/resolver"
-	"github.com/daika7ana/dns-client/internal/service"
-	"github.com/daika7ana/dns-client/internal/state"
-	"github.com/daika7ana/dns-client/internal/tray"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/drift"
+	"github.com/daika7ana/sigil-dns/internal/elevate"
+	"github.com/daika7ana/sigil-dns/internal/filter"
+	"github.com/daika7ana/sigil-dns/internal/gui"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/lifecycle"
+	"github.com/daika7ana/sigil-dns/internal/logging"
+	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/redact"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/service"
+	"github.com/daika7ana/sigil-dns/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/tray"
 )
 
 // Default upstream settings shown in help text.
@@ -51,12 +51,12 @@ const (
 // requireAdministrator, so every launch elevates (UAC). The generated .syso is
 // committed; regenerate from the repo root with:
 //
-//	./dev/go generate ./cmd/dns-client
+//	./dev/go generate ./cmd/sigildns
 //
-//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest dns-client.manifest -ico dns-client.ico -arch amd64 -o rsrc_windows_amd64.syso
+//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest sigildns.manifest -ico sigildns.ico -arch amd64 -o rsrc_windows_amd64.syso
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "dns-client:", err)
+		fmt.Fprintln(os.Stderr, "sigildns:", err)
 		os.Exit(1)
 	}
 }
@@ -128,7 +128,7 @@ type options struct {
 
 // parseFlags parses rest for cmd, registering only the flags cmd supports.
 func parseFlags(cmd string, rest []string) (o options, err error) {
-	fs := flag.NewFlagSet("dns-client "+cmd, flag.ContinueOnError)
+	fs := flag.NewFlagSet("sigildns "+cmd, flag.ContinueOnError)
 
 	switch cmd {
 	case "enable", "run", "service":
@@ -189,7 +189,7 @@ func (o options) serviceLogger() (l *slog.Logger, closer io.Closer) {
 		Secrets:   resolverSecrets(resolved),
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "dns-client: file logging unavailable, using stderr:", err)
+		fmt.Fprintln(os.Stderr, "sigildns: file logging unavailable, using stderr:", err)
 	}
 
 	return l, closer
@@ -428,7 +428,7 @@ func cmdReload(args []string) (err error) {
 
 	sum, err := ipc.NewClient(ipc.DefaultEndpoint()).Reload(ctx)
 	if err != nil {
-		return fmt.Errorf("reload failed (is the dns-client service running?): %w", err)
+		return fmt.Errorf("reload failed (is the Sigil DNS service running?): %w", err)
 	}
 
 	return printSummary(sum)
@@ -445,7 +445,7 @@ func cmdRefresh(args []string) (err error) {
 	defer cancel()
 
 	if err = ipc.NewClient(ipc.DefaultEndpoint()).RefreshLists(ctx); err != nil {
-		return fmt.Errorf("refresh failed (is the dns-client service running?): %w", err)
+		return fmt.Errorf("refresh failed (is the Sigil DNS service running?): %w", err)
 	}
 
 	fmt.Fprintln(os.Stderr, "filter lists refreshed")
@@ -747,7 +747,7 @@ func cmdServiceHost(args []string) (err error) {
 // settings) never appears on the command line.
 func cmdApply(args []string) (err error) {
 	if len(args) != 1 {
-		return errors.New("usage: dns-client --apply <staging-request-path>")
+		return errors.New("usage: sigildns --apply <staging-request-path>")
 	}
 
 	return elevate.HelperMain(args[0])
@@ -815,7 +815,7 @@ func providersList() {
 // providersShow expands a selection and prints the generated profile fragment.
 // Flags may appear before or after the positional selection.
 func providersShow(args []string) (err error) {
-	fs := flag.NewFlagSet("dns-client providers show", flag.ContinueOnError)
+	fs := flag.NewFlagSet("sigildns providers show", flag.ContinueOnError)
 	id := fs.String("id", "", "resolver id")
 	upstream := fs.String("upstream", "", "custom upstream URL")
 	bootstrap := fs.String("bootstrap", "", "comma-separated bootstrap addresses")
@@ -927,10 +927,10 @@ func defaultStatePath() (p string) { return config.SystemStatePath() }
 
 // usage prints CLI help.
 func usage() {
-	fmt.Fprint(os.Stderr, `dns-client - system-wide encrypted DNS on loopback
+	fmt.Fprint(os.Stderr, `sigildns - system-wide encrypted DNS on loopback
 
 Usage:
-  dns-client <command> [flags]
+  sigildns <command> [flags]
 
 Commands:
   enable             bind, health-check, snapshot, apply interception, run until Ctrl-C

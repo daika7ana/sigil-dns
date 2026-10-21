@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daika7ana/dns-client/internal/state"
-	"github.com/daika7ana/dns-client/internal/version"
+	"github.com/daika7ana/sigil-dns/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // Robustness limits for the IPC server (M7).

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 func TestDefault(t *testing.T) {
@@ -746,7 +746,7 @@ func TestLogConfigValidate(t *testing.T) {
 		t.Fatal("directory log path accepted")
 	}
 
-	for _, dev := range []string{`\\.\PhysicalDrive0`, `\\?\C:\dns-client.log`} {
+	for _, dev := range []string{`\\.\PhysicalDrive0`, `\\?\C:\sigildns.log`} {
 		device := Default()
 		device.Log.Path = dev
 		if err := device.Validate(); err == nil {
@@ -755,7 +755,7 @@ func TestLogConfigValidate(t *testing.T) {
 	}
 
 	good := Default()
-	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(t.TempDir(), "dns-client.log"), MaxSizeMB: 5, KeepMB: 2}
+	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(t.TempDir(), "sigildns.log"), MaxSizeMB: 5, KeepMB: 2}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid log config rejected: %v", err)
 	}

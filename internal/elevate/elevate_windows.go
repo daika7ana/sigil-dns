@@ -18,13 +18,13 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/daika7ana/dns-client/internal/config"
-	"github.com/daika7ana/dns-client/internal/intercept"
-	"github.com/daika7ana/dns-client/internal/ipc"
-	"github.com/daika7ana/dns-client/internal/lifecycle"
-	"github.com/daika7ana/dns-client/internal/service"
-	"github.com/daika7ana/dns-client/internal/state"
-	"github.com/daika7ana/dns-client/internal/winacl"
+	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/intercept"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/lifecycle"
+	"github.com/daika7ana/sigil-dns/internal/service"
+	"github.com/daika7ana/sigil-dns/internal/state"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 // Bounded waits (SPEC §15.2): the helper must never hang the UI or the SCM.
@@ -417,7 +417,7 @@ func startRegisteredService() (err error) {
 // restoreViaControl restores interception over the verified control pipe.
 // waitControlServer verifies the server identity on one connection, then the
 // restore opens a fresh connection; the re-dial window is accepted because
-// owning \\.\pipe\dns-client requires SYSTEM+Administrators.
+// owning \\.\pipe\sigildns requires SYSTEM+Administrators.
 func restoreViaControl(ctx context.Context, pid uint32) (err error) {
 	if err = waitControlServer(ctx, pid); err != nil {
 		return err
@@ -504,7 +504,7 @@ func restoreInterception(ctx context.Context, pid uint32) (err error) {
 	return restoreInterceptionWith(pid, pipe, local)
 }
 
-// verifyInterceptionDown proves no dns-client NRPT rule remains.  It fails
+// verifyInterceptionDown proves no sigildns NRPT rule remains.  It fails
 // closed: when the probe cannot be run, or a live rule survives one more local
 // restore, it returns a static error so the caller aborts before deleting.
 func verifyInterceptionDown(ctx context.Context) (err error) {
@@ -775,7 +775,7 @@ func stagingDir() (dir string, err error) {
 		return "", errors.New("LOCALAPPDATA is not set")
 	}
 
-	return filepath.Join(base, "dns-client", "staging"), nil
+	return filepath.Join(base, "SigilDNS", "staging"), nil
 }
 
 // stagingSDDL is the protected DACL for staging files: full control to the

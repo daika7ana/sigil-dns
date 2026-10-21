@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/daika7ana/dns-client/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/config"
 )
 
 // TestApplyListPatch covers the allowlisted list operations and index bounds.
