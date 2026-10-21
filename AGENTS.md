@@ -114,7 +114,9 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   GUI smoke test on both runners) plus `integration-windows` (real NRPT via `scripts/ci-windows-integration.ps1`).
 - `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; signs with
   `signtool` only when `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` secrets exist (else skip +
-  `::warning::`); zips and creates the GitHub Release. **The GUI exists only with `-tags gui`**, so any
+  `::warning::`); zips (+ `SHA256SUMS.txt`) and publishes the Release **draft-first** (create draft →
+  upload assets → `--draft=false`), so a failed run never exposes an assetless release. Notes come from
+  `release-notes/<tag>.md` if present, else `--generate-notes`. **The GUI exists only with `-tags gui`**, so any
   packaging step must pass it to ship a GUI binary.
 - Always use `go-version-file: go.mod` in workflows — never `go-version: '1.26.x'` (setup-go v7 sets
   `GOTOOLCHAIN=local` and will not auto-fetch the toolchain `go.mod` requires).

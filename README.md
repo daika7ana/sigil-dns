@@ -70,6 +70,19 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 
 ## Install
 
+> **Releases are not code-signed yet.** Windows will show **"Windows protected
+> your PC"** ("Unknown publisher") the first time you run a downloaded
+> `sigildns.exe` or `sigildns-gui.exe`. That is SmartScreen having no
+> reputation for the file, not a broken download. Check the archive against
+> `SHA256SUMS.txt` on the release page, then pick **More info → Run anyway**.
+> The hash proves the download is intact, not who built it — only a signature
+> can do that. On a managed machine the policy may forbid the override; ask IT
+> to allow the file hash.
+>
+> ```powershell
+> Get-FileHash .\sigildns_<version>_windows_amd64.zip -Algorithm SHA256
+> ```
+
 ### Option A — packaged installer (recommended)
 
 From an **elevated PowerShell**:
@@ -77,6 +90,9 @@ From an **elevated PowerShell**:
 ```powershell
 .\installer\install.ps1
 ```
+
+If PowerShell refuses to run the script ("not digitally signed"), unblock the
+extracted files first: `Get-ChildItem -Recurse | Unblock-File`.
 
 The installer registers the Windows service and drops a **Start Menu shortcut**
 named Sigil DNS that launches the GUI. Just run it from there whenever you
@@ -315,9 +331,11 @@ leaves a stray console window, and a `windowsgui` CLI loses stdout (breaking
 tag.
 
 CI runs on `windows-latest` (`.github/workflows/ci.yml`); tagged releases build
-+ optionally sign on `windows-latest` (`.github/workflows/release.yml`). The tray
-UI remains **deferred to v1.1** — the `--tray` hook exists but no tray UI is
-built. CI additionally runs a `-tags tray` build to keep the tag compiling.
+and publish from `.github/workflows/release.yml`, and are signed only when a
+signing certificate is configured — **current releases are unsigned** (see
+[Install](#install)). The tray UI remains **deferred to v1.1** — the `--tray`
+hook exists but no tray UI is built. CI additionally runs a `-tags tray` build
+to keep the tag compiling.
 
 ```sh
 dev/go build -tags tray ./...

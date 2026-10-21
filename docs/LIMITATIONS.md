@@ -131,6 +131,12 @@ fall back to DoT or DoH if an upstream reports unhealthy. If every upstream
 fails, the two-stage health check fails and `enable` aborts, leaving DNS
 untouched.
 
+Unsigned builds get extra scrutiny from these products: an unknown binary that
+installs a LocalSystem service and rewrites NRPT rules matches several
+unwanted-software heuristics. Signing does not silence that (behavior is what
+gets scored), but it separates "unknown publisher" from "known publisher" in
+the alert.
+
 ## WSL
 
 WSL2 on the default NAT network does not always route through the Windows

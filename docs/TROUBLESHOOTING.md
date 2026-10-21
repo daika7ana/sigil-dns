@@ -1,5 +1,22 @@
 # Troubleshooting
 
+## "Windows protected your PC" on first run
+
+Releases are unsigned, so SmartScreen has no reputation for the binaries and
+warns once per new file hash. Verify the zip against `SHA256SUMS.txt` on the
+release page, then choose **More info → Run anyway**. If the button is missing,
+group policy or Smart App Control is blocking it: allow the file hash in
+Defender, or ask IT. A signature is the only signal that names the publisher —
+the hash only proves the download is intact.
+
+The `.ps1` files inside the zip carry the same Mark-of-the-Web, so under the
+default `RemoteSigned` policy PowerShell refuses to run `install.ps1` ("not
+digitally signed"). Unblock the extracted folder, then rerun:
+
+```powershell
+Get-ChildItem -Recurse | Unblock-File
+```
+
 ## Where things live
 
 | Item | Windows path |

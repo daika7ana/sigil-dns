@@ -17,6 +17,13 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
 - `config.example.yaml`, `README.md`, `LICENSE`.
 - `installer/install.ps1`, `installer/uninstall.ps1`.
 
+The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
+download can be verified:
+
+```powershell
+Get-FileHash .\sigildns_v0.1.0_windows_amd64.zip -Algorithm SHA256
+```
+
 Release builds use the `gui` tag (never `-tags tray`); the **tray UI is deferred
 to v1.1**.
 
@@ -61,8 +68,31 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
    binaries, `config.example.yaml`, `README.md`, `LICENSE`, and both installer
    scripts.
-6. Uploads the zip as a build artifact, and for tag builds creates (or updates)
-   the GitHub Release and attaches the zip.
+6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
+   it (the zip itself is never signed).
+7. Verifies the package: extracts the zip, asserts both binaries are present,
+   and (when signing ran) requires a `Valid` Authenticode signature on each.
+8. Uploads the zip and checksums as a build artifact.
+9. For tag builds, publishes the GitHub Release **draft-first**:
+   `gh release create --draft` → `gh release upload --clobber` → `gh release
+   edit --draft=false`. A failed run therefore never leaves a public release
+   without its assets, and re-running a tag build converges on the same
+   draft.
+
+Release runs are serialized per ref
+(`concurrency: release-${{ github.ref }}`), so a manual dispatch cannot
+interleave uploads with a tag push.
+
+## Release notes
+
+Release notes come from `release-notes/<tag>.md` when that file exists in the
+tagged commit; otherwise the workflow falls back to
+`gh release create --generate-notes` (merged PRs and first-time contributors).
+
+Write curated notes for anything a user must act on — changed default
+profiles, interception or NRPT behaviour, service identity, config schema.
+Generated notes do not know which of those changed. No file is required for
+routine patch releases.
 
 ## Code signing secrets
 
@@ -136,5 +166,8 @@ Get-AuthenticodeSignature .\sigildns.exe | Format-List Status, SignerCertificate
 
 The release zip is unsigned when the secrets are absent. Users installing an
 unsigned build may see SmartScreen warnings; that is expected until signing is
-configured. Installation instructions are in the installer scripts and the
-user-facing docs.
+configured. `SHA256SUMS.txt` catches a corrupted download, not a tampered one —
+it is served from the same place as the zip, so only the Authenticode signature
+on the binaries is real proof of origin.
+
+Installation instructions are in the installer scripts and the user-facing docs.
