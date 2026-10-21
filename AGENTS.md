@@ -22,7 +22,7 @@ GOOS=windows GOARCH=amd64 ./dev/go vet ./...    # also compiles Windows-only _te
 ./dev/go test -tags gui ./internal/gui/         # GUI headless smoke test
 ```
 
-`dev/go` runs `golang:1.26` with the repo mounted at `/w` and forwards `GOOS`/`GOARCH`/`CGO_ENABLED`.
+`dev/go` runs `golang:1.27.3` with the repo mounted at `/w` and forwards `GOOS`/`GOARCH`/`CGO_ENABLED`.
 Host is Linux; the product target is **Windows x64 only** (pure Go — no cgo, no MinGW, no Node/WebView2).
 The Windows binary embeds `cmd/sigildns/sigildns.manifest` (`requireAdministrator`), so it requests
 admin/UAC on every launch.
@@ -127,7 +127,7 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   upload assets → `--draft=false`), so a failed run never exposes an assetless release. Notes come from
   `release-notes/<tag>.md` if present, else `--generate-notes`. **The GUI exists only with `-tags gui`**, so any
   packaging step must pass it to ship a GUI binary.
-- Always use `go-version-file: go.mod` in workflows — never `go-version: '1.26.x'` (setup-go v7 sets
+- Always use `go-version-file: go.mod` in workflows — never `go-version: '1.27.x'` (setup-go v7 sets
   `GOTOOLCHAIN=local` and will not auto-fetch the toolchain `go.mod` requires).
 - After pushing, confirm CI with `gh run watch <id> --exit-status` before calling it green. Commit style:
   imperative subject, no trailers.

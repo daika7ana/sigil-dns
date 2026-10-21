@@ -883,7 +883,7 @@ func providersShow(args []string) (err error) {
 	if len(parts) > 2 {
 		sel.Protocol = providers.Protocol(parts[2])
 	}
-	for _, b := range strings.Split(*bootstrap, ",") {
+	for b := range strings.SplitSeq(*bootstrap, ",") {
 		if b = strings.TrimSpace(b); b != "" {
 			sel.Bootstrap = append(sel.Bootstrap, b)
 		}

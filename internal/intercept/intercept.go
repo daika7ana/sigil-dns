@@ -87,7 +87,7 @@ func nrptEnableScript(namespaces []string) string {
 // lines, comparing on the dot-normalized form.
 func nrptVerify(out string, namespaces []string) (missing []string) {
 	present := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		ns, ok := strings.CutPrefix(strings.TrimSpace(line), "rule=")
 		if ok {
 			present[nrptNormalize(ns)] = true

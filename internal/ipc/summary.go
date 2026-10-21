@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -305,13 +306,7 @@ func profileIDSet(p config.Profile) (ok bool) {
 // anyIDSet reports whether any upstream looks like it carries a resolver id (a
 // non-standard DoH path).  It never returns the id.
 func anyIDSet(upstreams []string) (ok bool) {
-	for _, u := range upstreams {
-		if upstreamHasPathID(u) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(upstreams, upstreamHasPathID)
 }
 
 // upstreamHasPathID reports whether u has a DoH path beyond the well-known

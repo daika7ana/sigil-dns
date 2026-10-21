@@ -49,7 +49,9 @@ func TestCheckRevision(t *testing.T) {
 }
 
 // ptr is a tiny helper for building allowlisted pointer patches.
-func ptr[T any](v T) *T { return &v }
+//
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 // TestValidatePatchShape covers the field-level constraints on Request.Validate.
 func TestValidatePatchShape(t *testing.T) {
@@ -65,13 +67,13 @@ func TestValidatePatchShape(t *testing.T) {
 	}{
 		{
 			name:    "service action takes no patch",
-			req:     Request{Action: ActionServiceStart, UUID: "u", Patch: Patch{ActiveProfile: ptr("x")}},
+			req:     Request{Action: ActionServiceStart, UUID: "u", Patch: Patch{ActiveProfile: new("x")}},
 			wantErr: true,
 		},
 		{name: "service action empty patch", req: Request{Action: ActionServiceStop, UUID: "u"}, wantErr: false},
 		{
 			name:    "enable takes no patch",
-			req:     Request{Action: ActionEnable, UUID: "u", Patch: Patch{ActiveProfile: ptr("x")}},
+			req:     Request{Action: ActionEnable, UUID: "u", Patch: Patch{ActiveProfile: new("x")}},
 			wantErr: true,
 		},
 		{
@@ -98,7 +100,7 @@ func TestValidatePatchShape(t *testing.T) {
 		{
 			name: "cache size zero while explicitly disabled ok",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {Cache: &CachePatch{Enabled: ptr(false), SizeBytes: &sizeZero}},
+				"default": {Cache: &CachePatch{Enabled: new(false), SizeBytes: &sizeZero}},
 			}}},
 			wantErr: false,
 		},
@@ -119,36 +121,36 @@ func TestValidatePatchShape(t *testing.T) {
 		{
 			name: "more than one structural op rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{
-				AddProfile:    ptr("work"),
-				DeleteProfile: ptr("other"),
+				AddProfile:    new("work"),
+				DeleteProfile: new("other"),
 			}},
 			wantErr: true,
 		},
 		{
 			name: "invalid id charset rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {ID: ptr("bad/id")},
+				"default": {ID: new("bad/id")},
 			}}},
 			wantErr: true,
 		},
 		{
 			name: "over-long id rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {ID: ptr(strings.Repeat("a", 65))},
+				"default": {ID: new(strings.Repeat("a", 65))},
 			}}},
 			wantErr: true,
 		},
 		{
 			name: "url without scheme rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {URL: ptr("dns.example")},
+				"default": {URL: new("dns.example")},
 			}}},
 			wantErr: true,
 		},
 		{
 			name: "good url ok",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {URL: ptr("tls://1.1.1.1:853"), Bootstrap: &[]string{"1.1.1.1"}},
+				"default": {URL: new("tls://1.1.1.1:853"), Bootstrap: &[]string{"1.1.1.1"}},
 			}}},
 			wantErr: false,
 		},
@@ -175,7 +177,7 @@ func TestValidatePatchShape(t *testing.T) {
 func TestApplyRequestGuards(t *testing.T) {
 	t.Run("unknown profiles key rejected", func(t *testing.T) {
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			"ghost": {Cache: &CachePatch{Enabled: ptr(false)}},
+			"ghost": {Cache: &CachePatch{Enabled: new(false)}},
 		}}}
 		if err := applyRequest(config.Default(), req, "rev-1"); err == nil {
 			t.Fatal("unknown profile patch accepted")
@@ -204,7 +206,7 @@ func TestApplyRequestGuards(t *testing.T) {
 			Action:           ActionApply,
 			UUID:             "u",
 			ExpectedRevision: "rev-1",
-			Patch:            Patch{ActiveProfile: ptr("ghost")},
+			Patch:            Patch{ActiveProfile: new("ghost")},
 		}
 		if err := applyRequest(cfg, req, "rev-2"); !errors.Is(err, ErrRevision) {
 			t.Fatalf("applyRequest = %v, want ErrRevision", err)
@@ -222,7 +224,7 @@ func TestApplyRequestGuards(t *testing.T) {
 		}
 
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			config.DefaultProfileName: {Cache: &CachePatch{Enabled: ptr(true)}},
+			config.DefaultProfileName: {Cache: &CachePatch{Enabled: new(true)}},
 		}}}
 		if err = applyRequest(cfg, req, "rev"); err != nil {
 			t.Fatalf("applyRequest: %v", err)
@@ -380,7 +382,7 @@ func TestApplyRequestCustomReplaceOnly(t *testing.T) {
 		cfg.Profiles[def] = p
 
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), URL: ptr("tls://new.example:853"), Bootstrap: &[]string{"1.1.1.1"}},
+			def: {Provider: ptr(providers.Custom), URL: new("tls://new.example:853"), Bootstrap: &[]string{"1.1.1.1"}},
 		}}}
 
 		if err := applyRequest(cfg, req, "rev"); err != nil {
@@ -444,7 +446,7 @@ func TestApplyRequestProtocolChangePreservesID(t *testing.T) {
 			cfg.Profiles[def] = p
 
 			req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				def: {Provider: ptr(tc.provider), Protocol: ptr(string(tc.newProto))},
+				def: {Provider: new(tc.provider), Protocol: new(string(tc.newProto))},
 			}}}
 
 			if err := applyRequest(cfg, req, "rev"); err != nil {
@@ -492,7 +494,7 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 	t.Run("blank url matching protocol ok", func(t *testing.T) {
 		cfg := newCustomCfg(secret, "dot")
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), Protocol: ptr("dot")},
+			def: {Provider: ptr(providers.Custom), Protocol: new("dot")},
 		}}}
 
 		if err := applyRequest(cfg, req, "rev"); err != nil {
@@ -507,7 +509,7 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 	t.Run("blank url mismatching protocol rejected without write", func(t *testing.T) {
 		cfg := newCustomCfg(secret, "dot")
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), Protocol: ptr("doh")},
+			def: {Provider: ptr(providers.Custom), Protocol: new("doh")},
 		}}}
 
 		err := applyRequest(cfg, req, "rev")
@@ -528,7 +530,7 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 	t.Run("typed url matching protocol ok", func(t *testing.T) {
 		cfg := newCustomCfg("https://old.example/dns-query", "doh")
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), URL: ptr("tls://new.example:853"), Protocol: ptr("dot")},
+			def: {Provider: ptr(providers.Custom), URL: new("tls://new.example:853"), Protocol: new("dot")},
 		}}}
 
 		if err := applyRequest(cfg, req, "rev"); err != nil {
@@ -543,7 +545,7 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 	t.Run("typed url mismatching protocol rejected", func(t *testing.T) {
 		cfg := newCustomCfg("https://old.example/dns-query", "doh")
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), URL: ptr("tls://new.example:853"), Protocol: ptr("doh")},
+			def: {Provider: ptr(providers.Custom), URL: new("tls://new.example:853"), Protocol: new("doh")},
 		}}}
 
 		if err := applyRequest(cfg, req, "rev"); !errors.Is(err, errCustomProtocolFixed) {
@@ -554,7 +556,7 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 	t.Run("unrecognized scheme rejected", func(t *testing.T) {
 		cfg := newCustomCfg("https://old.example/dns-query", "doh")
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), URL: ptr("sdns://AQcAAAAA"), Protocol: ptr("doh")},
+			def: {Provider: ptr(providers.Custom), URL: new("sdns://AQcAAAAA"), Protocol: new("doh")},
 		}}}
 
 		if err := applyRequest(cfg, req, "rev"); !errors.Is(err, errCustomProtocolFixed) {
@@ -749,7 +751,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 
 	t.Run("id without provider rejected", func(t *testing.T) {
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {ID: ptr("abc")},
+			def: {ID: new("abc")},
 		}}}
 		if err := applyRequest(config.Default(), req, "rev"); err == nil {
 			t.Fatal("id-only patch accepted")
@@ -759,7 +761,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 	t.Run("id with provider accepted", func(t *testing.T) {
 		cfg := config.Default()
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.NextDNS), ID: ptr("abc123")},
+			def: {Provider: ptr(providers.NextDNS), ID: new("abc123")},
 		}}}
 		if err := applyRequest(cfg, req, "rev"); err != nil {
 			t.Fatalf("applyRequest: %v", err)
@@ -771,7 +773,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 
 	t.Run("custom with id rejected", func(t *testing.T) {
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), ID: ptr("abc"), URL: ptr("https://x.example/dns-query")},
+			def: {Provider: ptr(providers.Custom), ID: new("abc"), URL: new("https://x.example/dns-query")},
 		}}}
 		if err := applyRequest(config.Default(), req, "rev"); err == nil {
 			t.Fatal("custom+id accepted")
@@ -785,7 +787,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 		cfg.Profiles[def] = p
 
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Variant: ptr("anycast")},
+			def: {Variant: new("anycast")},
 		}}}
 		if err := applyRequest(cfg, req, "rev"); err == nil {
 			t.Fatal("partial variant patch accepted")
@@ -794,7 +796,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 
 	t.Run("partial protocol without provider rejected", func(t *testing.T) {
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Protocol: ptr("dot")},
+			def: {Protocol: new("dot")},
 		}}}
 		if err := applyRequest(config.Default(), req, "rev"); err == nil {
 			t.Fatal("partial protocol patch accepted")
@@ -808,7 +810,7 @@ func TestApplyRequestIDSafety(t *testing.T) {
 		cfg.Profiles[def] = p
 
 		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-			def: {Provider: ptr(providers.Custom), Variant: ptr("bogus")},
+			def: {Provider: ptr(providers.Custom), Variant: new("bogus")},
 		}}}
 		if err := applyRequest(cfg, req, "rev"); err == nil {
 			t.Fatal("bogus custom variant accepted")
@@ -895,10 +897,10 @@ func TestApplyLogPatch(t *testing.T) {
 
 	cfg := config.Default()
 	req := Request{Action: ActionApply, UUID: "u", Patch: Patch{
-		LogLevel:     ptr("debug"),
-		LogPath:      ptr(logPath),
-		LogMaxSizeMB: ptr(20),
-		LogKeepMB:    ptr(5),
+		LogLevel:     new("debug"),
+		LogPath:      new(logPath),
+		LogMaxSizeMB: new(20),
+		LogKeepMB:    new(5),
 	}}
 	if err := applyRequest(cfg, req, "rev"); err != nil {
 		t.Fatalf("applyRequest(log): %v", err)
@@ -909,13 +911,13 @@ func TestApplyLogPatch(t *testing.T) {
 	}
 
 	// Invalid level rejected.
-	bad := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogLevel: ptr("verbose")}}
+	bad := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogLevel: new("verbose")}}
 	if err := applyRequest(config.Default(), bad, "rev"); err == nil {
 		t.Fatal("invalid log level accepted")
 	}
 
 	// Relative path rejected.
-	rel := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: ptr("relative.log")}}
+	rel := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: new("relative.log")}}
 	if err := applyRequest(config.Default(), rel, "rev"); err == nil {
 		t.Fatal("relative log path accepted")
 	}
@@ -923,13 +925,13 @@ func TestApplyLogPatch(t *testing.T) {
 	// Missing parent directory rejected: otherwise the service silently fails
 	// open to stderr and the user gets no file.
 	missing := filepath.Join(t.TempDir(), "absent", "sigildns.log")
-	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: ptr(missing)}}
+	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: new(missing)}}
 	if err := applyRequest(config.Default(), missReq, "rev"); err == nil {
 		t.Fatal("log path with a missing parent directory accepted")
 	}
 
 	// Explicit zero size rejected.
-	zero := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogMaxSizeMB: ptr(0)}}
+	zero := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogMaxSizeMB: new(0)}}
 	if err := applyRequest(config.Default(), zero, "rev"); err == nil {
 		t.Fatal("explicit zero log size accepted")
 	}

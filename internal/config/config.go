@@ -740,7 +740,7 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 
 // splitList splits a comma-separated flag value, trimming and dropping empties.
 func splitList(s string) (out []string) {
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)
 		}

@@ -54,10 +54,7 @@ func (w *rotatingWriter) rotate() (err error) {
 		w.size = info.Size()
 	}
 
-	keep := w.keepBytes
-	if keep > w.size {
-		keep = w.size
-	}
+	keep := min(w.keepBytes, w.size)
 	if keep <= 0 {
 		return w.rewrite(nil)
 	}

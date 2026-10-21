@@ -18,7 +18,7 @@ args=(--rm -v "$root":/w -w /w -v go-mod-cache:/go -v go-build-cache:/root/.cach
 # The repo is owned by the host user while the container runs as root, so git
 # refuses to read it ("dubious ownership") and `go build` cannot stamp VCS info.
 # Mark the mount safe before running go.
-exec docker run "${args[@]}" golang:1.26 sh -c '
+exec docker run "${args[@]}" golang:1.27.3 sh -c '
   git config --global --add safe.directory /w 2>/dev/null || true
   exec go "$@"
 ' _ "$@"

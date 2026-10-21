@@ -7,6 +7,8 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,4 +319,57 @@ func TestAgentStopGated(t *testing.T) {
 			t.Fatalf("disableCalls = %d, want 0", lc.disableCalls)
 		}
 	})
+}
+
+// TestAgentShutdownLeavesNoGoroutines uses Go 1.27's goroutineleak profile: a
+// stopped Agent must not leave permanently blocked goroutines behind, which is
+// the failure class behind the go-winio CancelIoEx hang.
+func TestAgentShutdownLeavesNoGoroutines(t *testing.T) {
+	baseline := goroutineLeakCount(t)
+
+	lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
+
+	ctx := context.Background()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := a.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	requireNoNewLeaks(t, baseline)
+}
+
+// goroutineLeakCount reports goroutines the runtime has proven are blocked
+// forever. The profile is GA as of Go 1.27.
+func goroutineLeakCount(t *testing.T) (n int) {
+	t.Helper()
+
+	p := pprof.Lookup("goroutineleak")
+	if p == nil {
+		t.Fatal("goroutineleak profile unavailable")
+	}
+
+	return p.Count()
+}
+
+// requireNoNewLeaks polls briefly because leak detection is asynchronous, then
+// dumps the offending stacks.
+func requireNoNewLeaks(t *testing.T, baseline int) {
+	t.Helper()
+
+	p := pprof.Lookup("goroutineleak")
+	deadline := time.Now().Add(2 * time.Second)
+
+	for p.Count() > baseline {
+		if time.Now().After(deadline) {
+			var b strings.Builder
+			_ = p.WriteTo(&b, 2)
+
+			t.Fatalf("goroutines blocked after shutdown: %d (baseline %d):\n%s", p.Count(), baseline, b.String())
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
 }

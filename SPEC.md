@@ -75,7 +75,7 @@ feature set of YogaDNS, without a kernel driver.
 
 | Concern | Choice | License |
 |---|---|---|
-| Language | Go 1.26+ | — |
+| Language | Go 1.27+ | — |
 | DNS engine | `github.com/AdguardTeam/dnsproxy` (embedded) | Apache-2.0 |
 | Wire/types | `github.com/miekg/dns` | BSD-3 |
 | Filtering | `github.com/AdguardTeam/urlfilter` (`DNSEngine`) | **GPL-3.0** → whole app GPLv3 |
