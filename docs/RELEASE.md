@@ -15,7 +15,8 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
 - `sigildns-gui.exe` — the GUI-subsystem configuration client (Status +
   Settings), built `-tags gui -ldflags "-H windowsgui"`.
 - `config.example.yaml`, `README.md`, `LICENSE`.
-- `installer/install.ps1`, `installer/uninstall.ps1`.
+- `installer/setup.ps1` — one entry point; prompts for Install or Uninstall and
+  relaunches itself through UAC when started non-elevated.
 
 The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
 download can be verified:
@@ -72,8 +73,8 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    `GOOS=windows GOARCH=amd64 go build -trimpath -tags gui -ldflags "-s -w -H windowsgui" -o dist/sigildns-gui.exe ./cmd/sigildns`.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
-   binaries, `config.example.yaml`, `README.md`, `LICENSE`, and both installer
-   scripts.
+   binaries, `config.example.yaml`, `README.md`, `LICENSE`, and
+   `installer/setup.ps1`.
 6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
    it (the zip itself is never signed).
 7. Verifies the package: extracts the zip, asserts both binaries are present,

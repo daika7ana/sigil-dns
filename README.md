@@ -85,10 +85,29 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 
 ### Option A — packaged installer (recommended)
 
-From an **elevated PowerShell**:
+**Double-click `installer\setup.ps1`** — if Windows opens it in an editor
+instead, right-click it and pick **Run with PowerShell**. Started without
+elevation, the script relaunches itself through UAC, so you do not need to open
+an Administrator prompt by hand. It then asks:
+
+```
+Sigil DNS setup
+  1. Install or upgrade
+  2. Uninstall
+Choose 1 or 2:
+```
+
+From an **elevated PowerShell** the same menu appears:
 
 ```powershell
-.\installer\install.ps1
+.\installer\setup.ps1
+```
+
+Non-interactive use (skips the menu):
+
+```powershell
+.\installer\setup.ps1 -Install [-DesktopShortcut]
+.\installer\setup.ps1 -Uninstall [-RemoveData]
 ```
 
 If PowerShell refuses to run the script ("not digitally signed"), unblock the
@@ -96,7 +115,8 @@ extracted files first: `Get-ChildItem -Recurse | Unblock-File`.
 
 The installer registers the Windows service and drops a **Start Menu shortcut**
 named Sigil DNS that launches the GUI. Just run it from there whenever you
-want to change something.
+want to change something. Uninstall keeps `%ProgramData%\SigilDNS` (config and
+state); pass `-RemoveData` to delete it too.
 
 ### Option B — manual
 

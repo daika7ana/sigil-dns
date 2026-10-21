@@ -153,8 +153,7 @@ jobs:
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
-          Copy-Item 'installer/install.ps1'      (Join-Path $stage 'installer') -Force
-          Copy-Item 'installer/uninstall.ps1'    (Join-Path $stage 'installer') -Force
+          Copy-Item 'installer/setup.ps1'        (Join-Path $stage 'installer') -Force
 
           $zip = "dist/sigildns_${version}_windows_amd64.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
