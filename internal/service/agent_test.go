@@ -221,11 +221,16 @@ func TestAgentServesIPC(t *testing.T) {
 		t.Fatalf("Status = %+v", st)
 	}
 
+	// Start always enables, so the control-pipe Enable is the second call.
+	if lc.enableCalls != 1 {
+		t.Fatalf("enableCalls after Start = %d, want 1", lc.enableCalls)
+	}
+
 	if err = c.Enable(ctx); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	if lc.enableCalls != 1 {
-		t.Fatalf("enableCalls = %d, want 1", lc.enableCalls)
+	if lc.enableCalls != 2 {
+		t.Fatalf("enableCalls after Enable = %d, want 2", lc.enableCalls)
 	}
 
 	if err = a.Stop(ctx); err != nil {
@@ -270,10 +275,12 @@ func TestAgentStatusPipeReadOnly(t *testing.T) {
 		t.Fatalf("DTO = %+v", dto)
 	}
 
+	before := lc.enableCalls
+
 	if err = c.Enable(ctx); err == nil {
 		t.Fatal("Enable on status pipe should be forbidden")
 	}
-	if lc.enableCalls != 0 {
+	if lc.enableCalls != before {
 		t.Fatal("status pipe reached Enable")
 	}
 }
