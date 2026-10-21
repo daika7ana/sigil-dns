@@ -30,7 +30,7 @@ func TestServiceLifecycleEnableWithoutConfig(t *testing.T) {
 		t.Fatalf("Startup: %v", err)
 	}
 
-	if _, err = lc.Status(); !errors.Is(err, state.ErrNoState) {
+	if _, err := lc.Status(); !errors.Is(err, state.ErrNoState) {
 		t.Fatalf("Status err = %v, want ErrNoState", err)
 	}
 
