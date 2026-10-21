@@ -110,9 +110,13 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   config surface (see Architecture). No persistent broker, no silent/auto elevation.
 
 ## CI & releases
-- `.github/workflows/ci.yml`: ubuntu+windows matrix (`go build`, `-tags tray`, `-tags gui`, `vet`, `test`;
-  GUI smoke test on both runners) plus `integration-windows` (real NRPT via `scripts/ci-windows-integration.ps1`).
-- `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; signs with
+- `.github/workflows/ci.yml`: branch pushes + PRs only (a tag push must not re-run it), a
+  `concurrency` group cancelling superseded runs, ubuntu+windows matrix (`go build`, `-tags tray`,
+  `-tags gui`, `vet`, `test`; GUI smoke test on both runners) plus `integration-windows` (real NRPT via
+  `scripts/ci-windows-integration.ps1`).
+- `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; reuses a green
+  `ci.yml` run for the tagged commit and skips its duplicated vet/test steps (falls back to running them
+  when the SHA has none); signs with
   `signtool` only when `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` secrets exist (else skip +
   `::warning::`); zips (+ `SHA256SUMS.txt`) and publishes the Release **draft-first** (create draft →
   upload assets → `--draft=false`), so a failed run never exposes an assetless release. Notes come from

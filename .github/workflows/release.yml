@@ -9,6 +9,7 @@ on:
 # Needed for creating the GitHub Release and uploading assets.
 permissions:
   contents: write
+  actions: read # CI gate below reads the CI run for the tagged commit
 
 # Serialize releases: a dispatch racing a tag push must not interleave uploads.
 concurrency:
@@ -25,17 +26,43 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # CI already ran vet+test for this commit (it is on a branch). Re-running
+      # them here doubles the release time; fall back to running them only when
+      # no green CI run exists for this SHA (e.g. a tag on an unmerged commit).
+      - name: Check CI is green for this commit
+        id: ci
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:GITHUB_SHA&per_page=20" | ConvertFrom-Json
+          $green = @($runs.workflow_runs | Where-Object { $_.conclusion -eq 'success' })
+          if ($green.Count -eq 0) {
+            Write-Host "::warning::No successful CI run for $env:GITHUB_SHA; running vet/test in this job."
+            "green=false" >> $env:GITHUB_OUTPUT
+          }
+          else {
+            Write-Host "CI passed for ${env:GITHUB_SHA}: $($green[0].html_url)"
+            "green=true" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Vet
+        if: steps.ci.outputs.green != 'true'
         run: go vet ./...
 
       - name: Vet (gui)
+        if: steps.ci.outputs.green != 'true'
         run: go vet -tags gui ./...
 
       - name: Test
+        if: steps.ci.outputs.green != 'true'
         run: go test ./...
 
       # GUI headless smoke test (software renderer; no GPU/display needed).
       - name: Test (gui)
+        if: steps.ci.outputs.green != 'true'
         run: go test -tags gui -timeout 120s ./internal/gui/
 
       - name: Build (windows/amd64)

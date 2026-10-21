@@ -43,8 +43,9 @@ window when launched with no arguments.
 The workflow lives at `.github/workflows/release.yml` and runs on
 `windows-latest`.
 
-1. Make sure `main` is green (the `ci.yml` `build` matrix and
-   `integration-windows` job).
+1. Make sure the commit you are tagging is green (the `ci.yml` `build` matrix
+   and `integration-windows` job). Tag pushes no longer start CI, so the release
+   workflow checks the CI history for the tag's SHA itself.
 2. Tag the release and push the tag:
 
    ```sh
@@ -59,7 +60,12 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 ## What the workflow does
 
 1. `actions/checkout@v7`, `actions/setup-go@v7` (`go-version-file: go.mod`).
-2. `go vet ./...` and `go test ./...` (on Windows, so the Windows-only tests run).
+2. **CI gate** — for tag builds, looks up the `ci.yml` runs for the tagged
+   commit. A successful run skips the duplicate `go vet` / `go test` steps
+   (they already ran on the branch push). With no green run — a tag on an
+   unmerged commit, or a tag pushed before CI finished — the checks run here on
+   Windows, so the Windows-only tests still execute. Manual (`workflow_dispatch`)
+   runs always run them.
 3. Builds **both** binaries:
    `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/sigildns.exe ./cmd/sigildns`
    and

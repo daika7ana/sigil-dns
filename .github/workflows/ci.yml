@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    # Branches only: a tag push is released by release.yml, which would
+    # otherwise re-run this whole matrix on the same commit.
+    branches: ['**']
   pull_request:
+
+# A newer push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
