@@ -218,6 +218,21 @@ func Start() (err error) {
 	}
 	defer func() { _ = s.Close() }()
 
+	// Refuse to start a registration that points at some other binary (the
+	// anti-hijack check).  Errors are static and path-free.
+	exe, err := Executable()
+	if err != nil {
+		return errors.New("could not resolve the service executable")
+	}
+
+	cfg, err := s.Config()
+	if err != nil {
+		return errors.New("could not read the service registration")
+	}
+	if !binaryMatches(cfg.BinaryPathName, exe) {
+		return errors.New("the registered service does not point at this binary")
+	}
+
 	return s.Start("--service")
 }
 

@@ -254,7 +254,11 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	case ActionServiceUninstall:
 		return uninstallService(ctx)
 	case ActionServiceStart:
-		return startService()
+		if err := service.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+			return Result{Err: "service could not be started"}
+		}
+
+		return Result{OK: true, Message: "service started"}
 	case ActionServiceStop:
 		return stopServiceAndVerify(ctx)
 	case ActionClearCache:
@@ -342,7 +346,7 @@ func runAction(ctx context.Context, req Request) (res Result) {
 			return Result{Err: "service is not available: " + err.Error()}
 		}
 
-		msg, err := driveControl(ctx, req, pid, changed)
+		msg, err := driveControl(ctx, req, pid)
 		if err != nil {
 			return Result{Err: err.Error()}
 		}
@@ -421,51 +425,6 @@ func stopServiceAndVerify(ctx context.Context) (res Result) {
 	}
 
 	return res
-}
-
-// startService verifies the registration still points at this binary before
-// starting it, and treats an already-running service as success.
-func startService() (res Result) {
-	if err := startRegisteredService(); err != nil {
-		return Result{Err: err.Error()}
-	}
-
-	return Result{OK: true, Message: "service started"}
-}
-
-// startRegisteredService performs the anti-hijack registration check and starts
-// the service.  All errors are static and path-free.
-func startRegisteredService() (err error) {
-	exe, err := service.Executable()
-	if err != nil {
-		return errors.New("could not resolve the service executable")
-	}
-
-	m, err := mgr.Connect()
-	if err != nil {
-		return errors.New("could not contact the service manager")
-	}
-	defer func() { _ = m.Disconnect() }()
-
-	s, err := m.OpenService(service.Name)
-	if err != nil {
-		return errors.New("service is not installed")
-	}
-	defer func() { _ = s.Close() }()
-
-	cfg, err := s.Config()
-	if err != nil {
-		return errors.New("could not read the service registration")
-	}
-	if !serviceBinaryMatches(cfg.BinaryPathName, exe) {
-		return errors.New("the registered service does not point at this binary")
-	}
-
-	if err = s.Start("--service"); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
-		return errors.New("service could not be started")
-	}
-
-	return nil
 }
 
 // restoreViaControl restores interception over the verified control pipe.
@@ -655,7 +614,7 @@ func clearCaches(ctx context.Context) (res Result) {
 
 // driveControl verifies the control-pipe server identity, then issues the IPC
 // calls for the action.
-func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (msg string, err error) {
+func driveControl(ctx context.Context, req Request, pid uint32) (msg string, err error) {
 	if err = waitControlServer(ctx, pid); err != nil {
 		return "", err
 	}
@@ -679,16 +638,6 @@ func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (m
 
 		return "lists refreshed", nil
 
-	case ActionApply:
-		if !changed {
-			return "config unchanged", nil
-		}
-		if _, err = client.Reload(ctx); err != nil {
-			return "", err
-		}
-
-		return "config applied", nil
-
 	default:
 		return "", fmt.Errorf("unknown action %q", req.Action)
 	}
@@ -697,7 +646,7 @@ func driveControl(ctx context.Context, req Request, pid uint32, changed bool) (m
 // ensureService returns the running service's process id, starting the service
 // if needed and waiting for it to report a pid.
 func ensureService(ctx context.Context) (pid uint32, err error) {
-	st, pid, err := queryService()
+	st, _, err := queryService()
 	if err != nil {
 		return 0, err
 	}

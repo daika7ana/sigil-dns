@@ -11,8 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -131,16 +129,10 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 1. Bind listeners.
-	res, err := l.newResolver(l.resolverConfig())
+	res, err := l.startResolver(ctx)
 	if err != nil {
 		return err
 	}
-	if err = res.Start(ctx); err != nil {
-		_ = res.Shutdown(ctx)
-
-		return err
-	}
-	l.res = res
 
 	// 2. Two-stage health check.
 	hr := l.healthCheck(ctx, res)
@@ -150,12 +142,11 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return fmt.Errorf("health check failed: %s", hr.Detail)
 	}
 
-	// 3. Persist snapshot + atomic dirty marker.
+	// 3. Persist the atomic dirty marker.
 	st := &state.State{
 		SchemaVersion: state.SchemaVersion,
 		Mode:          state.ModeOn,
 		Intercept:     state.MechanismNRPT,
-		Snapshot:      &state.Snapshot{},
 		Dirty:         true,
 		Upstream:      strings.Join(l.upstreamsOrDefault(), ","),
 		Health:        toStateHealth(hr),
@@ -223,7 +214,7 @@ func (l *Lifecycle) disable(ctx context.Context) (err error) {
 	}
 
 	// 4. Clear dirty marker.
-	return l.markClean(ctx)
+	return l.markClean()
 }
 
 // Restore undoes interception from the persisted state.  It is idempotent and
@@ -301,16 +292,10 @@ func (l *Lifecycle) Run(ctx context.Context) (err error) {
 	}
 	defer l.release()
 
-	res, err := l.newResolver(l.resolverConfig())
+	res, err := l.startResolver(ctx)
 	if err != nil {
 		return err
 	}
-	if err = res.Start(ctx); err != nil {
-		_ = res.Shutdown(ctx)
-
-		return err
-	}
-	l.res = res
 
 	l.logger.InfoContext(ctx, "resolver running", "listen", res.UDPAddrs())
 
@@ -386,20 +371,30 @@ func (l *Lifecycle) stopResolver(ctx context.Context) (err error) {
 	return err
 }
 
-// markClean clears the dirty marker.
-func (l *Lifecycle) markClean(ctx context.Context) (err error) {
-	st, err := l.store.Load()
-	if err != nil {
-		if errors.Is(err, state.ErrNoState) {
-			return nil
-		}
-
-		return err
+// markClean clears the dirty marker.  A missing state file is not an error.
+func (l *Lifecycle) markClean() (err error) {
+	if err = l.store.MarkClean(); errors.Is(err, state.ErrNoState) {
+		return nil
 	}
-	st.Mode = state.ModeOff
-	st.Dirty = false
 
-	return l.store.Save(st)
+	return err
+}
+
+// startResolver binds and starts the resolver, shutting it down if the bind
+// succeeded but Start failed.  It leaves l.res set on success.
+func (l *Lifecycle) startResolver(ctx context.Context) (res resolverHandle, err error) {
+	res, err = l.newResolver(l.resolverConfig())
+	if err != nil {
+		return nil, err
+	}
+	if err = res.Start(ctx); err != nil {
+		_ = res.Shutdown(ctx)
+
+		return nil, err
+	}
+	l.res = res
+
+	return res, nil
 }
 
 // acquire takes the single-instance lock, or is a no-op if already held.
@@ -408,7 +403,7 @@ func (l *Lifecycle) acquire() (err error) {
 		return nil
 	}
 
-	l.lock, err = state.AcquireLock(l.cfg.StatePath + ".lock")
+	l.lock, err = state.AcquireLock(state.LockPath(l.cfg.StatePath))
 
 	return err
 }
@@ -426,33 +421,6 @@ func (l *Lifecycle) flush(ctx context.Context) {
 	if err := FlushDNS(ctx); err != nil {
 		l.logger.WarnContext(ctx, "ipconfig /flushdns failed", "err", err)
 	}
-}
-
-// FlushDNS clears the Windows resolver cache.  ipconfig.exe is resolved
-// through the system API, never %SystemRoot% or PATH, so an inherited
-// environment cannot steer the elevated helper to another executable.
-// It is a no-op off Windows.
-func FlushDNS(ctx context.Context) (err error) {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-
-	c, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	ipconfig, pathErr := ipconfigPath()
-	if pathErr != nil {
-		return pathErr
-	}
-
-	cmd := exec.CommandContext(c, ipconfig, "/flushdns")
-	hideWindow(cmd)
-
-	if err = cmd.Run(); err != nil {
-		return fmt.Errorf("ipconfig /flushdns: %w", err)
-	}
-
-	return nil
 }
 
 // upstreamsOrDefault returns the configured upstreams or the resolver default.

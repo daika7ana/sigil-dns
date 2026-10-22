@@ -3,9 +3,12 @@
 package lifecycle
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,4 +29,26 @@ func ipconfigPath() (string, error) {
 	}
 
 	return filepath.Join(dir, "ipconfig.exe"), nil
+}
+
+// FlushDNS clears the Windows resolver cache.  ipconfig.exe is resolved
+// through the system API, never %SystemRoot% or PATH, so an inherited
+// environment cannot steer the elevated helper to another executable.
+func FlushDNS(ctx context.Context) (err error) {
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	ipconfig, pathErr := ipconfigPath()
+	if pathErr != nil {
+		return pathErr
+	}
+
+	cmd := exec.CommandContext(c, ipconfig, "/flushdns")
+	hideWindow(cmd)
+
+	if err = cmd.Run(); err != nil {
+		return fmt.Errorf("ipconfig /flushdns: %w", err)
+	}
+
+	return nil
 }

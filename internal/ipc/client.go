@@ -52,11 +52,6 @@ func (c *Client) Enable(ctx context.Context) (err error) {
 	return c.callTimeout(ctx, MethodEnable, nil, reloadTimeout)
 }
 
-// Disable asks the service to disable interception.
-func (c *Client) Disable(ctx context.Context) (err error) {
-	return c.callTimeout(ctx, MethodDisable, nil, reloadTimeout)
-}
-
 // Restore asks the service (control pipe) to restore interception from persisted
 // state.  It is config-independent crash/dirty recovery.
 func (c *Client) Restore(ctx context.Context) (err error) {

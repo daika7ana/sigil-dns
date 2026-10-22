@@ -1,9 +1,8 @@
 // Package intercept applies and removes the system DNS interception.
 //
-// On Windows the primary mechanism is a single NRPT rule covering all
-// namespaces; a per-adapter loopback fallback is also implemented but not wired
-// into the default path.  On other platforms a stub returns ErrUnsupported so
-// Linux builds and tests compile.
+// On Windows the mechanism is a single NRPT rule covering all namespaces, plus
+// exemptions per bypass namespace.  On other platforms a stub returns
+// ErrUnsupported so Linux builds and tests compile.
 package intercept
 
 import (
@@ -24,17 +23,6 @@ type Controller interface {
 
 	// Disable removes interception.  It must be idempotent.
 	Disable(ctx context.Context) error
-}
-
-// AdapterEntry is a per-interface DNS configuration.  It is exported so drift
-// detection can reuse the snapshot/apply/reset helpers.
-type AdapterEntry struct {
-	// IPv4 and IPv6 are the configured DNS servers per family.
-	IPv4 []string
-	IPv6 []string
-
-	// Index is the interface index.
-	Index int
 }
 
 // NRPTState is the observed NRPT state: whether our rule is present and the

@@ -19,3 +19,29 @@ func canonicalServiceExe(exe string, stat func(string) bool) (canonical string) 
 
 	return exe
 }
+
+// binaryMatches reports whether a registered service BinaryPathName still
+// points at exe followed by the fixed "--service" argument.  It is pure so the
+// anti-hijack check is unit-testable off Windows.
+func binaryMatches(binPath, exe string) (ok bool) {
+	s := strings.TrimSpace(binPath)
+	if s == "" {
+		return false
+	}
+
+	if strings.HasPrefix(s, `"`) {
+		bin, after, found := strings.Cut(s[1:], `"`)
+		if !found {
+			return false
+		}
+
+		return strings.EqualFold(bin, exe) && strings.TrimSpace(after) == "--service"
+	}
+
+	bin, args, found := strings.Cut(s, " ")
+	if !found {
+		return false
+	}
+
+	return strings.EqualFold(bin, exe) && strings.TrimSpace(args) == "--service"
+}

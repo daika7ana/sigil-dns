@@ -22,7 +22,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Mode:      ModeOn,
 		Intercept: MechanismNRPT,
 		Upstream:  "https://freedns.controld.com/p0",
-		Snapshot:  &Snapshot{Interfaces: []InterfaceDNS{{GUID: "{abc}", IPv4: []string{"9.9.9.9"}}}},
 		Dirty:     true,
 	}
 	if err := s.Save(want); err != nil {
@@ -41,39 +40,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.Timestamp.IsZero() {
 		t.Error("Timestamp not set")
-	}
-}
-
-func TestSaveRefusesSnapshotWhileDirty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	s := NewStore(path)
-
-	original := &Snapshot{Interfaces: []InterfaceDNS{{GUID: "{real}", IPv4: []string{"1.1.1.1"}}}}
-	if err := s.Save(&State{Mode: ModeOn, Dirty: true, Snapshot: original}); err != nil {
-		t.Fatalf("Save original: %v", err)
-	}
-
-	// Simulates re-snapshotting a loopbacked system while dirty.
-	loopback := &Snapshot{Interfaces: []InterfaceDNS{{GUID: "{real}", IPv4: []string{"127.0.0.1"}}}}
-	err := s.Save(&State{Mode: ModeOn, Dirty: true, Snapshot: loopback})
-	if !errors.Is(err, ErrDirtySnapshot) {
-		t.Fatalf("Save over dirty snapshot: got %v, want ErrDirtySnapshot", err)
-	}
-
-	// Restoring keeps the same snapshot and clears dirty; allowed.
-	if err = s.Save(&State{Mode: ModeOff, Dirty: false, Snapshot: original}); err != nil {
-		t.Fatalf("Save restore: %v", err)
-	}
-
-	got, err := s.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got.Dirty {
-		t.Error("Dirty still set after restore")
-	}
-	if got.Snapshot.Interfaces[0].IPv4[0] != "1.1.1.1" {
-		t.Errorf("snapshot overwritten: %+v", got.Snapshot)
 	}
 }
 
@@ -133,5 +99,22 @@ func TestLockStaleReclaimed(t *testing.T) {
 
 	if err = l.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+}
+
+func TestLockUnreadableNotReclaimed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json.lock")
+
+	if err := os.WriteFile(path, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatalf("writing unreadable lock: %v", err)
+	}
+
+	if _, err := AcquireLock(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("AcquireLock with unreadable owner: got %v, want ErrLocked", err)
+	}
+
+	// A lock we cannot attribute may belong to a live process; never delete it.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unreadable lock was removed: %v", err)
 	}
 }

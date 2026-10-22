@@ -223,7 +223,12 @@ func profileNames(profiles []ipc.ProfileSummary) (names []string) {
 
 // selectedSummary is the summary of the profile the editor is focused on.
 func (a *App) selectedSummary() (p ipc.ProfileSummary, ok bool) {
-	return findProfile(a.summaries, selectedProfile(a))
+	sum := a.summary()
+	if sum == nil {
+		return ipc.ProfileSummary{}, false
+	}
+
+	return findProfile(sum.Profiles, selectedProfile(a))
 }
 
 // draftDirty reports whether the editor buffer differs from the selected

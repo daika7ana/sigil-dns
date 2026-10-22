@@ -24,10 +24,7 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 
 	floor := selectFloor(windowWidth)
 
-	content := []gogui.View{}
-	if v := editNotice(t, app); v != nil {
-		content = append(content, v)
-	}
+	content := withEditNotice(t, app, nil)
 
 	content = append(content,
 		serviceCard(t, app),
@@ -37,16 +34,7 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 		versionCaption(t, app),
 	)
 
-	return gogui.Column(gogui.ContainerCfg{
-		ID:         "gui:settings",
-		Sizing:     gogui.FillFill,
-		MaxWidth:   contentMaxWidth,
-		Padding:    pagePadding(),
-		Spacing:    gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder,
-		Scrollable: true,
-		Content:    content,
-	})
+	return pageColumn("gui:settings", content)
 }
 
 // rulesPage is the filter-list and per-domain routing editor.  It renders in
@@ -59,10 +47,7 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 	app.ensureDraft()
 	disabled := app.busy || !canEdit(app.snap) || app.draft.name == ""
 
-	content := []gogui.View{}
-	if v := editNotice(t, app); v != nil {
-		content = append(content, v)
-	}
+	content := withEditNotice(t, app, nil)
 	content = append(content,
 		caption(t, "Editing profile: "+fallback(app.draft.name, "—")),
 		card(t, "gui:card:lists", "Filter lists", []gogui.View{
@@ -74,16 +59,7 @@ func rulesPage(t gogui.Theme, app *App) gogui.View {
 		saveRow(app.draft, disabled),
 	)
 
-	return gogui.Column(gogui.ContainerCfg{
-		ID:         "gui:rules",
-		Sizing:     gogui.FillFill,
-		MaxWidth:   contentMaxWidth,
-		Padding:    pagePadding(),
-		Spacing:    gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder,
-		Scrollable: true,
-		Content:    content,
-	})
+	return pageColumn("gui:rules", content)
 }
 
 // editNotice is the trust/offline banner shown above an editor page (Settings
@@ -164,18 +140,16 @@ func (a *App) seed(s snapshot) {
 	a.ensureDraft()
 }
 
-// refreshProfiles updates the profile list, the active name, and the
-// summaries from the effective summary.  If the selected profile vanished
-// (renamed or deleted elsewhere), the editor falls back to the active profile.
+// refreshProfiles updates the profile list and the active name from the
+// effective summary.  If the selected profile vanished (renamed or deleted
+// elsewhere), the editor falls back to the active profile.
 func (a *App) refreshProfiles() {
 	sum := a.summary()
 	if sum == nil {
 		return
 	}
 
-	a.summaries = sum.Profiles
-
-	names := profileNames(a.summaries)
+	names := profileNames(sum.Profiles)
 	if len(names) > 0 {
 		a.profiles = names
 	}
@@ -474,7 +448,21 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	d := app.draft
 	disabled := app.busy || !canEdit(app.snap) || d.name == ""
 
-	providerFields := []gogui.View{
+	return card(t, "gui:card:editor", "Profile editor", []gogui.View{
+		fieldGroup(t, "gui:edit:group:provider", "Provider", providerFields(t, d, disabled, floor)...),
+		groupDivider(t, 1),
+		fieldGroup(t, "gui:edit:group:failover", "Failover", fallbackFields(t, app, d, disabled, floor)...),
+		groupDivider(t, 2),
+		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields(t, d, disabled, floor)...),
+		groupDivider(t, 3),
+		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields(t, d, disabled)...),
+		saveRow(d, disabled),
+	})
+}
+
+// providerFields is the provider/variant/transport/identity block of the editor.
+func providerFields(t gogui.Theme, d profileDraft, disabled bool, floor float32) []gogui.View {
+	fields := []gogui.View{
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:provider",
 			// The group heading above already reads "Provider", so this field
@@ -500,9 +488,9 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	// The custom provider's transport is dictated by its URL, so there is no
 	// protocol choice to make; show a one-line hint instead of the control.
 	if d.provider == providers.Custom {
-		providerFields = append(providerFields, caption(t, "Transport is taken from the custom URL."))
+		fields = append(fields, caption(t, "Transport is taken from the custom URL."))
 	} else {
-		providerFields = append(providerFields, protocolSelect(d, disabled, floor))
+		fields = append(fields, protocolSelect(d, disabled, floor))
 	}
 
 	// The resolver id is only meaningful for providers that use one; the
@@ -511,7 +499,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	// switching provider updates it on the next repaint.
 	idNeeded := needsResolverID(d.provider, d.variant)
 
-	providerFields = append(providerFields, gogui.Input(gogui.InputCfg{
+	fields = append(fields, gogui.Input(gogui.InputCfg{
 		ID: "gui:edit:id", Label: "Resolver ID", Sizing: gogui.FillFit,
 		Text: d.id, IsPassword: true, Placeholder: "•••• leave blank to keep",
 		Disabled: disabled || !idNeeded,
@@ -527,7 +515,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	// value keeps the stored id; an inert one says why it cannot be used.  The
 	// two are mutually exclusive, so only one ever shows.
 	if idNeeded {
-		providerFields = append(providerFields, gogui.Text(gogui.TextCfg{
+		fields = append(fields, gogui.Text(gogui.TextCfg{
 			ID:        "gui:edit:id:keep",
 			Text:      "Blank resolver ID keeps the current one.",
 			TextStyle: t.TextStyleCaption,
@@ -535,7 +523,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			Mode:      gogui.TextModeWrap,
 		}))
 	} else {
-		providerFields = append(providerFields, gogui.Text(gogui.TextCfg{
+		fields = append(fields, gogui.Text(gogui.TextCfg{
 			ID:        "gui:edit:id:hint",
 			Text:      "This provider does not use a resolver ID.",
 			TextStyle: t.TextStyleCaption,
@@ -545,7 +533,7 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	}
 
 	if d.provider == providers.Custom {
-		providerFields = append(providerFields, gogui.Input(gogui.InputCfg{
+		fields = append(fields, gogui.Input(gogui.InputCfg{
 			ID: "gui:edit:url", Label: "Custom URL", Sizing: gogui.FillFit,
 			Text: d.url, Placeholder: "leave blank to keep", Disabled: disabled,
 			OnTextChanged: func(text string, ctx gogui.EventCtx) {
@@ -554,19 +542,24 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		}))
 	}
 
+	return fields
+}
+
+// fallbackFields is the fallback-profile selector and its explanation.
+func fallbackFields(t gogui.Theme, app *App, d profileDraft, disabled bool, floor float32) []gogui.View {
 	// The fallback is another profile, never this one, so the sentinel ("")
 	// is a real selection rather than "nothing chosen" — hence not one().
-	fallbackOptions := []gogui.SelectOption{gogui.NewSelectOption("No fallback", "")}
+	options := []gogui.SelectOption{gogui.NewSelectOption("No fallback", "")}
 	for _, name := range profilesFor(app) {
 		if name != d.name {
-			fallbackOptions = append(fallbackOptions, gogui.NewSelectOption(name, name))
+			options = append(options, gogui.NewSelectOption(name, name))
 		}
 	}
 
-	fallbackFields := []gogui.View{
+	return []gogui.View{
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:fallback", Label: "Fallback profile",
-			Options: fallbackOptions, Selected: []string{d.fallback},
+			Options: options, Selected: []string{d.fallback},
 			Disabled: disabled,
 			OnSelect: func(vals []string, ctx gogui.EventCtx) {
 				updateDraft(ctx, func(d *profileDraft) { d.fallback = first(vals) })
@@ -574,8 +567,11 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		}, floor),
 		caption(t, "Answers when this profile's upstreams time out or fail. Uses the fallback profile's upstreams and bootstrap."),
 	}
+}
 
-	filteringFields := []gogui.View{
+// filteringFields is the filtering toggle and its block-response selector.
+func filteringFields(t gogui.Theme, d profileDraft, disabled bool, floor float32) []gogui.View {
+	return []gogui.View{
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:filtering", Label: "Filtering", Selected: d.filtering,
 			Disabled: disabled,
@@ -592,8 +588,11 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			},
 		}, floor),
 	}
+}
 
-	cacheFields := []gogui.View{
+// cacheFields is the cache toggle, size input, and bootstrap input.
+func cacheFields(t gogui.Theme, d profileDraft, disabled bool) []gogui.View {
+	return []gogui.View{
 		gogui.Toggle(gogui.ToggleCfg{
 			ID: "gui:edit:cache", Label: "Cache", Selected: d.cache,
 			Disabled: disabled,
@@ -611,17 +610,6 @@ func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 		}),
 		bootstrapField(t, d, disabled),
 	}
-
-	return card(t, "gui:card:editor", "Profile editor", []gogui.View{
-		fieldGroup(t, "gui:edit:group:provider", "Provider", providerFields...),
-		groupDivider(t, 1),
-		fieldGroup(t, "gui:edit:group:failover", "Failover", fallbackFields...),
-		groupDivider(t, 2),
-		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields...),
-		groupDivider(t, 3),
-		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields...),
-		saveRow(d, disabled),
-	})
 }
 
 // groupDivider separates two field groups in the editor card, so the grouping
@@ -677,21 +665,26 @@ const saveButtonMinWidth float32 = 140
 // content-width button so the primary action reads as a button rather than a
 // full-column bar; any field annotation belongs beside its field, not here.
 func saveRow(d profileDraft, disabled bool) gogui.View {
-	content := []gogui.View{
-		gogui.Row(gogui.ContainerCfg{
-			Sizing:     gogui.FillFit,
-			HAlign:     gogui.HAlignEnd,
-			Padding:    gogui.PaddingNone,
-			SizeBorder: gogui.NoBorder,
-			Content: []gogui.View{
-				gogui.Button(gogui.ButtonCfg{
-					ID: "gui:profile:save", Variant: gogui.ButtonPrimary, Label: "Save",
-					Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
-					OnClick: func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) },
-				}),
-			},
-		}),
-	}
+	return primaryActionRow("gui:profile:save", "Save", disabled,
+		func(ctx gogui.EventCtx) { runSaveProfile(ctx, d) })
+}
+
+// primaryActionRow is a right-aligned primary action button, optionally with
+// content (such as a note) above it in the same column.
+func primaryActionRow(id, label string, disabled bool, onClick func(gogui.EventCtx), above ...gogui.View) gogui.View {
+	content := append(above, gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		HAlign:     gogui.HAlignEnd,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Button(gogui.ButtonCfg{
+				ID: id, Variant: gogui.ButtonPrimary, Label: label,
+				Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
+				OnClick: onClick,
+			}),
+		},
+	}))
 
 	return gogui.Column(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
@@ -999,14 +992,7 @@ func notice(t gogui.Theme, kind noticeKind, title, detail string) gogui.View {
 		VAlign:      gogui.VAlignMiddle,
 		Content: []gogui.View{
 			// The severity stripe: a 3px rounded bar spanning the notice height.
-			gogui.Column(gogui.ContainerCfg{
-				Width:      3,
-				Sizing:     gogui.FixedFill,
-				Color:      noticeAccent(t, kind),
-				Radius:     gogui.RadiusPx(2),
-				Padding:    gogui.PaddingNone,
-				SizeBorder: gogui.NoBorder,
-			}),
+			severityStripe(t, "", kind),
 			gogui.Column(gogui.ContainerCfg{
 				Sizing:     gogui.FillFill,
 				Spacing:    gogui.SpacingTight,
@@ -1039,6 +1025,19 @@ func noticeAccent(t gogui.Theme, kind noticeKind) gogui.Color {
 	}
 
 	return t.TextStyleLink.Color
+}
+
+// severityStripe is the shared 3px rounded leading bar for a notice or note.
+func severityStripe(t gogui.Theme, id string, kind noticeKind) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		ID:         id,
+		Width:      3,
+		Sizing:     gogui.FixedFill,
+		Color:      noticeAccent(t, kind),
+		Radius:     gogui.RadiusPx(2),
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+	})
 }
 
 // caption is a small, wrapped secondary line under a field.
@@ -1125,19 +1124,12 @@ func listToggle(i int) func(gogui.EventCtx) {
 // row is only removed once the confirm dialog is accepted.
 func removeList(i int) func(gogui.EventCtx) {
 	return func(ctx gogui.EventCtx) {
-		ctx.Window.Dialog(gogui.DialogCfg{
-			DialogType: gogui.DialogConfirm,
-			Title:      "Remove list",
-			Body:       "Remove this list?",
-			FocusID:    fmt.Sprintf("gui:list:%d:remove:confirm", i),
-			OnOkYes: func(w *gogui.Window) {
-				updateDraft(gogui.EventCtx{Window: w}, func(d *profileDraft) {
-					if i >= 0 && i < len(d.lists) {
-						d.lists = append(d.lists[:i], d.lists[i+1:]...)
-					}
-				})
-			},
-		})
+		confirmRemove(ctx, "Remove list", "Remove this list?",
+			fmt.Sprintf("gui:list:%d:remove:confirm", i), func(d *profileDraft) {
+				if i >= 0 && i < len(d.lists) {
+					d.lists = append(d.lists[:i], d.lists[i+1:]...)
+				}
+			})
 	}
 }
 
@@ -1194,20 +1186,27 @@ func ruleToggle(i int) func(gogui.EventCtx) {
 // removed once the confirm dialog is accepted.
 func removeRule(i int) func(gogui.EventCtx) {
 	return func(ctx gogui.EventCtx) {
-		ctx.Window.Dialog(gogui.DialogCfg{
-			DialogType: gogui.DialogConfirm,
-			Title:      "Remove rule",
-			Body:       "Remove this rule?",
-			FocusID:    fmt.Sprintf("gui:rule:%d:remove:confirm", i),
-			OnOkYes: func(w *gogui.Window) {
-				updateDraft(gogui.EventCtx{Window: w}, func(d *profileDraft) {
-					if i >= 0 && i < len(d.perDomain) {
-						d.perDomain = append(d.perDomain[:i], d.perDomain[i+1:]...)
-					}
-				})
-			},
-		})
+		confirmRemove(ctx, "Remove rule", "Remove this rule?",
+			fmt.Sprintf("gui:rule:%d:remove:confirm", i), func(d *profileDraft) {
+				if i >= 0 && i < len(d.perDomain) {
+					d.perDomain = append(d.perDomain[:i], d.perDomain[i+1:]...)
+				}
+			})
 	}
+}
+
+// confirmRemove asks for confirmation, then applies a bounds-checked row
+// removal to the draft.
+func confirmRemove(ctx gogui.EventCtx, title, body, focusID string, apply func(*profileDraft)) {
+	ctx.Window.Dialog(gogui.DialogCfg{
+		DialogType: gogui.DialogConfirm,
+		Title:      title,
+		Body:       body,
+		FocusID:    focusID,
+		OnOkYes: func(w *gogui.Window) {
+			updateDraft(gogui.EventCtx{Window: w}, apply)
+		},
+	})
 }
 
 // setPage switches the visible screen.

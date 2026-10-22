@@ -56,16 +56,14 @@ type App struct {
 	// page is the visible screen.
 	page pageKind
 
-	// summaries is the sanitized per-profile list from the last poll, and
-	// profiles its name list (the selector's items).  active is the active
-	// profile name, selected is the profile the editor is focused on, and
-	// draft is the editor buffer for the selected profile.
-	summaries []ipc.ProfileSummary
-	profiles  []string
-	active    string
-	selected  string
-	draft     profileDraft
-	seeded    bool
+	// profiles is the selector's name list.  active is the active profile
+	// name, selected is the profile the editor is focused on, and draft is
+	// the editor buffer for the selected profile.
+	profiles []string
+	active   string
+	selected string
+	draft    profileDraft
+	seeded   bool
 
 	// listInput is the not-yet-added filter-list URL typed into the editor's
 	// add-list field.  It is transient UI state: it becomes a draft row on Add,
@@ -318,7 +316,6 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 
 			w.QueueCommand(func(win *gogui.Window) {
 				a := gogui.State[App](win)
-				a.snap = snap
 				a.seed(snap)
 				a.syncLogViewer()
 				a.cacheSummary(snap)

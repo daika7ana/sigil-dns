@@ -40,7 +40,8 @@ One binary, entrypoint `cmd/sigildns/main.go`, many modes: CLI commands, `--serv
 `--apply <path>` (elevated headless helper), `--gui`, `--tray` (retired stub; the tray now lives in the GUI).
 
 `internal/`: `lifecycle` (enable/disable/restore orchestration) · `state` (atomic JSON + dirty marker +
-single-instance lock) · `intercept` (NRPT via PowerShell, primary; per-adapter fallback) · `resolver`
+single-instance lock) · `intercept` (NRPT via PowerShell; the per-adapter fallback is described in
+SPEC §4.2 but **not implemented**) · `resolver`
 (embedded dnsproxy + filter + per-domain rules) · `filter` (urlfilter wrapper) · `providers` (presets) ·
 `config` (YAML) · `ipc` (dual named pipes) · `service` (SCM host) · `drift` (registry watch + reconcile) ·
 `elevate` (one-shot UAC helper + allowlisted config patch) · `gui` (`gui` tag, go-gui **config client**,
@@ -88,8 +89,10 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   DoT/DoQ.
 - **Logging** (`internal/logging` + `redact.Handler`): opt-in service-owned file log from the top-level
   `log:` config block (default `off`; `level` off|error|info|debug; `path` defaults beside `config.yaml`;
-  10 MB cap, newest 3 MB kept). `cmd/sigildns` `serviceLogger()` is the single choke point; the
-  redacting handler (seeded via `providers.ExtractIDs`, **re-seeded on every reload**) scrubs resolver
+  10 MB cap, newest 3 MB kept). `cmd/sigildns` `loggerFor()` is the only file-log opener;
+  `cmdServiceHost` resolves the config once at startup and reuses it for both the logger and the
+  lifecycle. The redacting handler (seeded via `providers.ExtractIDs`, **re-seeded on every reload**)
+  scrubs resolver
   ids (DoH-path and DoT/DoQ hostname label), URL userinfo/query and `sdns://` at all levels, while
   `debug` exposes query names. The GUI **tails the file directly** — no IPC method. The file is opened
   **without `O_APPEND`** so the handle keeps `FILE_WRITE_DATA`; rotation truncates through that open
@@ -99,10 +102,12 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 - **A running service always has interception on.** Service start always enables; the SCM state stays
   StartPending until recovery + enable succeed. Any startup/reload/drift failure stops the service
   instead of leaving it running with protection off.
-- **Enable order:** bind listeners → two-stage health check → persist snapshot + dirty marker → apply
-  interception → flush DNS. Never touch DNS settings before the resolver is proven listening.
-- **Never re-snapshot while dirty.** Restore from the persisted snapshot first; re-snapshotting a
-  loopbacked system captures `127.0.0.1` as the "original" and loses the user's real DNS.
+- **Enable order:** bind listeners → two-stage health check → persist state + dirty marker → apply
+  interception (NRPT) → flush DNS. Never touch DNS settings before the resolver is proven listening.
+- **Never re-snapshot while dirty** — applies only if/when the per-adapter fallback (SPEC §4.2) is
+  implemented: restore from the persisted snapshot first; re-snapshotting a loopbacked system
+  captures `127.0.0.1` as the "original" and loses the user's real DNS. The current NRPT build stores
+  no adapter snapshot.
 - **`restore` must work with a corrupt/missing config** (config-independent) — recovery can never depend on YAML.
 - **The service runs as `LocalSystem`** (deliberate: a virtual account cannot create the pipe instances, is
   locked out of its own state/config, and lacks NRPT/admin rights). Do not "restore" it to `NT SERVICE\...`.
@@ -116,6 +121,9 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   exception for query names (not credentials). The status pipe carries only sanitized DTOs.
 - Control pipe `\\.\pipe\sigildns` = SYSTEM + Administrators only. Status pipe
   `\\.\pipe\sigildns-status` = read-only, sanitized. Never grant `AU` access to the control pipe.
+- **Service starts are registration-verified**: `service.Start` compares the SCM `BinaryPathName`
+  against the current executable (with the GUI→CLI sibling rule) before starting. The CLI and the GUI
+  share it, so neither bypasses the check; `elevate` keeps no duplicate start path.
 - Elevation is explicit (`elevate.Apply` → `ShellExecuteExW runas` → `--apply`). The shipped exe also
   embeds a `requireAdministrator` manifest (see above), so it is elevated for its lifetime; the
   `--apply` helper stays one-shot per write and re-validates everything, applying only the allowlisted

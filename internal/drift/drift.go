@@ -13,22 +13,18 @@ package drift
 import (
 	"context"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 )
 
 // Defaults for the reconcile loop (SPEC §4.6 specifies 30-60 s).
 const (
-	DefaultInterval    = 45 * time.Second
-	DefaultMaxAttempts = 3
+	defaultInterval    = 45 * time.Second
+	defaultMaxAttempts = 3
 )
 
 // State is an abstraction of the interception state used for comparisons.
 type State struct {
-	// Adapters maps an interface key to its expected/actual DNS servers.
-	Adapters map[string][]string
-
 	// NRPTConflicts are foreign equal-or-more-specific NRPT rules.
 	NRPTConflicts []string
 
@@ -54,7 +50,7 @@ const (
 // Decide compares the expected state with the actual state.  It is pure.
 //
 //   - a foreign NRPT rule conflicts only when we rely on NRPT -> DecisionConflict;
-//   - our missing NRPT rule, or drifted per-adapter DNS, -> DecisionApply;
+//   - our missing NRPT rule -> DecisionApply;
 //   - otherwise -> DecisionOK.
 func Decide(expected, actual State) (d Decision) {
 	if expected.NRPTOurs && len(actual.NRPTConflicts) > 0 {
@@ -65,33 +61,7 @@ func Decide(expected, actual State) (d Decision) {
 		return DecisionApply
 	}
 
-	for key, want := range expected.Adapters {
-		if !equalServers(want, actual.Adapters[key]) {
-			return DecisionApply
-		}
-	}
-
 	return DecisionOK
-}
-
-// equalServers compares DNS server lists as unordered sets.
-func equalServers(a, b []string) (ok bool) {
-	if len(a) != len(b) {
-		return false
-	}
-
-	as := append([]string(nil), a...)
-	bs := append([]string(nil), b...)
-	sort.Strings(as)
-	sort.Strings(bs)
-
-	for i := range as {
-		if as[i] != bs[i] {
-			return false
-		}
-	}
-
-	return true
 }
 
 // Observation is what a Prober reports: the expected state and the observed one.
@@ -154,12 +124,12 @@ func NewReconciler(opts Options) (r *Reconciler) {
 
 	interval := opts.Interval
 	if interval <= 0 {
-		interval = DefaultInterval
+		interval = defaultInterval
 	}
 
 	maxAttempts := opts.MaxAttempts
 	if maxAttempts <= 0 {
-		maxAttempts = DefaultMaxAttempts
+		maxAttempts = defaultMaxAttempts
 	}
 
 	return &Reconciler{

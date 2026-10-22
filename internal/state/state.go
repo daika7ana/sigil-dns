@@ -1,9 +1,9 @@
 // Package state persists the service-owned state file: interception mode,
-// adapter snapshot, dirty marker, active upstream, and the last health result.
+// dirty marker, active upstream, and the last health result.
 //
 // The file is written atomically (temp file + fsync + rename) and is
-// schema-versioned.  The snapshot must never be overwritten while the dirty
-// marker is set; callers must restore first (see Save).
+// schema-versioned.  The dirty marker records that interception may still be
+// applied, so callers must restore before starting a new session.
 package state
 
 import (
@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -38,32 +37,14 @@ type Mechanism string
 
 // Mechanism values.
 const (
-	MechanismNRPT    Mechanism = "nrpt"
-	MechanismAdapter Mechanism = "adapter"
+	MechanismNRPT Mechanism = "nrpt"
 )
 
 // ErrNoState is returned by Load when no state file exists yet.
 var ErrNoState = errors.New("no state file")
 
-// ErrDirtySnapshot is returned by Save when it would overwrite a snapshot while
-// the existing state is dirty.  Restore from the persisted snapshot first.
-var ErrDirtySnapshot = errors.New("refusing to overwrite snapshot while dirty")
-
 // ErrLocked is returned by AcquireLock when another instance holds the lock.
 var ErrLocked = errors.New("another Sigil DNS instance is running")
-
-// InterfaceDNS is the captured per-interface DNS configuration used by the
-// per-adapter fallback mechanism.  GUID is stable; InterfaceIndex is not.
-type InterfaceDNS struct {
-	GUID string   `json:"guid"`
-	IPv4 []string `json:"ipv4,omitempty"`
-	IPv6 []string `json:"ipv6,omitempty"`
-}
-
-// Snapshot is the pre-interception DNS configuration.
-type Snapshot struct {
-	Interfaces []InterfaceDNS `json:"interfaces"`
-}
 
 // Health is the last two-stage health-check result.
 type Health struct {
@@ -80,7 +61,6 @@ type State struct {
 	Intercept     Mechanism `json:"intercept"`
 	Upstream      string    `json:"active_upstream"`
 	Bypass        []string  `json:"bypass,omitempty"`
-	Snapshot      *Snapshot `json:"snapshot,omitempty"`
 	Health        *Health   `json:"last_health,omitempty"`
 	SchemaVersion int       `json:"schema_version"`
 	Dirty         bool      `json:"dirty"`
@@ -113,20 +93,14 @@ func (s *Store) Load() (st *State, err error) {
 	return st, nil
 }
 
-// Save writes st atomically.  It refuses to replace the persisted snapshot when
-// the existing state is dirty, since re-snapshotting a loopbacked system would
-// capture 127.0.0.1 as the "original" DNS configuration.
+// Save writes st atomically.
 func (s *Store) Save(st *State) (err error) {
 	if st.SchemaVersion == 0 {
 		st.SchemaVersion = SchemaVersion
 	}
 	st.Timestamp = time.Now().UTC()
 
-	if old, lErr := s.Load(); lErr == nil {
-		if old.Dirty && st.Snapshot != nil && !reflect.DeepEqual(old.Snapshot, st.Snapshot) {
-			return ErrDirtySnapshot
-		}
-	} else if !errors.Is(lErr, ErrNoState) {
+	if _, lErr := s.Load(); lErr != nil && !errors.Is(lErr, ErrNoState) {
 		return lErr
 	}
 
@@ -146,6 +120,23 @@ func (s *Store) writeAtomic(st *State) (err error) {
 
 	return nil
 }
+
+// MarkClean records the state as off and clears the dirty marker.  It returns
+// ErrNoState when no state file exists (callers decide whether that is an
+// error).
+func (s *Store) MarkClean() (err error) {
+	st, err := s.Load()
+	if err != nil {
+		return err
+	}
+	st.Mode = ModeOff
+	st.Dirty = false
+
+	return s.Save(st)
+}
+
+// LockPath returns the single-instance lock path that accompanies statePath.
+func LockPath(statePath string) string { return statePath + ".lock" }
 
 // Lock is a cross-platform single-instance guard backed by an exclusive lock
 // file containing the owning pid.  The lock is the file's existence (O_EXCL
@@ -167,18 +158,26 @@ func AcquireLock(path string) (l *Lock, err error) {
 	}
 
 	// Conflict: the owner may be dead.  Reclaim only if the recorded pid is not
-	// alive; a missing or unreadable lock is retried once to cover the race
-	// where the owner released it between our attempts.
+	// alive; a lock that vanished is retried once to cover the race where the
+	// owner released it between our attempts.
 	pid, pErr := readOwnerPid(path)
-	if pErr == nil && processAlive(pid) {
-		return nil, ErrLocked
+	switch {
+	case pErr == nil:
+		if processAlive(pid) {
+			return nil, ErrLocked
+		}
+	case errors.Is(pErr, fs.ErrNotExist):
+		// The owner released it between our attempts; retry below.
+	default:
+		// Never delete a lock we cannot attribute: a live owner may hold it.
+		return nil, fmt.Errorf("%w: the lock file has no readable owner pid", ErrLocked)
 	}
 
 	_ = os.Remove(path)
 
 	l, err = tryAcquire(path)
 	if err != nil {
-		return nil, ErrLocked
+		return nil, err
 	}
 
 	return l, nil

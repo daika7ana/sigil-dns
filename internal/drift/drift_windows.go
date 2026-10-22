@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
@@ -28,7 +27,7 @@ const (
 )
 
 // NewSystemReconciler returns a Reconciler wired to the Windows registry watcher
-// and the NRPT / per-adapter interception.
+// and NRPT interception.
 func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()) (r *Reconciler) {
 	s := &system{statePath: statePath}
 
@@ -57,10 +56,6 @@ func (s *system) Probe(ctx context.Context) (obs Observation, err error) {
 		return Observation{}, nil
 	}
 
-	if st.Intercept == state.MechanismAdapter {
-		return s.probeAdapters(ctx)
-	}
-
 	nrpt, nErr := intercept.ProbeNRPT(ctx)
 	if nErr != nil {
 		return Observation{}, nErr
@@ -72,38 +67,11 @@ func (s *system) Probe(ctx context.Context) (obs Observation, err error) {
 	}, nil
 }
 
-// probeAdapters builds the expected (loopback) and actual per-interface state.
-func (s *system) probeAdapters(ctx context.Context) (obs Observation, err error) {
-	entries, err := intercept.SnapshotAdapters(ctx)
-	if err != nil {
-		return Observation{}, err
-	}
-
-	expected := map[string][]string{}
-	actual := map[string][]string{}
-	for _, e := range entries {
-		key := strconv.Itoa(e.Index)
-		expected[key] = []string{"127.0.0.1", "::1"}
-		actual[key] = append(append([]string{}, e.IPv4...), e.IPv6...)
-	}
-
-	return Observation{Expected: State{Adapters: expected}, Actual: State{Adapters: actual}}, nil
-}
-
-// Apply re-applies the active mechanism.
+// Apply re-applies NRPT interception.
 func (s *system) Apply(ctx context.Context) (err error) {
 	st, err := state.NewStore(s.statePath).Load()
 	if err != nil {
 		return err
-	}
-
-	if st.Intercept == state.MechanismAdapter {
-		entries, aErr := intercept.SnapshotAdapters(ctx)
-		if aErr != nil {
-			return aErr
-		}
-
-		return intercept.ApplyAdapters(ctx, entries)
 	}
 
 	return intercept.New(nil).Enable(ctx, st.Bypass)
@@ -116,14 +84,8 @@ func (s *system) Disable(ctx context.Context) (err error) {
 	}
 
 	store := state.NewStore(s.statePath)
-	st, err := store.Load()
-	if err != nil {
-		return err
-	}
-	st.Mode = state.ModeOff
-	st.Dirty = false
 
-	return store.Save(st)
+	return store.MarkClean()
 }
 
 // watchRegistry watches both interface parameter keys and nudges the reconciler.

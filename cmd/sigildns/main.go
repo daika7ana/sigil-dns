@@ -145,7 +145,6 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 		fs.StringVar(&o.statePath, "state", "", "state file path")
 		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
 	case "disable", "restore":
-		fs.StringVar(&o.listen, "listen", "", "comma-separated loopback listen addresses")
 		fs.StringVar(&o.statePath, "state", "", "state file path")
 	case "status":
 		fs.StringVar(&o.statePath, "state", "", "state file path")
@@ -153,8 +152,6 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 		fs.BoolVar(&o.summary, "summary", false, "status: print the sanitized config summary")
 	case "config":
 		fs.StringVar(&o.configPath, "config", "", "config file path (default "+defaultConfigPath()+")")
-	case "reload", "refresh", "gui", "tray":
-		// These commands take no flags.
 	}
 
 	if err = fs.Parse(rest); err != nil {
@@ -176,18 +173,17 @@ func logger() (l *slog.Logger) {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
-// serviceLogger builds the service's durable, redacting file logger from the
-// config's log block.  It is fail-open: a broken config or an unusable file
-// yields a stderr logger (LOGGING_PLAN §1.5/§4.5).  The closer is nil when no
-// file was opened.
-func (o options) serviceLogger() (l *slog.Logger, closer io.Closer) {
-	resolved, err := o.resolveSettings()
-	if err != nil {
-		// Fail open, but still scrub URLs/stamps from the stderr fallback.
-		return slog.New(redact.Handler(logger().Handler(), nil)), nil
-	}
+// fallbackLogger is the fail-open logger used when the config cannot be
+// resolved.  It still scrubs URLs/stamps from the stderr stream.
+func fallbackLogger() *slog.Logger {
+	return slog.New(redact.Handler(logger().Handler(), nil))
+}
 
-	l, closer, err = logging.Open(logging.Options{
+// loggerFor builds the service's durable, redacting file logger from an
+// already-resolved config.  It is fail-open: an unusable file yields a stderr
+// logger (LOGGING_PLAN §1.5/§4.5).  The closer is nil when no file was opened.
+func loggerFor(resolved config.Resolved) (l *slog.Logger, closer io.Closer) {
+	l, closer, err := logging.Open(logging.Options{
 		Level:     resolved.Log.Level,
 		Path:      resolved.Log.Path,
 		MaxSizeMB: resolved.Log.MaxSizeMB,
@@ -383,7 +379,7 @@ func cmdStatus(args []string) (err error) {
 		return printConfigSummary(o.configPath)
 	}
 
-	st, err := o.lifecycleForState().Status()
+	st, err := state.NewStore(o.statePath).Load()
 	if err != nil {
 		if errors.Is(err, state.ErrNoState) {
 			fmt.Printf("state: none (%s)\n", o.statePath)
@@ -551,7 +547,7 @@ type svcDaemon interface {
 // implements reload (SPEC §15.1): swap when idle, or restore + re-enable with
 // rollback when active; if the rollback also fails the service stops.
 type serviceLifecycle struct {
-	inner     svcDaemon
+	svcDaemon
 	build     func() (lc svcDaemon, sum ipc.ConfigSummary, err error)
 	enableErr error
 
@@ -564,41 +560,17 @@ type serviceLifecycle struct {
 	logger *slog.Logger
 }
 
-// Status implements service.Lifecycle.
-func (s *serviceLifecycle) Status() (st *state.State, err error) { return s.inner.Status() }
-
-// Startup implements service.Lifecycle.
-func (s *serviceLifecycle) Startup(ctx context.Context) (err error) {
-	return s.inner.Startup(ctx)
-}
-
 // Enable implements service.Lifecycle.
 func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 	if s.enableErr != nil {
 		// Startup retained the single-instance lock; release it so a bad config
 		// cannot collide with the SCM's restart attempt.
-		_ = s.inner.Disable(ctx)
+		_ = s.svcDaemon.Disable(ctx)
 
 		return s.enableErr
 	}
 
-	return s.inner.Enable(ctx)
-}
-
-// Disable implements service.Lifecycle.
-func (s *serviceLifecycle) Disable(ctx context.Context) (err error) { return s.inner.Disable(ctx) }
-
-// Restore implements service.Lifecycle (config-independent crash/dirty recovery).
-func (s *serviceLifecycle) Restore(ctx context.Context) (err error) { return s.inner.Restore(ctx) }
-
-// RefreshLists re-downloads the active profile's filter lists (SPEC §15.1).
-func (s *serviceLifecycle) RefreshLists(ctx context.Context) (err error) {
-	return s.inner.RefreshLists(ctx)
-}
-
-// ClearCache clears the resolver cache and the Windows DNS cache.
-func (s *serviceLifecycle) ClearCache(ctx context.Context) (err error) {
-	return s.inner.ClearCache(ctx)
+	return s.svcDaemon.Enable(ctx)
 }
 
 // Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
@@ -622,14 +594,14 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	newSecrets := logging.Secrets(s.logger)
 	logging.UpdateSecrets(s.logger, append(append([]string{}, oldSecrets...), newSecrets...))
 
-	st, sErr := s.inner.Status()
+	st, sErr := s.svcDaemon.Status()
 	enabled := sErr == nil && st != nil && st.Mode == state.ModeOn
 
 	if !enabled {
 		// Idle: just replace the in-memory config; only the new profile is live.
 		logging.UpdateSecrets(s.logger, newSecrets)
 
-		s.inner = newInner
+		s.svcDaemon = newInner
 		s.enableErr = nil
 
 		return sum, nil
@@ -637,7 +609,7 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 
 	// Active: restore, then enable with the new config; roll back to the
 	// last-known-good config on failure.
-	old := s.inner
+	old := s.svcDaemon
 	if err = old.Disable(ctx); err != nil {
 		// The swap never happened, so the old profile is still live.
 		logging.UpdateSecrets(s.logger, oldSecrets)
@@ -672,7 +644,7 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	// Swap is final: keep only the new profile's seeds.
 	logging.UpdateSecrets(s.logger, newSecrets)
 
-	s.inner = newInner
+	s.svcDaemon = newInner
 	s.enableErr = nil
 
 	return sum, nil
@@ -728,7 +700,7 @@ func cmdServiceHost(args []string) (err error) {
 	// lock before opening the log file, so a second --service instance exits
 	// before it can overlap the first instance's file logger.  The lifecycle
 	// re-acquires the lock lazily on its first operation.
-	lock, lockErr := state.AcquireLock(o.statePath + ".lock")
+	lock, lockErr := state.AcquireLock(state.LockPath(o.statePath))
 	if lockErr != nil {
 		return lockErr
 	}
@@ -736,13 +708,23 @@ func cmdServiceHost(args []string) (err error) {
 		return err
 	}
 
-	// Durable, redacting file logger from the config's log block (fail-open).
-	l, closer := o.serviceLogger()
-	if closer != nil {
-		defer func() { _ = closer.Close() }()
+	// Load and resolve the config once at startup; the same result seeds the log
+	// file and the initial lifecycle.  A bad config still starts the host for
+	// crash recovery, using the fail-open stderr logger.
+	_, resolved, cfgErr := serviceConfig(o.configPath, o.profile, o.upstream, o.bootstrap)
+
+	var l *slog.Logger
+	var closer io.Closer
+	if cfgErr != nil {
+		l = fallbackLogger()
+	} else {
+		l, closer = loggerFor(resolved)
+		if closer != nil {
+			defer func() { _ = closer.Close() }()
+		}
 	}
 
-	// build loads the config and constructs a lifecycle + sanitized summary.
+	// build reloads the config and constructs a lifecycle + sanitized summary.
 	build := func() (lc svcDaemon, sum ipc.ConfigSummary, err error) {
 		sum, resolved, cfgErr := serviceConfig(o.configPath, o.profile, o.upstream, o.bootstrap)
 		if cfgErr != nil {
@@ -761,14 +743,13 @@ func cmdServiceHost(args []string) (err error) {
 	// running service must never have interception off).
 	slc := &serviceLifecycle{build: build, logger: l}
 
-	inner, _, bErr := build()
-	if bErr != nil {
-		l.Error("config unavailable; service will stop after recovery", "err", ipc.SanitizedConfigError(bErr))
+	if cfgErr != nil {
+		l.Error("config unavailable; service will stop after recovery", "err", ipc.SanitizedConfigError(cfgErr))
 
-		slc.inner = o.lifecycleForState()
-		slc.enableErr = fmt.Errorf("%w: %v", service.ErrConfigUnavailable, bErr)
+		slc.svcDaemon = o.lifecycleForState()
+		slc.enableErr = fmt.Errorf("%w: %v", service.ErrConfigUnavailable, cfgErr)
 	} else {
-		slc.inner = inner
+		slc.svcDaemon = o.lifecycleFor(resolved, l)
 	}
 
 	agent := service.NewAgent(slc, l, "")

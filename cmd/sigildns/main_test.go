@@ -23,7 +23,7 @@ func TestServiceLifecycleEnableWithoutConfig(t *testing.T) {
 	inner := lifecycle.New(lifecycle.Config{StatePath: filepath.Join(dir, "state.json")})
 
 	want := errors.New("configuration unavailable")
-	lc := &serviceLifecycle{inner: inner, enableErr: want}
+	lc := &serviceLifecycle{svcDaemon: inner, enableErr: want}
 
 	// Recovery works without config: no state means nothing to restore.
 	if err := lc.Startup(context.Background()); err != nil {
@@ -87,8 +87,8 @@ func TestReloadSwapWhenIdle(t *testing.T) {
 	want := ipc.ConfigSummary{Profile: "default", Provider: "Quad9", ConfigValid: true}
 
 	lc := &serviceLifecycle{
-		inner: old,
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, want, nil },
+		svcDaemon: old,
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, want, nil },
 	}
 
 	sum, err := lc.Reload(context.Background())
@@ -101,7 +101,7 @@ func TestReloadSwapWhenIdle(t *testing.T) {
 	if old.disableCalls != 0 || next.enableCalls != 0 {
 		t.Fatalf("idle reload should not toggle: disable=%d enable=%d", old.disableCalls, next.enableCalls)
 	}
-	if lc.inner != svcDaemon(next) {
+	if lc.svcDaemon != svcDaemon(next) {
 		t.Fatal("inner was not swapped")
 	}
 }
@@ -111,8 +111,8 @@ func TestReloadRestoresAndReenables(t *testing.T) {
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
 
 	lc := &serviceLifecycle{
-		inner: old,
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{ConfigValid: true}, nil },
+		svcDaemon: old,
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{ConfigValid: true}, nil },
 	}
 
 	if _, err := lc.Reload(context.Background()); err != nil {
@@ -124,7 +124,7 @@ func TestReloadRestoresAndReenables(t *testing.T) {
 	if next.enableCalls != 1 || old.enableCalls != 0 {
 		t.Fatalf("enable calls: next=%d old=%d, want 1/0", next.enableCalls, old.enableCalls)
 	}
-	if lc.inner != svcDaemon(next) {
+	if lc.svcDaemon != svcDaemon(next) {
 		t.Fatal("inner was not swapped after reload")
 	}
 }
@@ -134,8 +134,8 @@ func TestReloadRollsBackOnEnableFailure(t *testing.T) {
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new config bad")}
 
 	lc := &serviceLifecycle{
-		inner: old,
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+		svcDaemon: old,
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
 	}
 
 	_, err := lc.Reload(context.Background())
@@ -148,7 +148,7 @@ func TestReloadRollsBackOnEnableFailure(t *testing.T) {
 	if old.enableCalls != 1 {
 		t.Fatalf("rollback old.Enable calls = %d, want 1", old.enableCalls)
 	}
-	if lc.inner != svcDaemon(old) {
+	if lc.svcDaemon != svcDaemon(old) {
 		t.Fatal("inner should remain the last-known-good lifecycle")
 	}
 }
@@ -168,8 +168,8 @@ func TestReloadRollbackReseeds(t *testing.T) {
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, enableErr: errors.New("new config bad")}
 
 	lc := &serviceLifecycle{
-		inner:  old,
-		logger: l,
+		svcDaemon: old,
+		logger:    l,
 		build: func() (svcDaemon, ipc.ConfigSummary, error) {
 			logging.UpdateSecrets(l, []string{"NEWID99"})
 			return next, ipc.ConfigSummary{}, nil
@@ -209,8 +209,8 @@ func TestReloadUnionSeedsDuringSwap(t *testing.T) {
 	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
 
 	lc := &serviceLifecycle{
-		inner:  old,
-		logger: l,
+		svcDaemon: old,
+		logger:    l,
 		build: func() (svcDaemon, ipc.ConfigSummary, error) {
 			logging.UpdateSecrets(l, []string{"NEWID99"})
 			return next, ipc.ConfigSummary{}, nil
@@ -241,15 +241,15 @@ func TestReloadRollbackFailure(t *testing.T) {
 	stopped := false
 
 	lc := &serviceLifecycle{
-		inner: old,
-		stop:  func() { stopped = true },
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+		svcDaemon: old,
+		stop:      func() { stopped = true },
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
 	}
 
 	if _, err := lc.Reload(context.Background()); err == nil {
 		t.Fatal("Reload should fail")
 	}
-	if lc.inner != svcDaemon(old) {
+	if lc.svcDaemon != svcDaemon(old) {
 		t.Fatal("inner should remain the old lifecycle")
 	}
 	if !stopped {
@@ -263,9 +263,9 @@ func TestReloadDisableFailureStops(t *testing.T) {
 	stopped := false
 
 	lc := &serviceLifecycle{
-		inner: old,
-		stop:  func() { stopped = true },
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+		svcDaemon: old,
+		stop:      func() { stopped = true },
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
 	}
 
 	if _, err := lc.Reload(context.Background()); err == nil {
@@ -285,9 +285,9 @@ func TestReloadRestoreFailureKeepsRunning(t *testing.T) {
 	stopped := false
 
 	lc := &serviceLifecycle{
-		inner: old,
-		stop:  func() { stopped = true },
-		build: func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+		svcDaemon: old,
+		stop:      func() { stopped = true },
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
 	}
 
 	if _, err := lc.Reload(context.Background()); err == nil {
@@ -303,7 +303,7 @@ func TestReloadBuildErrorKeepsCurrent(t *testing.T) {
 	buildErr := errors.New("config corrupt")
 
 	lc := &serviceLifecycle{
-		inner: old,
+		svcDaemon: old,
 		build: func() (svcDaemon, ipc.ConfigSummary, error) {
 			return nil, ipc.ConfigSummary{ConfigValid: false, ConfigError: "config could not be loaded or validated"}, buildErr
 		},
@@ -319,7 +319,7 @@ func TestReloadBuildErrorKeepsCurrent(t *testing.T) {
 	if old.disableCalls != 0 {
 		t.Fatal("a build failure must not touch the running lifecycle")
 	}
-	if lc.inner != svcDaemon(old) {
+	if lc.svcDaemon != svcDaemon(old) {
 		t.Fatal("inner should be unchanged")
 	}
 }

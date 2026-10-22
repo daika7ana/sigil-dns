@@ -40,24 +40,6 @@ func TestDecide(t *testing.T) {
 			want:     DecisionOK,
 		},
 		{
-			name:     "adapters match, order-insensitive",
-			expected: State{Adapters: map[string][]string{"1": {"127.0.0.1", "::1"}}},
-			actual:   State{Adapters: map[string][]string{"1": {"::1", "127.0.0.1"}}},
-			want:     DecisionOK,
-		},
-		{
-			name:     "adapter drifted",
-			expected: State{Adapters: map[string][]string{"1": {"127.0.0.1", "::1"}}},
-			actual:   State{Adapters: map[string][]string{"1": {"8.8.8.8"}}},
-			want:     DecisionApply,
-		},
-		{
-			name:     "adapter missing",
-			expected: State{Adapters: map[string][]string{"1": {"127.0.0.1", "::1"}}},
-			actual:   State{Adapters: nil},
-			want:     DecisionApply,
-		},
-		{
 			name:     "nothing expected",
 			expected: State{},
 			actual:   State{NRPTOurs: false},

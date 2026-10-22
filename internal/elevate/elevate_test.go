@@ -56,7 +56,6 @@ func ptr[T any](v T) *T { return new(v) }
 
 // TestValidatePatchShape covers the field-level constraints on Request.Validate.
 func TestValidatePatchShape(t *testing.T) {
-	ttlZero := uint32(0)
 	empty := ""
 	sizeZero := 0
 	sizeOK := 4096
@@ -80,13 +79,6 @@ func TestValidatePatchShape(t *testing.T) {
 		{
 			name:    "enable takes no patch",
 			req:     Request{Action: ActionEnable, UUID: "u", Patch: Patch{ActiveProfile: new("x")}},
-			wantErr: true,
-		},
-		{
-			name: "block ttl zero rejected",
-			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {Filtering: &FilteringPatch{BlockTTL: &ttlZero}},
-			}}},
 			wantErr: true,
 		},
 		{
@@ -149,14 +141,57 @@ func TestValidatePatchShape(t *testing.T) {
 		{
 			name: "url without scheme rejected",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {URL: new("dns.example")},
+				// Custom provider: the URL is meaningful, so this still exercises the scheme check.
+				"default": {Provider: new(providers.Custom), URL: new("dns.example")},
 			}}},
 			wantErr: true,
 		},
 		{
 			name: "good url ok",
 			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
-				"default": {URL: new("tls://1.1.1.1:853"), Bootstrap: &[]string{"1.1.1.1"}},
+				"default": {Provider: new(providers.Custom), URL: new("tls://1.1.1.1:853"), Bootstrap: &[]string{"1.1.1.1"}},
+			}}},
+			wantErr: false,
+		},
+		{
+			name: "id with provider that does not use one rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Provider: new(providers.Quad9), ID: new("abc")},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "id with free preset rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Provider: new(providers.ControlD), Variant: new("p0"), ID: new("abc")},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "id with provider that needs one ok",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Provider: new(providers.NextDNS), ID: new("abc")},
+			}}},
+			wantErr: false,
+		},
+		{
+			name: "url with non-custom provider rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Provider: new(providers.Quad9), URL: new("tls://1.1.1.1:853")},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "url without provider rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {URL: new("tls://1.1.1.1:853")},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "url with custom provider ok",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Provider: new(providers.Custom), URL: new("tls://1.1.1.1:853")},
 			}}},
 			wantErr: false,
 		},
@@ -869,50 +904,19 @@ func TestApplyShouldReload(t *testing.T) {
 	}
 }
 
-// TestServiceBinaryMatches pins the anti-hijack registration check.
-func TestServiceBinaryMatches(t *testing.T) {
-	exe := `C:\Program Files\sigildns\sigildns.exe`
-	plain := `C:\sigildns\sigildns.exe`
-
-	cases := []struct {
-		name    string
-		binPath string
-		exe     string
-		want    bool
-	}{
-		{"quoted with arg", `"` + exe + `" --service`, exe, true},
-		{"unquoted with arg", plain + ` --service`, plain, true},
-		{"wrong binary", `"C:\evil\evil.exe" --service`, exe, false},
-		{"missing arg", `"` + exe + `"`, exe, false},
-		{"extra arg", `"` + exe + `" --service --evil`, exe, false},
-		{"empty", ``, exe, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := serviceBinaryMatches(tc.binPath, tc.exe); got != tc.want {
-				t.Fatalf("serviceBinaryMatches(%q) = %v, want %v", tc.binPath, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestApplyLogPatch covers the logging patch surface (LOGGING_PLAN §4.4).
 func TestApplyLogPatch(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "sigildns.log")
 
 	cfg := config.Default()
 	req := Request{Action: ActionApply, UUID: "u", Patch: Patch{
-		LogLevel:     new("debug"),
-		LogPath:      new(logPath),
-		LogMaxSizeMB: new(20),
-		LogKeepMB:    new(5),
+		LogLevel: new("debug"),
+		LogPath:  new(logPath),
 	}}
 	if err := applyRequest(cfg, req, "rev"); err != nil {
 		t.Fatalf("applyRequest(log): %v", err)
 	}
-	if cfg.Log.Level != "debug" || cfg.Log.Path != logPath ||
-		cfg.Log.MaxSizeMB != 20 || cfg.Log.KeepMB != 5 {
+	if cfg.Log.Level != "debug" || cfg.Log.Path != logPath {
 		t.Fatalf("log patch not applied: %+v", cfg.Log)
 	}
 
@@ -934,12 +938,6 @@ func TestApplyLogPatch(t *testing.T) {
 	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: new(missing)}}
 	if err := applyRequest(config.Default(), missReq, "rev"); err == nil {
 		t.Fatal("log path with a missing parent directory accepted")
-	}
-
-	// Explicit zero size rejected.
-	zero := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogMaxSizeMB: new(0)}}
-	if err := applyRequest(config.Default(), zero, "rev"); err == nil {
-		t.Fatal("explicit zero log size accepted")
 	}
 }
 

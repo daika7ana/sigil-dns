@@ -661,13 +661,11 @@ type Resolved struct {
 	Cache       Cache
 	Filtering   Filtering
 	Provider    string
-	Variant     string
 	Protocol    string
 	Log         LogConfig
 
-	// FallbackProfile is the configured fallback profile name, if any, with
-	// its effective upstreams and bootstrap.
-	FallbackProfile   string
+	// FallbackUpstreams is the effective upstreams and bootstrap of the
+	// configured fallback profile, if any.
 	FallbackUpstreams []string
 	FallbackBootstrap []string
 	FallbackProvider  string
@@ -701,7 +699,6 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	p.filteringDefaults()
 	r.Filtering = p.Filtering
 	r.Provider = strings.TrimSpace(p.Provider)
-	r.Variant = strings.TrimSpace(p.Variant)
 	r.Protocol = strings.TrimSpace(p.Protocol)
 
 	if fb := strings.TrimSpace(p.FallbackProfile); fb != "" {
@@ -709,7 +706,6 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 		if !ok {
 			return Resolved{}, fmt.Errorf("fallback profile %q not found in config", fb)
 		}
-		r.FallbackProfile = fb
 		r.FallbackUpstreams = fp.Upstreams
 		r.FallbackBootstrap = fp.Bootstrap
 		r.FallbackProvider = strings.TrimSpace(fp.Provider)

@@ -143,6 +143,24 @@ func pagePadding() gogui.Padding {
 	return gogui.NewPadding(contentPad, contentPad+scrollbarGutter, contentPad, contentPad)
 }
 
+// pageColumn wraps a page's content in the shared scrollable, inset column.
+func pageColumn(id string, content []gogui.View) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		ID: id, Sizing: gogui.FillFill, MaxWidth: contentMaxWidth,
+		Padding: pagePadding(), Spacing: gogui.SpacingMedium,
+		SizeBorder: gogui.NoBorder, Scrollable: true, Content: content,
+	})
+}
+
+// withEditNotice prepends the trust/offline banner to an editor page's content.
+func withEditNotice(t gogui.Theme, app *App, content []gogui.View) []gogui.View {
+	if v := editNotice(t, app); v != nil {
+		return append([]gogui.View{v}, content...)
+	}
+
+	return content
+}
+
 // contentArea centers a capped reading column in the space beside the rail.
 // HAlignCenter places the capped child box; MaxWidth on the child is what caps
 // it, so the column stays readable at any window width.
@@ -333,33 +351,15 @@ func aboutPage(t gogui.Theme) gogui.View {
 		}),
 	}
 
-	return gogui.Column(gogui.ContainerCfg{
-		ID:         "gui:about",
-		Sizing:     gogui.FillFill,
-		MaxWidth:   contentMaxWidth,
-		Padding:    pagePadding(),
-		Spacing:    gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder,
-		Scrollable: true,
-		Content: []gogui.View{
-			card(t, "gui:card:about", "About", rows),
-		},
+	return pageColumn("gui:about", []gogui.View{
+		card(t, "gui:card:about", "About", rows),
 	})
 }
 
 // kvLink is a kv row whose value is a clickable link.  The label column matches
 // kv so the About rows stay aligned; the value is link-styled accent text.
 func kvLink(t gogui.Theme, id, label, text, url string) gogui.View {
-	return gogui.Row(gogui.ContainerCfg{
-		Sizing:     gogui.FillFit,
-		Spacing:    gogui.SpacingMedium,
-		Padding:    gogui.PaddingNone,
-		SizeBorder: gogui.NoBorder,
-		Content: []gogui.View{
-			labelText(t, label),
-			linkButton(t, id, text, url),
-		},
-	})
+	return kvRow(t, label, linkButton(t, id, text, url))
 }
 
 // linkButton is an inline link: a borderless ghost button around underlined
@@ -394,16 +394,7 @@ func statusPage(t gogui.Theme, app *App) gogui.View {
 	content := []gogui.View{banner(t, v)}
 	content = append(content, sections(app, t)...)
 
-	return gogui.Column(gogui.ContainerCfg{
-		ID:         "gui:content",
-		Sizing:     gogui.FillFill,
-		MaxWidth:   contentMaxWidth,
-		Padding:    pagePadding(),
-		Spacing:    gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder,
-		Scrollable: true,
-		Content:    content,
-	})
+	return pageColumn("gui:content", content)
 }
 
 // header is the app's identity band: the app mark, the title with its service
@@ -792,13 +783,6 @@ func cacheSection(sum *ipc.ConfigSummary, t gogui.Theme) gogui.View {
 // scrollable clip, so scrolled cards painted their legend at the scroll origin
 // and overlapped the banner, and its TitleBG struck a line through the text.
 func card(t gogui.Theme, id, title string, rows []gogui.View) gogui.View {
-	return cardSpaced(t, id, title, gogui.SpacingMedium, rows)
-}
-
-// cardSpaced is card with an explicit inter-row gap.  The medium default gives
-// every card the same vertical rhythm; a caller can tighten it for a dense
-// read-only list.
-func cardSpaced(t gogui.Theme, id, title string, spacing gogui.Spacing, rows []gogui.View) gogui.View {
 	content := make([]gogui.View, 0, len(rows)+1)
 	content = append(content, cardTitle(t, title))
 	content = append(content, rows...)
@@ -811,7 +795,7 @@ func cardSpaced(t gogui.Theme, id, title string, spacing gogui.Spacing, rows []g
 		SizeBorder:  gogui.BorderThin,
 		Radius:      gogui.RadiusLarge,
 		Padding:     t.PaddingLarge,
-		Spacing:     spacing,
+		Spacing:     gogui.SpacingMedium,
 		Content:     content,
 	})
 }
@@ -835,10 +819,8 @@ func labelText(t gogui.Theme, label string) gogui.View {
 	})
 }
 
-// kv is one label/value row with a fixed label column.  PaddingNone keeps the
-// rows compact: without it every row pays the container's default padding,
-// which made the cards read as half-empty.
-func kv(t gogui.Theme, label, value string) gogui.View {
+// kvRow is the shared label/value row shell with a fixed label column.
+func kvRow(t gogui.Theme, label string, value gogui.View) gogui.View {
 	return gogui.Row(gogui.ContainerCfg{
 		Sizing:     gogui.FillFit,
 		Spacing:    gogui.SpacingMedium,
@@ -846,14 +828,21 @@ func kv(t gogui.Theme, label, value string) gogui.View {
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
 			labelText(t, label),
-			gogui.Text(gogui.TextCfg{
-				Text:      value,
-				TextStyle: t.TextStyleBody,
-				Sizing:    gogui.FillFit,
-				Mode:      gogui.TextModeWrap,
-			}),
+			value,
 		},
 	})
+}
+
+// kv is one label/value row with a fixed label column.  PaddingNone keeps the
+// rows compact: without it every row pays the container's default padding,
+// which made the cards read as half-empty.
+func kv(t gogui.Theme, label, value string) gogui.View {
+	return kvRow(t, label, gogui.Text(gogui.TextCfg{
+		Text:      value,
+		TextStyle: t.TextStyleBody,
+		Sizing:    gogui.FillFit,
+		Mode:      gogui.TextModeWrap,
+	}))
 }
 
 // settingRow is a Fluent settings row: a title (with an optional description)
@@ -933,24 +922,10 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 		}
 	case enabled(s):
 		if s.summary != nil && !s.summary.ConfigValid {
-			return statusVisual{
-				kind:          kindDegraded,
-				headline:      "Needs attention",
-				detail:        configErrorDetail(s.summary),
-				headlineStyle: t.TextStyleWarning,
-				bg:            t.ColorWarningSubtle,
-				accent:        t.TextStyleWarning.Color,
-			}
+			return degradedVisual(t, configErrorDetail(s.summary))
 		}
 		if !healthOK(s.status.Health) {
-			return statusVisual{
-				kind:          kindDegraded,
-				headline:      "Needs attention",
-				detail:        "The resolver is enabled but its last health check did not pass.",
-				headlineStyle: t.TextStyleWarning,
-				bg:            t.ColorWarningSubtle,
-				accent:        t.TextStyleWarning.Color,
-			}
+			return degradedVisual(t, "The resolver is enabled but its last health check did not pass.")
 		}
 
 		// A healthy session keeps the neutral panel fill: the green dot and
@@ -981,6 +956,19 @@ func statusVisualFor(s snapshot, t gogui.Theme) statusVisual {
 			bg:            t.ColorPanel,
 			accent:        t.TextStyleSecondary.Color,
 		}
+	}
+}
+
+// degradedVisual is the "Needs attention" banner shared by the invalid-config
+// and failed-health states.
+func degradedVisual(t gogui.Theme, detail string) statusVisual {
+	return statusVisual{
+		kind:          kindDegraded,
+		headline:      "Needs attention",
+		detail:        detail,
+		headlineStyle: t.TextStyleWarning,
+		bg:            t.ColorWarningSubtle,
+		accent:        t.TextStyleWarning.Color,
 	}
 }
 

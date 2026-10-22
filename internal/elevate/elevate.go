@@ -111,10 +111,8 @@ type Patch struct {
 
 	// Logging (LOGGING_PLAN).  A log-only change is saved but never triggers a
 	// service reload (see reloadRelevant).
-	LogLevel     *string `json:"log_level,omitempty"`
-	LogPath      *string `json:"log_path,omitempty"`
-	LogMaxSizeMB *int    `json:"log_max_size_mb,omitempty"`
-	LogKeepMB    *int    `json:"log_keep_mb,omitempty"`
+	LogLevel *string `json:"log_level,omitempty"`
+	LogPath  *string `json:"log_path,omitempty"`
 }
 
 // RenameProfile names the profile rename pair.
@@ -150,7 +148,6 @@ type ProfilePatch struct {
 type FilteringPatch struct {
 	Enabled       *bool      `json:"enabled,omitempty"`
 	BlockResponse *string    `json:"block_response,omitempty"`
-	BlockTTL      *uint32    `json:"block_ttl,omitempty"`
 	Lists         *ListPatch `json:"lists,omitempty"`
 }
 
@@ -218,9 +215,7 @@ func (p Patch) empty() (ok bool) {
 		p.RenameProfile == nil &&
 		p.DeleteProfile == nil &&
 		p.LogLevel == nil &&
-		p.LogPath == nil &&
-		p.LogMaxSizeMB == nil &&
-		p.LogKeepMB == nil
+		p.LogPath == nil
 }
 
 // Request is the staged request body.  It is untrusted input: Validate and the
@@ -330,12 +325,6 @@ func (p Patch) validateLog() (err error) {
 			}
 		}
 	}
-	if p.LogMaxSizeMB != nil && *p.LogMaxSizeMB <= 0 {
-		return errors.New("log max size must be greater than zero")
-	}
-	if p.LogKeepMB != nil && *p.LogKeepMB <= 0 {
-		return errors.New("log keep size must be greater than zero")
-	}
 
 	return nil
 }
@@ -357,13 +346,33 @@ func (pp ProfilePatch) validateShape() (err error) {
 		return errors.New("the custom provider does not use a resolver id")
 	}
 
+	// providers.Expand ignores an id for a variant that does not need one, so
+	// reject it here rather than silently dropping a security-relevant field.
+	if pp.ID != nil && strings.TrimSpace(*pp.ID) != "" && pp.Provider != nil {
+		sel := providers.Selection{Provider: strings.TrimSpace(*pp.Provider)}
+		if pp.Variant != nil {
+			sel.Variant = strings.TrimSpace(*pp.Variant)
+		}
+		if !selectionNeedsID(sel) {
+			return errors.New("this provider does not use a resolver id")
+		}
+	}
+
 	if pp.ID != nil {
 		if err = validateID(*pp.ID); err != nil {
 			return err
 		}
 	}
 
+	// A URL is only meaningful for the custom provider; every other provider
+	// expands from its own endpoints and would ignore it.  The custom provider
+	// still goes through the empty/scheme checks below.
 	if pp.URL != nil {
+		if pp.Provider == nil ||
+			!strings.EqualFold(strings.TrimSpace(*pp.Provider), providers.Custom) {
+			return errors.New("upstream url requires the custom provider")
+		}
+
 		raw := strings.TrimSpace(*pp.URL)
 		if raw == "" {
 			return errors.New("upstream url must not be empty")
@@ -424,9 +433,6 @@ func validateID(id string) (err error) {
 
 // validateShape enforces the filtering patch constraints.
 func (f FilteringPatch) validateShape() (err error) {
-	if f.BlockTTL != nil && *f.BlockTTL == 0 {
-		return errors.New("block_ttl must be greater than zero")
-	}
 	if f.BlockResponse != nil && strings.TrimSpace(*f.BlockResponse) == "" {
 		return errors.New("block_response must not be empty")
 	}
@@ -570,12 +576,6 @@ func applyLogPatch(l *config.LogConfig, p Patch) {
 	}
 	if p.LogPath != nil {
 		l.Path = strings.TrimSpace(*p.LogPath)
-	}
-	if p.LogMaxSizeMB != nil {
-		l.MaxSizeMB = *p.LogMaxSizeMB
-	}
-	if p.LogKeepMB != nil {
-		l.KeepMB = *p.LogKeepMB
 	}
 }
 
@@ -827,9 +827,6 @@ func applyFilteringPatch(f *config.Filtering, fp *FilteringPatch) (err error) {
 	if fp.BlockResponse != nil {
 		f.BlockResponse = strings.TrimSpace(*fp.BlockResponse)
 	}
-	if fp.BlockTTL != nil {
-		f.BlockTTL = *fp.BlockTTL
-	}
 	if fp.Lists != nil {
 		if err = applyListPatch(&f.Lists, *fp.Lists); err != nil {
 			return err
@@ -937,32 +934,6 @@ func applyCachePatch(p *config.Profile, cp *CachePatch) {
 	if cp.SizeBytes != nil {
 		p.Cache.SizeBytes = *cp.SizeBytes
 	}
-}
-
-// serviceBinaryMatches reports whether a registered service BinaryPathName
-// still points at exe followed by the fixed "--service" argument.  It is pure
-// so the anti-hijack check is unit-testable off Windows.
-func serviceBinaryMatches(binPath, exe string) (ok bool) {
-	s := strings.TrimSpace(binPath)
-	if s == "" {
-		return false
-	}
-
-	if strings.HasPrefix(s, `"`) {
-		bin, after, found := strings.Cut(s[1:], `"`)
-		if !found {
-			return false
-		}
-
-		return strings.EqualFold(bin, exe) && strings.TrimSpace(after) == "--service"
-	}
-
-	bin, args, found := strings.Cut(s, " ")
-	if !found {
-		return false
-	}
-
-	return strings.EqualFold(bin, exe) && strings.TrimSpace(args) == "--service"
 }
 
 // applyShouldReload decides whether a config-only apply should push the new

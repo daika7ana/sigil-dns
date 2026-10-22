@@ -39,15 +39,13 @@ an on-path attacker; prefer DoH/DoT/DoQ if that matters.
 
 ## What silently breaks or leaks
 
-### New or transient adapters — leak window
+### New or transient adapters
 
-Interception is applied to the machine, not to individual adapters, so a newly
-connected adapter is covered as soon as Windows consults NRPT. However, if an
-adapter is added, reverted (e.g. by a driver reset), or missed while the service
-is restarting, parallel multi-homed queries can briefly leak to a non-loopback
-resolver. A registry watcher on the Tcpip/Tcpip6 interface keys plus a 45 s
-reconcile loop re-apply interception and detect this drift, but the window
-between the change and the reconcile is real.
+NRPT is machine-wide, so a newly connected adapter is covered as soon as Windows
+consults the rule — there is no per-adapter setup to miss. The registry watcher
+on the Tcpip/Tcpip6 interface keys plus a 45 s reconcile loop re-check our rule
+and re-apply it if it disappeared (for example after a driver reset or a
+policy refresh), but the window between the change and the reconcile is real.
 
 ### VPN that installs NRPT rules
 

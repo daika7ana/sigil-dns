@@ -432,7 +432,7 @@ func TestClientRoundTrip(t *testing.T) {
 	if err = c.Enable(ctx); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	if err = c.Disable(ctx); err != nil {
+	if err = Exchange(conn, MethodDisable, nil); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
 	if lc.enableCalls != 1 || lc.disableCalls != 1 {

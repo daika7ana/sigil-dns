@@ -51,7 +51,6 @@ supported.
   "mode": "on",
   "intercept": "nrpt",
   "active_upstream": "https://dns.quad9.net/dns-query",
-  "snapshot": { "interfaces": [] },
   "last_health": { "ours": true, "ipv4": true, "ipv6": true, "detail": "ok" },
   "schema_version": 1,
   "dirty": false
@@ -61,7 +60,7 @@ supported.
 | Field | Meaning |
 |---|---|
 | `mode` | Persisted interception state (`on`/`off`); a running service is always `on`. |
-| `intercept` | Mechanism in use (`nrpt` or `adapter`). |
+| `intercept` | Mechanism in use (currently always `nrpt`). |
 | `active_upstream` | The upstream(s) captured at enable time. |
 | `dirty` | `true` means interception was applied but not cleanly restored — run `restore`. |
 | `last_health` | Two-stage health result: `ours` (loopback is us), `ipv4`/`ipv6` (upstream per family), `detail` (human text). |
@@ -133,9 +132,8 @@ sigildns run --upstream https://dns.quad9.net/dns-query --bootstrap 9.9.9.9:53
 
 The service writes the dirty marker after applying interception and clears it
 only after a clean restore. A crash, `kill`, or power loss therefore leaves
-`dirty: true`; the next service start restores from the snapshot first and never
-re-snapshots a loopbacked machine (which would capture `127.0.0.1` as the
-"original" DNS).
+`dirty: true`. The build stores no adapter snapshot: the next service start
+deletes our NRPT rule first (if present), then re-enables from a clean baseline.
 
 To recover manually:
 
@@ -199,10 +197,12 @@ interception on.
 
 ## "another Sigil DNS instance is running"
 
-A single-instance lock (`state.json.lock`) guards the snapshot. This error means
+A single-instance lock (`state.json.lock`) guards the state file. This error means
 a live process holds it. If the holder crashed, a stale lock is reclaimed
-automatically when its recorded pid is dead; `restore` will reclaim it. If it
-persists, check for a leftover process:
+automatically when its recorded pid is dead; `restore` will reclaim it. A lock
+whose pid cannot be read is never removed automatically (it may belong to a live
+process): if no Sigil DNS process is running, delete `state.json.lock` by hand.
+If it persists, check for a leftover process:
 
 ```powershell
 Get-Process sigildns

@@ -302,9 +302,6 @@ func TestFallbackProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if r.FallbackProfile != "backup" {
-		t.Errorf("FallbackProfile = %q", r.FallbackProfile)
-	}
 	if !slices.Equal(r.FallbackUpstreams, []string{"tls://backup.example:853"}) {
 		t.Errorf("FallbackUpstreams = %v", r.FallbackUpstreams)
 	}
@@ -663,8 +660,8 @@ func TestProfileMetadataRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if r.Provider != "NextDNS" || r.Variant != "ultralow" || r.Protocol != "doh" {
-		t.Fatalf("metadata not resolved: provider=%q variant=%q protocol=%q", r.Provider, r.Variant, r.Protocol)
+	if r.Provider != "NextDNS" || r.Protocol != "doh" {
+		t.Fatalf("metadata not resolved: provider=%q protocol=%q", r.Provider, r.Protocol)
 	}
 
 	// A config without metadata still loads (older files).

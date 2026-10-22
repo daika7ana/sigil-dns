@@ -135,7 +135,7 @@ interception).
 
 > The service runs as **LocalSystem** in v1. The least-privilege virtual account
 > cannot create the IPC pipe instances, is locked out of its own state file, and
-> lacks the rights NRPT/adapter writes need. See SPEC §2.
+> lacks the rights NRPT writes need. See SPEC §2.
 
 ---
 
@@ -176,7 +176,7 @@ sigildns status
 ```
 
 Starting the service always enables interception (bind → two-stage health check
-→ snapshot → NRPT → flush); the SCM state stays Starting until that finishes, and
+→ state + dirty marker → NRPT → flush); the SCM state stays Starting until that finishes, and
 a running service is never left with protection off. If enabling fails the
 service stops; a bad config exits cleanly so fix it and start again, while other
 failures are retried by the SCM recovery actions. Read status as JSON to confirm
@@ -274,7 +274,6 @@ the OS resolver bypasses Sigil DNS entirely.
 | Normal apps using the OS resolver | Yes |
 | Apps with hardcoded resolver IPs or their own stub resolver | No |
 | Browsers with built-in Secure DNS (DoH) | No — must be disabled in-browser |
-| Any adapter not currently loopbacked (new/transient/missed) | Leak window — parallel multi-homed queries can bypass |
 | VPN that installs NRPT rules (e.g. `{.}`) | VPN rules may override or break ours; VPN DNS may hard-break |
 | Captive portal (pre-auth) | Bootstrap DoH fails; the portal may be unreachable until we back off |
 | `hosts` file / LLMNR / mDNS / NetBIOS local resolution | Bypasses DNS entirely |
@@ -293,7 +292,7 @@ sigildns <command> [flags]
 
 | Command | Description |
 |---|---|
-| `enable` | Bind listeners, health-check, snapshot, apply interception, then run until Ctrl-C. On exit, disable and restore. |
+| `enable` | Bind listeners, health-check, persist state, apply interception, then run until Ctrl-C. On exit, disable and restore. |
 | `disable` | Stop the resolver, restore interception, clear the dirty marker. |
 | `restore` | Restore interception from persisted state (crash recovery). Works even if the config file is corrupt. |
 | `status` | Print the persisted state as JSON, or `state: none (<path>)` if never enabled. |

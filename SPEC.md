@@ -24,7 +24,6 @@ feature set of YogaDNS, without a kernel driver.
 | Normal apps using the OS resolver | ✅ Yes |
 | Apps with hardcoded resolver IPs / own stub resolver | ❌ No |
 | Browsers with built-in Secure DNS (DoH) | ❌ No — user must disable in-browser |
-| **Any adapter not currently loopbacked** (new/transiently-reverted/missed) — parallel multi-homed queries leak | ❌ Leak window |
 | VPN that installs NRPT rules (e.g. `{.}`) | ⚠️ VPN rules may **override or break** our rule; VPN DNS hard-breaks |
 | Captive portal (pre-auth) | ⚠️ Bootstrap DoH fails → user can't reach the portal until we back off |
 | hosts file / LLMNR / mDNS / NetBIOS local resolution | ❌ Bypasses DNS entirely |
@@ -40,7 +39,7 @@ feature set of YogaDNS, without a kernel driver.
                     ┌─────────────────┴──────────────────┐
                     │  Interception (see §4)             │
                     │  PRIMARY: NRPT rule (all names)    │
-                    │  FALLBACK: per-adapter DNS = loopbk │
+                    │  (adapter fallback not built, §4.2)│
                     └─────────────────┬──────────────────┘
                                       ▼
              127.0.0.1:53 / [::1]:53  (UDP + TCP)
@@ -60,8 +59,9 @@ feature set of YogaDNS, without a kernel driver.
   Run as **LocalSystem** for v1. The originally-planned least-privilege virtual
   account `NT SERVICE\sigildns` is infeasible: it cannot create pipe instances
   under the pipe SDDL, is locked out of its own state file by `state.secure()`,
-  and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) and
-  adapter DNS writes require. Least privilege remains a future hardening goal
+  and lacks the administrator rights that NRPT (`Add-DnsClientNrptRule`) writes
+  require (as would the adapter DNS writes of the §4.2 fallback). Least privilege
+  remains a future hardening goal
   (service SID + explicit grants) once those operations can be delegated.
 - **GUI**: reads sanitized status over the read-only status pipe; state-changing ops go through the
   elevated `--apply` helper. On shipped builds the process is itself elevated at launch (manifest,
@@ -82,7 +82,7 @@ feature set of YogaDNS, without a kernel driver.
 | Windows service | `golang.org/x/sys/windows/svc` | BSD-3 |
 | Tray | go-gui built-in `SystemTrayCfg` (part of the `gui` build) | MIT |
 | Config | YAML (`gopkg.in/yaml.v3`) | MIT/Apache |
-| State/snapshot | JSON (stdlib), atomic write, ACL SYSTEM+Admins | — |
+| State | JSON (stdlib), atomic write, ACL SYSTEM+Admins | — |
 
 **Licensing note:** static Go linking of urlfilter (GPLv3) makes the shipped binary a combined work
 → the project is GPLv3, full stop. Documented in repo LICENSE + README. Do **not** assume "run
@@ -106,35 +106,47 @@ Caveats (must handle):
   hard-break). Detect conflicting rules; surface a warning in the tray.
 - Per-domain **bypass** rules are more-specific NRPT rules with **no name servers** (an exemption),
   so those names fall back to the interface's normal DNS (see docs/LIMITATIONS.md).
-- **Must be verified on Win11 24H2 during phase 1** before committing; if unreliable, fall back.
+- **Must be verified on Win11 24H2 during phase 1** before committing; if unreliable, consider the
+  per-adapter fallback in §4.2 (not implemented today).
 
-### 4.2 FALLBACK mechanism: per-adapter loopback
-Only if NRPT proves unreliable. Per active interface (IPv4 **and** IPv6):
-apply `Set-DnsClientServerAddress -InterfaceIndex N -ServerAddresses 127.0.0.1` / `::1`.
-Set **both** families or IPv6 leaks. New/changed adapters re-applied by the watcher (§4.6).
+### 4.2 FALLBACK mechanism (NOT IMPLEMENTED — possible future workaround)
+The shipped build implements NRPT only. The per-adapter approach is kept here as a contingency in
+case NRPT proves unreliable in the field; it is not selectable, not persisted, and not wired into
+enable/disable, drift, or stop/uninstall verification. Adding it is a feature, not a switch:
+
+- Capture the pre-change servers **before** touching anything, keyed by stable interface **GUID**
+  (`InterfaceIndex` is not stable across reconnects/reboots).
+- Set **both** families per active interface: `Set-DnsClientServerAddress -InterfaceIndex N
+  -ServerAddresses 127.0.0.1` / `::1`. Set both or IPv6 leaks; any adapter not loopbacked is a leak
+  window.
+- Re-apply on adapter changes (§4.6), restore on disable/uninstall, and make the drift probe and
+  stop/uninstall verification adapter-aware — today they check NRPT only.
 
 ### 4.3 Enable sequence (corrected — health check BEFORE flipping)
 Strict order:
 1. Bind UDP+TCP listeners on `127.0.0.1:53` and `[::1]:53`. If bind fails → abort, report owner.
 2. **Two-stage health check** (§9) — prove loopback→us, then prove upstream (per family) with an
    uncached query.
-3. Persist snapshot + write atomic **dirty marker** (schema-versioned).
-4. Apply interception (NRPT rule, or per-adapter).
+3. Persist state + write atomic **dirty marker** (schema-versioned).
+4. Apply interception (NRPT rule).
 5. `ipconfig /flushdns`.
 
-Never touch adapters/NRPT until the resolver is proven listening *and* forwarding. The "keep the
-user online" guarantee must not depend on rollback succeeding.
+Never touch NRPT until the resolver is proven listening *and* forwarding. The "keep the user online"
+guarantee must not depend on rollback succeeding.
 
-### 4.4 Snapshot / restore hygiene
-- **GUID is stable; InterfaceIndex is not.** Store GUIDs; resolve to indexes at restore time.
+### 4.4 State / restore hygiene
+- **GUID is stable; InterfaceIndex is not.** This matters only to the future adapter fallback
+  (§4.2): store GUIDs there and resolve to indexes at restore time.
 - Atomic write (temp + fsync + rename), **schema version** field.
-- **Never overwrite a snapshot while dirty.** If dirty: **restore from the persisted snapshot
-  first**, then re-enable from a clean baseline. Re-snapshotting a loopbacked system captures
-  `127.0.0.1` as "original" and loses the user's real DNS forever.
+- The current NRPT build stores **no per-interface snapshot**: restore is deleting our tagged rule.
+  The dirty marker records that interception may still be applied (crash recovery), not a snapshot.
+- If the adapter fallback is ever implemented: **never overwrite a snapshot while dirty** — restore
+  from the persisted snapshot first, then re-enable from a clean baseline. Re-snapshotting a
+  loopbacked system would capture `127.0.0.1` as "original" and lose the user's real DNS.
 - Restore is **idempotent**, must survive partial failure (keep dirty on failure), and must work
   **even if the config YAML is corrupt**.
 - Per-family state differs (IPv4 DHCP vs IPv6 static is common); IPv6-disabled interfaces skipped;
-  `::1` bind failure must not abort enabling.
+  `::1` bind failure must not abort enabling. (Relevant when the adapter fallback is implemented.)
 - Uninstall/upgrade while enabled must restore first (MSI custom action).
 
 ### 4.5 Port 53 conflicts
@@ -329,34 +341,35 @@ profiles:
 ```
 
 State file (JSON, service-owned, ACL SYSTEM+Admins, atomic, schema-versioned): interception mode,
-snapshot, dirty marker, active profile, last health result.
-**Single-instance guard**: a lock so CLI and service never race the snapshot.
+dirty marker, active profile, last health result.
+**Single-instance guard**: a lock so CLI and service never race the state file.
 
 ---
 
 ## 9. Lifecycle
 
-- **Service start**: if dirty marker → **restore from snapshot first** (never re-snapshot while
-  dirty), then **always enable**. The SCM state stays **StartPending** (checkpointed every 10 s)
+- **Service start**: if the dirty marker is set → **restore interception first**, then **always
+  enable**. The NRPT build stores no adapter snapshot; dirty means a previous session may still have
+  our rule applied. The SCM state stays **StartPending** (checkpointed every 10 s)
   until recovery and enable finish; only then does it become Running. A running service means
   interception is on — there is no running-but-off state. If recovery or enable fails the service
   stops rather than keep serving a half state; a failed restore leaves the dirty marker for the next
   start. A configuration error exits cleanly so the SCM does not restart a hopeless boot.
-- **Enable**: §4.3 strict order (bind → two-stage health check → snapshot+dirty → apply → flush).
+- **Enable**: §4.3 strict order (bind → two-stage health check → state+dirty → apply → flush).
   If apply fails, restore whatever was partially applied and stop the resolver; if the restore also
   fails, keep the resolver up (DNS must not point at a dead port) and leave the dirty marker.
-- **Disable**: restore (delete NRPT rule / reset adapters) → **flush dns** → stop resolver → clear
-  dirty marker. A failed restore leaves the resolver running so a retry is possible.
+- **Disable**: restore (delete the NRPT rule) → **flush dns** → stop resolver → clear dirty marker.
+  A failed restore leaves the resolver running so a retry is possible.
 - **Two-stage health check**: (a) query a random synthetic name **only our handler answers** (proves
   loopback→us, not "something on :53"); (b) query a random uncached name **per upstream family**
   (proves upstream, catches IPv6-dead-while-IPv4-ok).
 - **Crash/kill**: dirty marker forces restore on next start. Add SCM failure actions (restart) plus
-  a startup recovery task (belt-and-suspenders: dead service + loopbacked adapters = total outage).
+  a startup recovery task (belt-and-suspenders: dead service + live NRPT rule = total outage).
 - **Exit**: always restore; flush.
 - **Uninstall is ordered and fail-closed** (`uninstallPlan`/`uninstallSequence`): restore interception
   → stop the service → **verify** interception is actually down (a positive NRPT probe, with one
   local config-independent restore retry) → only then delete. It never deletes while interception is
-  unproven down, so an uninstall can never strand a loopbacked machine pointing at a dead resolver.
+  unproven down, so an uninstall can never strand a machine with interception still applied.
 
 ---
 
@@ -377,7 +390,7 @@ snapshot, dirty marker, active profile, last health result.
 
 1. **Walking skeleton** — Go module; embedded dnsproxy on loopback forwarding DoH to ControlD;
    CLI `enable`/`disable`/`restore`. **Verify NRPT works on 24H2**; correct enable order; atomic
-   snapshot + dirty recovery. *No UI.*
+   state + dirty recovery. *No UI.*
 2. **Config + providers** — YAML config, presets, DoH/DoT selection, single-instance guard.
 3. **Rules + filtering** — domain-rule parser (dnsmasq syntax) + urlfilter blocklists; cache flush.
 4. **Service + IPC + drift** — service wrapper, SDDL-locked dual pipes, drift watcher + reconcile
@@ -400,7 +413,7 @@ rule-editor UI beyond the GUI forms · `$dnsrewrite` UX.
 
 - **1**: `dig @127.0.0.1` resolves; two-stage health check passes; after `enable`, `nslookup` goes
   through loopback and capture on 443 confirms DoH (no plaintext 53); `disable` restores (NRPT
-  rule gone / adapters == snapshot); `kill -9` then restart triggers restore; **NRPT behavior on
+  rule gone); `kill -9` then restart triggers restore; **NRPT behavior on
   24H2 confirmed**.
 - **2**: unit tests — config parse, preset expansion, single-instance guard.
 - **3**: unit tests — per-domain rule selects correct upstream; blocked → `0.0.0.0`; allowlist
@@ -418,7 +431,8 @@ tests only. Set this up first.
 
 - **Bypass/leak surface** (§1) — accepted; tray must surface it. WinDivert (LGPLv3) or WFP driver
   are the only ways to close it (phase 2 decision).
-- **NRPT on 24H2** — verify in phase 1; per-adapter is the fallback.
+- **NRPT on 24H2** — verify in phase 1; the per-adapter loopback design (§4.2) is the fallback if it
+  proves unreliable, but it is not implemented.
 - **`dnsproxy` API is version-sensitive** — pin a tag; verify `Config`/handler fields against
   source, not docs.
 - **NextDNS Ultralow vs Anycast** (§7.3) — ultralow (better routing) needs a system-resolver
@@ -477,7 +491,9 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   `enabled` flag and a kind (an upstream rule, or a **bypass** rule that carries no upstream / keep)),
   the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service
   actions `service_install` / `service_uninstall` / `service_start` / `service_stop` / `refresh_lists` /
-  `clear_cache`.
+  `clear_cache`. A start re-reads the SCM registration and refuses unless `BinaryPathName` still points
+  at the current executable with `--service`; the CLI and the GUI both use `service.Start`, so neither
+  can bypass the check.
   Every field is validated (bootstrap as IP literals, provider / variant / protocol against the
   registry, id charset + length, explicit-zero rejection); ids travel only inside the DPAPI-sealed
   staging body, and a blank id means *keep* (replace-only). Two new control-pipe methods were

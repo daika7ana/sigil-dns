@@ -116,17 +116,13 @@ func (e *testEnv) seed(t *testing.T, st *state.State) {
 	}
 }
 
-// dirtyState is a persisted state left behind by a crash: mode on, dirty set,
-// with the real pre-interception snapshot captured.
+// dirtyState is a persisted state left behind by a crash: mode on, dirty set.
 func dirtyState() *state.State {
 	return &state.State{
 		SchemaVersion: state.SchemaVersion,
 		Mode:          state.ModeOn,
 		Intercept:     state.MechanismNRPT,
 		Dirty:         true,
-		Snapshot: &state.Snapshot{
-			Interfaces: []state.InterfaceDNS{{GUID: "{real}", IPv4: []string{"1.1.1.1"}}},
-		},
 	}
 }
 
@@ -404,11 +400,6 @@ func TestLifecycleInvariants(t *testing.T) {
 				}
 				if st.Dirty || st.Mode != state.ModeOff {
 					t.Fatalf("state = %+v, want dirty=false mode=off", st)
-				}
-				// The original snapshot must survive the restore untouched.
-				got := st.Snapshot.Interfaces[0].IPv4[0]
-				if got != "1.1.1.1" {
-					t.Fatalf("snapshot IPv4 = %q, want the original 1.1.1.1", got)
 				}
 			},
 		},

@@ -147,25 +147,13 @@ func loggingPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 
 	floor := selectFloor(windowWidth)
 
-	content := []gogui.View{}
-	if v := editNotice(t, app); v != nil {
-		content = append(content, v)
-	}
+	content := withEditNotice(t, app, nil)
 	content = append(content,
 		logConfigCard(t, app, floor),
 		logViewCard(t, app),
 	)
 
-	return gogui.Column(gogui.ContainerCfg{
-		ID:         "gui:logging",
-		Sizing:     gogui.FillFill,
-		MaxWidth:   contentMaxWidth,
-		Padding:    pagePadding(),
-		Spacing:    gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder,
-		Scrollable: true,
-		Content:    content,
-	})
+	return pageColumn("gui:logging", content)
 }
 
 // logConfigCard is the writable half: the level selector, the file path with a
@@ -212,28 +200,8 @@ func logConfigCard(t gogui.Theme, app *App, floor float32) gogui.View {
 // immediately but the service only picks it up on its next start (LOGGING_PLAN
 // §1.6), so the note reads before the action.
 func logApplyRow(t gogui.Theme, disabled bool) gogui.View {
-	return gogui.Column(gogui.ContainerCfg{
-		Sizing:     gogui.FillFit,
-		Spacing:    gogui.SpacingTight,
-		Padding:    gogui.PaddingNone,
-		SizeBorder: gogui.NoBorder,
-		Content: []gogui.View{
-			logInfoNote(t, "Takes effect on next service start."),
-			gogui.Row(gogui.ContainerCfg{
-				Sizing:     gogui.FillFit,
-				HAlign:     gogui.HAlignEnd,
-				Padding:    gogui.PaddingNone,
-				SizeBorder: gogui.NoBorder,
-				Content: []gogui.View{
-					gogui.Button(gogui.ButtonCfg{
-						ID: "gui:log:apply", Variant: gogui.ButtonPrimary, Label: "Apply",
-						Sizing: gogui.FitFit, MinWidth: saveButtonMinWidth, Disabled: disabled,
-						OnClick: runApplyLog,
-					}),
-				},
-			}),
-		},
-	})
+	return primaryActionRow("gui:log:apply", "Apply", disabled, runApplyLog,
+		logInfoNote(t, "Takes effect on next service start."))
 }
 
 // logInfoNote is a compact single-line inline note: a thin leading info-accent
@@ -250,15 +218,7 @@ func logInfoNote(t gogui.Theme, text string) gogui.View {
 		Content: []gogui.View{
 			// The info stripe: a 3px rounded bar spanning the note's height,
 			// the same accent the notice banner uses for an informational note.
-			gogui.Column(gogui.ContainerCfg{
-				ID:         "gui:log:apply:note:accent",
-				Width:      3,
-				Sizing:     gogui.FixedFill,
-				Color:      noticeAccent(t, noticeInfo),
-				Radius:     gogui.RadiusPx(2),
-				Padding:    gogui.PaddingNone,
-				SizeBorder: gogui.NoBorder,
-			}),
+			severityStripe(t, "gui:log:apply:note:accent", noticeInfo),
 			gogui.Text(gogui.TextCfg{
 				Text:      text,
 				TextStyle: t.TextStyleSecondary,

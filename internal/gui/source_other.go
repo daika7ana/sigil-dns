@@ -25,36 +25,3 @@ func (s *pipeSource) liveBase(ctx context.Context) (snapshot, net.Conn, liveOutc
 	return snapshot{trust: trustVerified, running: true, updated: time.Now(),
 		scmState: "unsupported"}, conn, liveRunning
 }
-
-// Read is the full read: the status DTO, the config summary, and the service
-// info.  While the socket is unreachable it falls back to the on-disk config
-// (offlineSummary).
-func (s *pipeSource) Read(ctx context.Context) (snapshot, error) {
-	snap, conn, outcome := s.liveBase(ctx)
-	switch outcome {
-	case liveStopped:
-		snap.summary = offlineSummary()
-	case liveRunning:
-		defer func() { _ = conn.Close() }()
-		snap.status, snap.summary, snap.info = readPayload(conn)
-	}
-
-	return snap, nil
-}
-
-// ReadLive is Read without the heavy config data: just the single status DTO.
-// It never reads config.yaml — the poller calls it on the hot path.
-func (s *pipeSource) ReadLive(ctx context.Context) (snapshot, error) {
-	snap, conn, outcome := s.liveBase(ctx)
-	if outcome != liveRunning {
-		return snap, nil
-	}
-	defer func() { _ = conn.Close() }()
-
-	var st ipc.StatusDTO
-	if exchange(conn, ipc.MethodStatus, &st) == nil {
-		snap.status = &st
-	}
-
-	return snap, nil
-}
