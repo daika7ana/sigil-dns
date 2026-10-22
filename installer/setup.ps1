@@ -80,6 +80,34 @@ function Invoke-Cli {
     }
 }
 
+function Invoke-WithRetry {
+    param(
+        [Parameter(Mandatory)] [scriptblock] $Action,
+        [int] $TimeoutSeconds = 10
+    )
+
+    # Windows can keep an exe mapped for a short time after its process
+    # exits (and an antivirus scan can hold it too), so replacing/removing it
+    # immediately after Stop-Process can still fail with "being used by
+    # another process".  Retry instead of relying on a fixed sleep.
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $reported = $false
+    while ($true) {
+        try {
+            & $Action
+            return
+        }
+        catch {
+            if ((Get-Date) -ge $deadline) { throw }
+            if (-not $reported) {
+                Write-Host 'Waiting for the file to be released...'
+                $reported = $true
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+
 function New-GuiShortcut {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -139,7 +167,7 @@ function Install-SigilDns {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
     Write-Host "Installing $source -> $targetExe"
-    Copy-Item -LiteralPath $source -Destination $targetExe -Force
+    Invoke-WithRetry { Copy-Item -LiteralPath $source -Destination $targetExe -Force -ErrorAction Stop }
 
     $guiInstalled = Test-Path -LiteralPath $guiSource
     if ($guiInstalled) {
@@ -151,7 +179,7 @@ function Install-SigilDns {
         $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 
         Write-Host "Installing $guiSource -> $guiExe"
-        Copy-Item -LiteralPath $guiSource -Destination $guiExe -Force
+        Invoke-WithRetry { Copy-Item -LiteralPath $guiSource -Destination $guiExe -Force -ErrorAction Stop }
     }
     else {
         Write-Warning "sigildns-gui.exe not found at '$guiSource'; installing the service + CLI only."
@@ -261,13 +289,13 @@ function Uninstall-SigilDns {
     $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 
     if (Test-Path -LiteralPath $InstallDir) {
-        Remove-Item -Recurse -Force -LiteralPath $InstallDir
+        Invoke-WithRetry { Remove-Item -Recurse -Force -LiteralPath $InstallDir -ErrorAction Stop }
         Write-Host "Removed $InstallDir"
     }
 
     if ($RemoveData) {
         if (Test-Path -LiteralPath $DataDir) {
-            Remove-Item -Recurse -Force -LiteralPath $DataDir
+            Invoke-WithRetry { Remove-Item -Recurse -Force -LiteralPath $DataDir -ErrorAction Stop }
             Write-Host "Removed data directory $DataDir"
         }
     }

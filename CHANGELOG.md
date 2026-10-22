@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Repeated upstream-failure errors are now limited to one line per message and upstream every 30 seconds, with the suppressed count reported.
 - The tray icon now runs in a separate native host process (~25-30 MB, no window/OpenGL); the GUI exits when closed or minimized to the tray instead of keeping the window process (~230 MB) alive. Closing without close-to-tray still stops the icon.
-- Install/upgrade stops a running GUI or tray host before replacing the installed exe.
+- Install/upgrade stops a running GUI or tray host and retries replacing the exe until Windows releases it.
 - Documentation: cleaned up SPEC.md and README.md, added badges, and started this changelog.
 - Release notes now use the matching `CHANGELOG.md` section, with `release-notes/<tag>.md` as an optional override.
 
