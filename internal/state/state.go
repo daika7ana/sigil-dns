@@ -157,20 +157,19 @@ func AcquireLock(path string) (l *Lock, err error) {
 		return nil, err
 	}
 
-	// Conflict: the owner may be dead.  Reclaim only if the recorded pid is not
-	// alive; a lock that vanished is retried once to cover the race where the
-	// owner released it between our attempts.
+	// Conflict: the owner may be dead.  The pid is written immediately after the
+	// exclusive create, so a lock that cannot be read yet is normally mid-create:
+	// wait for it briefly.  Still unreadable after that, it has no live writer,
+	// and it is reclaimed — refusing would leave a crashed session's lock in
+	// place, and with it interception on and nothing answering (recovery must
+	// never depend on a hand-deleted file).
 	pid, pErr := readOwnerPid(path)
-	switch {
-	case pErr == nil:
-		if processAlive(pid) {
-			return nil, ErrLocked
-		}
-	case errors.Is(pErr, fs.ErrNotExist):
-		// The owner released it between our attempts; retry below.
-	default:
-		// Never delete a lock we cannot attribute: a live owner may hold it.
-		return nil, fmt.Errorf("%w: the lock file has no readable owner pid", ErrLocked)
+	for try := 0; try < lockReadTries && pErr != nil && !errors.Is(pErr, fs.ErrNotExist); try++ {
+		time.Sleep(lockReadWait)
+		pid, pErr = readOwnerPid(path)
+	}
+	if pErr == nil && processAlive(pid) {
+		return nil, ErrLocked
 	}
 
 	_ = os.Remove(path)
@@ -182,6 +181,14 @@ func AcquireLock(path string) (l *Lock, err error) {
 
 	return l, nil
 }
+
+// A lock that cannot be read is waited on before it is reclaimed: the owner
+// writes its pid right after creating the file, so this covers the create->
+// write window without mistaking a live lock for a stale one.
+const (
+	lockReadTries = 5
+	lockReadWait  = 20 * time.Millisecond
+)
 
 // tryAcquire performs the exclusive create.
 func tryAcquire(path string) (l *Lock, err error) {

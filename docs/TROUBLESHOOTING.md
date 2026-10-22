@@ -200,9 +200,10 @@ interception on.
 A single-instance lock (`state.json.lock`) guards the state file. This error means
 a live process holds it. If the holder crashed, a stale lock is reclaimed
 automatically when its recorded pid is dead; `restore` will reclaim it. A lock
-whose pid cannot be read is never removed automatically (it may belong to a live
-process): if no Sigil DNS process is running, delete `state.json.lock` by hand.
-If it persists, check for a leftover process:
+whose pid cannot be read is reclaimed too, after a short wait — the pid is
+written immediately after the lock is created, so an unreadable lock has no live
+writer. If the error still persists, delete `state.json.lock` by hand and check
+for a leftover process:
 
 ```powershell
 Get-Process sigildns

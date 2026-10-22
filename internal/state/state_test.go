@@ -102,19 +102,26 @@ func TestLockStaleReclaimed(t *testing.T) {
 	}
 }
 
-func TestLockUnreadableNotReclaimed(t *testing.T) {
+// A lock whose pid cannot be read has no live writer (the pid is written right
+// after the create), so recovery reclaims it instead of stranding the machine.
+func TestLockUnreadableReclaimed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json.lock")
 
 	if err := os.WriteFile(path, []byte("not-a-pid\n"), 0o600); err != nil {
 		t.Fatalf("writing unreadable lock: %v", err)
 	}
 
-	if _, err := AcquireLock(path); !errors.Is(err, ErrLocked) {
-		t.Fatalf("AcquireLock with unreadable owner: got %v, want ErrLocked", err)
+	l, err := AcquireLock(path)
+	if err != nil {
+		t.Fatalf("AcquireLock over unreadable lock: %v", err)
 	}
+	defer func() { _ = l.Release() }()
 
-	// A lock we cannot attribute may belong to a live process; never delete it.
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("unreadable lock was removed: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading reclaimed lock: %v", err)
+	}
+	if want := strconv.Itoa(os.Getpid()); !strings.Contains(string(data), want) {
+		t.Fatalf("reclaimed lock pid = %q, want %q", strings.TrimSpace(string(data)), want)
 	}
 }
