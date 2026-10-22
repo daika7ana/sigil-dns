@@ -87,12 +87,12 @@ func (h *handler) Execute(
 			// never left running with interception off.
 			changes <- svc.Status{State: svc.StopPending}
 			cancel()
-			h.stop()
+			h.stop(false)
 			return false, 0
 		case c, ok := <-r:
 			if !ok {
 				cancel()
-				h.stop()
+				h.stop(false)
 				return false, 0
 			}
 
@@ -102,18 +102,46 @@ func (h *handler) Execute(
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-				h.stop()
+				h.stop(c.Cmd == svc.Shutdown)
 				return false, 0
 			}
 		}
 	}
 }
 
+// shutdownRestoreBudget caps the restore attempt on the shutdown path.  The SCM
+// terminates a service that overruns its stop budget (5 s by default), so a
+// blocked PowerShell must not hold the shutdown screen, and the warning line,
+// until then.  Giving up early loses nothing: the state stays dirty and the
+// next start retries.  It caps the restore itself, not the whole stop: the wait
+// for a service that is still starting, and the wait for a lifecycle call
+// already in flight (a list download, say), are not context-aware and can still
+// outlast it.
+const shutdownRestoreBudget = 3 * time.Second
+
 // stop restores interception and logs a cleanup failure.  A stop the user (or
 // drift) asked for must exit 0 even if cleanup failed: returning a failure
 // would trigger the SCM recovery actions and restart the service.
-func (h *handler) stop() {
-	if err := h.agent.Stop(context.Background()); err != nil {
+//
+// During a system shutdown the restore can fail: PowerShell exits 1 with no
+// message while Windows stops services (the DnsClient cmdlets go through a
+// provider that may already be gone).  The state stays dirty, so the next start
+// retries the restore, and the machine is going down anyway — a warning, not an
+// error.
+func (h *handler) stop(shutdown bool) {
+	ctx := context.Background()
+	if shutdown {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, shutdownRestoreBudget)
+		defer cancel()
+	}
+
+	if err := h.agent.Stop(ctx); err != nil {
+		if shutdown {
+			h.agent.logger.Warn("interception restore deferred to next service start", "err", err)
+
+			return
+		}
 		h.agent.logger.Error("service stop failed", "err", err)
 	}
 }

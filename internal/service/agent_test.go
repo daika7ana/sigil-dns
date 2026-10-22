@@ -21,6 +21,7 @@ type fakeAgentLC struct {
 	st           *state.State
 	startupErr   error
 	enableErr    error
+	disableErr   error
 	stErr        error
 	enableCalls  int
 	disableCalls int
@@ -41,7 +42,7 @@ func (f *fakeAgentLC) Enable(context.Context) (err error) {
 func (f *fakeAgentLC) Disable(context.Context) (err error) {
 	f.disableCalls++
 
-	return nil
+	return f.disableErr
 }
 
 func (f *fakeAgentLC) Restore(context.Context) (err error) { return nil }
