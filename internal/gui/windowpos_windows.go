@@ -94,7 +94,7 @@ func findWindowAny(title string) (hwnd uintptr) {
 }
 
 // findWindow returns the visible window only: the minimize check must not
-// query IsIconic on a window already hidden to the tray.
+// query IsIconic on a window that is not on screen.
 func findWindow(title string) (hwnd uintptr) {
 	h := findWindowAny(title)
 	if h == 0 {
@@ -282,9 +282,9 @@ func refocusLater(w *gogui.Window, tries int) {
 	})
 }
 
-// focusExistingWindow is the second launch's recovery path: it restores the
-// first instance's window even when close-to-tray left it hidden.  The first
-// instance's EventFocused handler clears its own hidden/tray state.
+// focusExistingWindow brings the already-open window back: it restores a
+// minimized window and re-maximizes one that was minimized from the maximized
+// state.  The tray host's Open action uses it before launching a new window.
 func focusExistingWindow() {
 	hwnd := findWindowByTitle(windowTitle)
 	if hwnd == 0 {
@@ -329,16 +329,6 @@ func windowZoomed(title string) bool {
 	r, _, _ := procIsZoomed.Call(hwnd)
 
 	return r != 0
-}
-
-// maximizeWindow maximizes the titled window.  It is used after a restore to
-// preserve a maximized window that was hidden to the tray.
-func maximizeWindow(title string) {
-	hwnd := findWindowAny(title)
-	if hwnd == 0 {
-		return
-	}
-	procShowWindow.Call(hwnd, swMaximize)
 }
 
 // onVirtualScreen reports whether (x,y) lies within the union of all monitors.

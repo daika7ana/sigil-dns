@@ -92,12 +92,10 @@ type App struct {
 	// preserves geometry and theme.
 	settings settings
 
-	// tray is the opted-in notification-area icon.  active and hidden are
-	// atomics because the poller reads them from its own goroutine.
-	tray       trayState
-	trayHandle *gogui.SystemTrayHandle
-	// trayStatus is the text currently in the menu's status row; UI thread only.
-	trayStatus string
+	// tray is the poller's cross-thread view of the tray preferences.  The
+	// icon itself lives in a separate tray-host process (trayhost_windows.go),
+	// so this process can exit when the window closes.
+	tray trayState
 
 	// busy is true while an elevated action is in flight; busyNote explains
 	// what it is waiting on.  toast is the last action result, shown as a
@@ -110,15 +108,11 @@ type App struct {
 	toastTTL time.Duration
 }
 
-// Run opens the client window and blocks until it is closed.
-func Run() error { return run(false) }
+// Run opens the client window and blocks until it is closed.  The tray icon is
+// a separate process; closing the window to the tray exits this one.
+func Run() error { return run() }
 
-// RunBackground starts the window hidden to the tray.  It is the logon task's
-// entrypoint; with the tray off it falls back to a visible window so
-// the app can never start invisible.
-func RunBackground() error { return run(true) }
-
-func run(background bool) (err error) {
+func run() (err error) {
 	// Detach from the inherited console first: the binary is console-subsystem,
 	// so a double-click would otherwise leave a blank cmd window open for the
 	// whole GUI session.  GUI path only; the CLI commands never do this.
@@ -134,7 +128,7 @@ func run(background bool) (err error) {
 		return lockErr
 	}
 	if lock == nil {
-		focusExistingWindow() // show the first instance, even if hidden to tray
+		focusExistingWindow() // bring the first instance's window to front
 		return nil
 	}
 	s := loadSettings(path)
@@ -162,18 +156,13 @@ func run(background bool) (err error) {
 	app.logView.interval.Store(logViewerDefaultInterval)
 	src := newSource()
 
-	// gapp is needed by the system-tray API; RunApp registers the window so
-	// Window.App() (and therefore the tray) resolves.
+	// The app object owns the window registry; RunApp registers w against it.
 	gapp := gogui.NewApp()
 
 	// focused pauses the poller while the window is unfocused/minimized.  It is
 	// shared with the poller goroutine (atomic) and flipped from OnEvent.
 	var focused atomic.Bool
 	focused.Store(true)
-
-	// Hide only into a real tray: the logon task is removed when the tray is
-	// turned off, but a hand-edited gui.json must not strand an invisible app.
-	hidden := background && s.Tray
 
 	// go-gui shows the window's first frame before OnInit runs, so applying a
 	// saved position there would visibly jump.  When there is one, start the
@@ -192,21 +181,18 @@ func run(background bool) (err error) {
 		OnEvent: func(e *gogui.Event, win *gogui.Window) {
 			switch e.Type {
 			case gogui.EventResized:
-				// Keep the last normal size in memory so an exit from the
+				// Keep the last normal size in memory so a later quit to the
 				// tray still saves the size the user chose, even if the
-				// window is hidden at that point.
+				// window is minimized at that point.
 				app.saveSize(win)
 			case gogui.EventFocused:
-				// A second launch can show the window without going through
-				// showWindow, so clear the tray-hidden state here too.
-				app.tray.hidden.Store(false)
-				win.SetWindowOpacity(1) // reveal a tray-started (transparent) window
+				win.SetWindowOpacity(1) // reveal a position-restoring (transparent) window
 				focused.Store(true)
 				requestRefresh(app.refresh) // refetch at once; the data may be stale
 			case gogui.EventUnfocused:
 				// Capture the position while the window is still a normal,
-				// visible window: a later minimize-to-tray or Tray Exit
-				// cannot read it.
+				// visible window: a later minimize-to-tray or close cannot
+				// read it.
 				app.savePosition()
 				focused.Store(false) // pause the poller while backgrounded
 			}
@@ -214,47 +200,38 @@ func run(background bool) (err error) {
 		OnInit: func(w *gogui.Window) {
 			applyTheme(w, app.themePref)
 			w.SetView(view)
-			if app.settings.Tray && !app.startTray(w) {
-				// The setting survived from a previous session but the
-				// platform cannot honour it now; turn it off rather than
-				// leaving a close-to-tray preference with no tray.
-				app.settings.Tray = false
-				app.tray.minimize.Store(false)
-				app.showToast(w, noticeMessage{
-					kind:  noticeWarning,
-					title: "System tray unavailable",
-					body:  "The tray icon could not be created.",
-				})
-				app.persist()
+			if app.settings.Tray {
+				if err := hostStart(); err != nil {
+					// The setting survived from a previous session but the
+					// platform cannot honour it now; turn it off rather than
+					// leaving a close-to-tray preference with no icon.
+					app.settings.Tray = false
+					app.tray.minimize.Store(false)
+					app.showToast(w, noticeMessage{
+						kind:  noticeWarning,
+						title: "System tray unavailable",
+						body:  "The tray host could not be started.",
+					})
+					app.persist()
+				}
 			}
 			startPoller(w, src, app.refresh, &app.logView, &focused, &app.tray)
 			if restoring {
 				restoreWindowPosition(windowTitle, s.X, s.Y)
 			}
-			if hidden && app.tray.active.Load() {
-				// Start hidden to the tray.  The window was created
-				// transparent so the first frame never flashes.  A window
-				// hidden before it is ever shown gets no unfocus event, so
-				// pause the poller here; the tray row has its own cadence.
-				app.tray.hidden.Store(true)
-				focused.Store(false)
-				w.Hide()
-				return
-			}
 			ensureFocus(w)
 			w.SetWindowOpacity(1) // reveal after the position is applied
 		},
 		OnCloseRequest: func(win *gogui.Window) {
-			// One close path for the title-bar button and Tray Exit: save
-			// geometry while the window still exists, then either hide to
-			// tray or stop the tray and close.
+			// One close path for the title-bar button: save geometry while
+			// the window still exists, then quit this process (the tray host
+			// stays when close-to-tray is on).
 			app.closeWindow(win)
 		},
 	})
 
-	if restoring || hidden {
+	if restoring {
 		// Replayed by the backend before the window is shown; see OnInit.
-		// Covers restoring the position and hiding to the tray.
 		w.SetWindowOpacity(0)
 	}
 
@@ -319,7 +296,6 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 				a.seed(snap)
 				a.syncLogViewer()
 				a.cacheSummary(snap)
-				a.syncTray(win, trayStatusText(snap))
 				win.InvalidateLayout()
 			})
 		}
@@ -348,10 +324,6 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 			})
 		}
 
-		// trayTicks counts the paused live ticks between tray status refreshes.
-		trayTicks := 0
-		trayEvery := tr.trayEvery()
-
 		process(readOnce(ctx, src), true) // initial full read
 
 		for {
@@ -359,36 +331,18 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 			case <-ctx.Done():
 				return
 			case <-live.C:
-				// Minimize-to-tray: hide the window once the OS reports it
-				// minimized.  Checked before the focus gate because a
-				// minimized window is normally unfocused too.
-				if tr.active.Load() && tr.minimize.Load() &&
-					!tr.hidden.Load() && tr.isMinimized() {
-					tr.hidden.Store(true)
+				// Minimize-to-tray quits this window to the tray host.  Checked
+				// before the focus gate because a minimized window is normally
+				// unfocused too.
+				if tr.minimize.Load() && tr.isMinimized() {
 					w.QueueCommand(func(win *gogui.Window) {
-						// A tray Open may have cleared hidden before this
-						// command ran; only hide if the state still says so.
-						if tr.hidden.Load() && tr.active.Load() && tr.isMinimized() {
-							win.Hide()
-						}
+						gogui.State[App](win).quitWindow(win)
 					})
+					continue
 				}
 				if !focused.Load() {
-					// The window poller is paused, but the tray menu still
-					// shows the service state: refresh just that line, at a
-					// slower cadence than the focused poll.
-					if tr.active.Load() {
-						trayTicks++
-						if trayTicks%trayEvery == 0 {
-							snap := readLiveOnce(ctx, src)
-							w.QueueCommand(func(win *gogui.Window) {
-								gogui.State[App](win).syncTray(win, trayStatusText(snap))
-							})
-						}
-					}
 					continue // paused: no read, no tail, no repaint
 				}
-				trayTicks = 0
 				tailLog()
 				process(readLiveOnce(ctx, src), false)
 			case <-safety.C:

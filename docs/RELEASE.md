@@ -23,13 +23,13 @@ The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
 download can be verified:
 
 ```powershell
-Get-FileHash .\sigildns_v0.2.0_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\sigildns_v0.3.0_windows_amd64.zip -Algorithm SHA256
 ```
 
 Release builds use the `gui` tag (never `-tags tray`); the **tray icon is part of
-the GUI** and is off by default (Settings → Window & tray). In a `gui` build the
-`--tray` command starts the window hidden in the tray; the `-tags tray` build
-remains a stub.
+the GUI build** and is off by default (Settings → Window & tray). In a `gui`
+build the `--tray` command runs the native tray host without a window; the
+`-tags tray` build remains a stub.
 
 Both binaries embed `cmd/sigildns/sigildns.manifest`, which requests
 `requireAdministrator`: Windows shows a UAC prompt on every launch and the

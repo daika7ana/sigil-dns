@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,14 @@ import (
 	"github.com/daika7ana/sigil-dns/internal/ipc"
 	"github.com/daika7ana/sigil-dns/internal/version"
 )
+
+// TestMain keeps the headless tests off the real tray-host process.
+func TestMain(m *testing.M) {
+	hostStart = func() error { return ErrNotBuilt }
+	hostStop = func() {}
+
+	os.Exit(m.Run())
+}
 
 // fakeSource is a statusSource that returns a fixed snapshot, so the window can
 // be exercised with no service, pipe, or display.

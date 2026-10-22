@@ -220,19 +220,22 @@ run `sigildns-gui.exe` with no arguments (`--gui` opens it explicitly). See
 [docs/GUI.md](docs/GUI.md).
 
 The **system tray icon is opt-in and off by default**. Enable it in Settings →
-**Window & tray**, where you can also make closing or minimizing the window hide
-it to the tray. Double-clicking the icon (or a single click) opens the window;
-right-click offers a disabled live service status row, Open, Open log file, Clear
-DNS cache (the resolver and Windows caches, so a new rule is not hidden by an old
-answer), and Exit. While the tray is on, **Start tray icon on startup** registers
-a per-user Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest
-privileges) that launches the GUI exe with `--tray` at sign-in. Because the task
-runs with highest privileges, the tray starts **elevated with no UAC prompt** — a
-documented user decision that extends the SPEC §15.3.8 exception. The task is
-explicit, pins the exe path it was enabled from (enable it from the installed
-copy), and is removed when the tray is disabled and by uninstall. The separate
-`--tray` command starts the GUI hidden to the tray in a `-tags gui` build; a
-`-tags tray` build remains a stub.
+**Window & tray**, where you can also make closing or minimizing the window quit
+it to the tray. The icon runs in a **separate small host process** with no
+window, so keeping it in the notification area costs about 25-30 MB instead of
+the ~230 MB an idle OpenGL window process uses. The GUI itself exits when you
+close or minimize it to the tray; clicking the icon relaunches it, or brings it
+to front if it is already open. Right-click offers a disabled live service
+status row, Open, Open log file, Clear DNS cache (the resolver and Windows
+caches, so a new rule is not hidden by an old answer), and Exit. While the tray
+is on, **Start tray icon on startup** registers a per-user Task Scheduler
+`ONLOGON` task (`SigilDNS`, current user, highest privileges) that launches the
+GUI exe with `--tray` at sign-in. Because the task runs with highest privileges,
+the tray host starts **elevated with no UAC prompt** — a documented user
+decision that extends the SPEC §15.3.8 exception. The task is explicit, pins the
+exe path it was enabled from (enable it from the installed copy), and is removed
+when the tray is disabled and by uninstall. The `--tray` command starts that
+host in a `-tags gui` build; a `-tags tray` build remains a stub.
 
 ---
 
@@ -349,7 +352,7 @@ sigildns <command> [flags]
 | `--service` | Run the service host (invoked by the SCM, not by hand). |
 | `--apply <path>` | Run the one-shot elevated helper (invoked by the GUI, not by hand). |
 | `--gui` | Run the GUI. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
-| `--tray` | Start hidden to the tray when the tray setting is on (`-tags gui` build; a `-tags tray` build remains a stub). |
+| `--tray` | Run the native tray host with no window (`-tags gui` build; a `-tags tray` build remains a stub). |
 | `help`, `-h`, `--help` | Print usage. |
 
 ### Flags

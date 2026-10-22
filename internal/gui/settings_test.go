@@ -955,20 +955,6 @@ func TestTraySettingsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCloseToTrayNeedsActiveTray proves the close preference cannot hide the
-// window when no tray icon exists: closing must still exit.
-func TestCloseToTrayNeedsActiveTray(t *testing.T) {
-	app := &App{settings: settings{CloseToTray: true}}
-	if app.closeToTray() {
-		t.Error("closeToTray with no active tray, want false")
-	}
-
-	app.tray.active.Store(true)
-	if !app.closeToTray() {
-		t.Error("closeToTray with active tray and preference on, want true")
-	}
-}
-
 // TestTrayMenuHasExpectedActions proves the right-click menu carries the
 // status row, the three actions, and exit, in the order the user sees.
 func TestTrayMenuHasExpectedActions(t *testing.T) {
@@ -1081,15 +1067,15 @@ func TestSaveSizeUsesNormalWindow(t *testing.T) {
 	}
 }
 
-// TestCloseToTrayPersistsSize proves the close-to-tray path writes the size
-// before hiding: the process keeps running, so waiting for RunApp to return
-// would lose the size on a crash or forced exit.
+// TestCloseToTrayPersistsSize proves the close path writes the size before the
+// process quits: close-to-tray now exits the window and leaves the separate
+// tray host running, so the size must survive that exit.
 func TestCloseToTrayPersistsSize(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gui.json")
 	app := settingsApp()
 	app.guiPath = path
+	app.settings.Tray = true
 	app.settings.CloseToTray = true
-	app.tray.active.Store(true)
 
 	w := newSettingsWindow(t, app)
 	w.TestRender(nil)
@@ -1097,8 +1083,8 @@ func TestCloseToTrayPersistsSize(t *testing.T) {
 
 	app.closeWindow(w)
 
-	if w.CloseRequested() {
-		t.Fatal("close-to-tray requested a real close")
+	if !w.CloseRequested() {
+		t.Fatal("close-to-tray did not quit the window")
 	}
 	got := loadSettings(path)
 	if got.Width != ww || got.Height != wh {
@@ -1106,36 +1092,52 @@ func TestCloseToTrayPersistsSize(t *testing.T) {
 	}
 }
 
-// TestTrayConfigCarriesTooltip proves the tray config carries the app name;
-// a Windows-only shim turns it into the standard tooltip (go-gui omits
-// NIF_SHOWTIP, which would otherwise suppress it).
-func TestTrayConfigCarriesTooltip(t *testing.T) {
-	cfg := (&App{}).trayConfig(nil, "Service: Running")
-	if cfg.Tooltip != windowTitle {
-		t.Errorf("tray tooltip = %q, want %q", cfg.Tooltip, windowTitle)
+// TestCloseWindowTrayHost proves close-to-tray relies on the already-running
+// host (starting one here would race the tray Exit action, which closes this
+// window while the host is exiting), while a normal close stops the icon.
+func TestCloseWindowTrayHost(t *testing.T) {
+	tests := []struct {
+		name        string
+		closeToTray bool
+		wantStop    int
+	}{
+		{"close to tray leaves host", true, 0},
+		{"normal close stops host", false, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := settingsApp()
+			app.settings.Tray = true
+			app.settings.CloseToTray = tt.closeToTray
+
+			var started, stopped int
+			origStart, origStop := hostStart, hostStop
+			hostStart = func() error { started++; return nil }
+			hostStop = func() { stopped++ }
+			t.Cleanup(func() { hostStart, hostStop = origStart, origStop })
+
+			w := newSettingsWindow(t, app)
+			w.TestRender(nil)
+			app.closeWindow(w)
+
+			if started != 0 || stopped != tt.wantStop {
+				t.Fatalf("close: hostStart=%d hostStop=%d, want hostStart=0 hostStop=%d",
+					started, stopped, tt.wantStop)
+			}
+		})
 	}
 }
 
-// TestTrayActionsDoNotRaiseWindow proves opening a log file or clearing the
-// caches leaves a hidden window hidden: only Open asks to see the app.
-func TestTrayActionsDoNotRaiseWindow(t *testing.T) {
-	orig := openPath
-	openPath = func(string) error { return nil }
-	defer func() { openPath = orig }()
-
-	for _, id := range []string{trayActionLog, trayActionFlush} {
-		t.Run(id, func(t *testing.T) {
-			app := settingsApp()
-			w := newSettingsWindow(t, app)
-			w.TestRender(nil)
-			w.Hide()
-
-			app.handleTrayAction(w, id)
-
-			if w.IsVisible() {
-				t.Errorf("%s raised the window, want it to stay hidden", id)
-			}
-		})
+// TestTrayConfigCarriesTooltip proves the tray config carries the app name;
+// a Windows-only shim turns it into the standard tooltip (sni omits
+// NIF_SHOWTIP, which would otherwise suppress it).
+func TestTrayConfigCarriesTooltip(t *testing.T) {
+	cfg := trayConfig("Service: Running")
+	if cfg.Tooltip != windowTitle {
+		t.Errorf("tray tooltip = %q, want %q", cfg.Tooltip, windowTitle)
+	}
+	if len(cfg.Menu) != 7 || cfg.Menu[0].Text != "Service: Running" {
+		t.Errorf("tray menu = %+v, want the status row first", cfg.Menu)
 	}
 }
 
@@ -1196,10 +1198,7 @@ func TestTrayEnableFailureReverts(t *testing.T) {
 	setTrayEnabled(gogui.EventCtx{Window: w}, true)
 
 	if app.settings.Tray {
-		t.Error("settings.Tray = true after tray creation failed")
-	}
-	if app.tray.active.Load() {
-		t.Error("tray.active = true after tray creation failed")
+		t.Error("settings.Tray = true after the tray host could not start")
 	}
 }
 

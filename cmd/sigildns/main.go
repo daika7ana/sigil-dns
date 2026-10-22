@@ -103,9 +103,9 @@ func run(args []string) (err error) {
 	case "--gui":
 		return cmdGUI(rest)
 	case "--tray":
-		// A gui build starts the window hidden to the tray; other builds keep
-		// the retired tray stub, which reports ErrNotBuilt.
-		if guiErr := gui.RunBackground(); !errors.Is(guiErr, gui.ErrNotBuilt) {
+		// A gui build runs the native tray host (no window, no GL); other
+		// builds keep the retired tray stub, which reports ErrNotBuilt.
+		if guiErr := gui.RunTrayHost(); !errors.Is(guiErr, gui.ErrNotBuilt) {
 			return guiErr
 		}
 

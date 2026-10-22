@@ -18,10 +18,6 @@ func windowVisible(string) bool { return false }
 
 func windowZoomed(string) bool { return false }
 
-func maximizeWindow(string) {}
-
-func focusWindow(string) {}
-
 func focusExistingWindow() {}
 
 // ensureFocus is a no-op off Windows: nothing to activate or focus.

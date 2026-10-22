@@ -37,7 +37,7 @@ admin/UAC on every launch.
 
 ## Architecture (the non-obvious parts)
 One binary, entrypoint `cmd/sigildns/main.go`, many modes: CLI commands, `--service` (SCM host),
-`--apply <path>` (elevated headless helper), `--gui`, `--tray` (retired stub; the tray now lives in the GUI).
+`--apply <path>` (elevated headless helper), `--gui`, `--tray` (the native tray host with no window/GL).
 
 `internal/`: `lifecycle` (enable/disable/restore orchestration) · `state` (atomic JSON + dirty marker +
 single-instance lock) · `intercept` (NRPT via PowerShell; the per-adapter fallback is described in
@@ -45,26 +45,29 @@ SPEC §4.2 but **not implemented**) · `resolver`
 (embedded dnsproxy + filter + per-domain rules) · `filter` (urlfilter wrapper) · `providers` (presets) ·
 `config` (YAML) · `ipc` (dual named pipes) · `service` (SCM host) · `drift` (registry watch + reconcile) ·
 `elevate` (one-shot UAC helper + allowlisted config patch) · `gui` (`gui` tag, go-gui **config client**,
-five-page Status/Settings/Rules/Logging/About surface with an opt-in tray) ·
+five-page Status/Settings/Rules/Logging/About surface with a separate opt-in tray host) ·
 plus `logging`/`winacl`/`redact`/`version`/`health`.
 
 - **Import cycle:** `internal/config` imports `internal/resolver`, so `internal/resolver` must NOT import
   `internal/config` (use the local `resolver.Rule` type).
 - **Platform split** is `_windows.go` / `_other.go` build-tagged pairs. Every Windows implementation has a
   non-Windows stub returning a typed error so Linux builds stay green — add both when adding a feature.
-- **Build tags:** `gui` = the go-gui window (including its opt-in tray icon); `tray` = retired stub
+- **Build tags:** `gui` = the go-gui window and the opt-in native tray host; `tray` = retired stub
   (leave it). Keep default/Linux builds GUI-free by keeping the `gui` tag.
 - **GUI is a full config client**, not a status viewer (`internal/gui/`): `settings_view.go` (Settings
   page: service card + profile list add/rename/delete/set-active + per-profile editor), `draft.go`
   (editor buffer), `elevate_adapter.go` (**the only `internal/elevate` importer**; maps GUI actions to
-  `elevate.Request`), `instance.go` (`gui.lock` single-instance guard), `tray.go` (opt-in
-  go-gui system tray: off by default, plus close-to-tray / minimize-to-tray switches and a
+  `elevate.Request`), `instance.go` (`gui.lock` single-instance guard), `tray.go` (opt-in tray
+  settings/menu: off by default, plus close-to-tray / minimize-to-tray switches and a
   start-at-sign-in switch that registers a per-user `ONLOGON` Task Scheduler task (`SigilDNS`, task
   XML: logon trigger and principal bound to this user, `InteractiveToken`/`HighestAvailable`,
   battery-start enabled, no run-time limit) launching `--tray` (no UAC at
-  sign-in — see the §15.3.8 exception; removed when the tray is disabled and by uninstall); single/double click shows the
-  window, right click offers Open / live service status / Open log file / Clear DNS cache / Exit),
-  `render_test.go` (headless shape/colour assertions — no fonts in the container),
+  sign-in — see the §15.3.8 exception; removed when the tray is disabled and by uninstall)),
+  `trayhost_windows.go` (**separate no-window tray process**: `sni.Tray` icon/menu, 5 s status
+  poll, Open / Open log file / Clear DNS cache / Exit, a message-only control window as its
+  single-instance guard and exit channel; ~25-30 MB, so the GUI exits when closed/minimized to the
+  tray instead of keeping the OpenGL window process alive), `render_test.go` (headless
+  shape/colour assertions — no fonts in the container),
   `console_{windows,other}.go` (`detachConsole`).
   The GUI is the **full configuration surface**; the default/Linux build stays GUI-free behind the `gui` tag.
 - **Elevated-helper allowlist** (`internal/elevate`): `Patch` is the whole config surface —
@@ -131,7 +134,7 @@ plus `logging`/`winacl`/`redact`/`version`/`health`.
   config surface (see Architecture). No persistent broker. The one silent-start exception is the opt-in
   tray autostart: a per-user `ONLOGON` task (`SigilDNS`, task XML with a user-bound logon trigger,
   `InteractiveToken` and `HighestAvailable`) created by the already-elevated GUI launches `--tray` at sign-in with no UAC — SPEC §15.1/§15.3.8, user
-  decision. It starts the GUI only; it never applies config or starts the service.
+  decision. It starts the tray host only (no window); it never applies config or starts the service.
 
 ## CI & releases
 - `.github/workflows/ci.yml`: `main` pushes + PRs only, docs-only paths ignored (a tag push must not
@@ -158,9 +161,10 @@ plus `logging`/`winacl`/`redact`/`version`/`health`.
 ## Pinned dependencies (why)
 `AdguardTeam/dnsproxy v0.86.0` (engine; needs Go ≥1.26.8; **no `Config.BootstrapDNS` field** — bootstrap is
 `upstream.Options.Bootstrap`) · `AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.89.1`
-(GUI + built-in system tray; pre-1.0, pin deliberately; its Win32 tray menu resolves a click
+(GUI + tray backend; pre-1.0, pin deliberately; its Win32 tray menu resolves a click
 through the root-prefixed `menuNodes` slice, so `internal/gui/tray.go` shifts the menu IDs by one,
 and it never sets `NIF_SHOWTIP`, so `internal/gui/tray_tooltip_windows.go` enables the standard
-tooltip — re-check both on upgrade) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3
+tooltip — re-check both on upgrade; `internal/gui/trayhost_windows.go` uses the public
+`gui/backend/sni` tray API directly) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3
 historically dragged a `golang.org/x/*` upgrade cascade, so re-check on upgrade). Verify library APIs
 against the pinned tag's source, not against docs.

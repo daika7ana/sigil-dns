@@ -143,6 +143,13 @@ function Install-SigilDns {
 
     $guiInstalled = Test-Path -LiteralPath $guiSource
     if ($guiInstalled) {
+        # A running GUI or windowless tray host locks the installed exe.  Wait
+        # for the processes to release the image before copying over it.
+        $guiProcs = @(Get-Process -Name 'sigildns-gui' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $guiExe })
+        $guiProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+        $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+
         Write-Host "Installing $guiSource -> $guiExe"
         Copy-Item -LiteralPath $guiSource -Destination $guiExe -Force
     }
@@ -243,6 +250,15 @@ function Uninstall-SigilDns {
 
     # Remove the logon task the tray autostart registers (ignore if absent).
     & schtasks.exe /Delete /TN 'SigilDNS' /F 2>$null | Out-Null
+
+    # Stop the tray host (a windowless sigildns-gui.exe process): it locks the
+    # exe, so the install directory cannot be removed while it runs.  Wait for
+    # the processes to release the image before removing the directory.
+    $guiExe = Join-Path $InstallDir 'sigildns-gui.exe'
+    $guiProcs = @(Get-Process -Name 'sigildns-gui' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $guiExe })
+    $guiProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+    $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 
     if (Test-Path -LiteralPath $InstallDir) {
         Remove-Item -Recurse -Force -LiteralPath $InstallDir

@@ -6,6 +6,6 @@ package gui
 // returns ErrNotBuilt and the caller stays headless (SPEC §15).
 func Run() (err error) { return ErrNotBuilt }
 
-// RunBackground is Run started hidden to the tray.  Stub: the default build has
-// no GUI.
-func RunBackground() (err error) { return ErrNotBuilt }
+// RunTrayHost starts the native tray host.  Stub: the default build has no GUI
+// and no tray host.
+func RunTrayHost() (err error) { return ErrNotBuilt }

@@ -5,7 +5,7 @@ Target: Windows 11 x64 (ARM64 deferred).
 Developed on Linux, cross-built, released on a Windows runner.
 **License: GPLv3** — forced by `AdguardTeam/urlfilter`; see §3.
 
-Status: the design below is implemented and shipped through **v0.2.0**. §11
+Status: the design below is implemented and shipped through **v0.3.0**. §11
 separates what exists from what is deliberately deferred.
 
 ---
@@ -71,8 +71,9 @@ The GUI and README surface this table; it is a product boundary, not a bug.
   grants) once those operations can be delegated.
 - **GUI**: reads sanitized status over the read-only status pipe; state-changing
   operations go through the elevated `--apply` helper. The GUI code never reads
-  `config.yaml` directly. Built with **go-gui** (§15). The GUI hosts the optional
-  system-tray icon; the standalone `--tray` build tag remains a retired stub.
+  `config.yaml` directly. Built with **go-gui** (§15). The optional system-tray
+  icon runs in a separate native host process started with `--tray`, so the GUI
+  can exit while the icon stays; the `tray` build tag remains a retired stub.
 - **Binaries**: one Go module produces two Windows executables —
   `sigildns.exe` (console subsystem: CLI, service host, `--apply` helper) and
   `sigildns-gui.exe` (GUI subsystem: the config client). A single exe cannot be
@@ -467,7 +468,7 @@ docs/CONFIG.md.
 
 ## 11. Status and roadmap
 
-**Delivered through v0.2.0:** the walking skeleton, YAML config + provider
+**Delivered through v0.3.0:** the walking skeleton, YAML config + provider
 presets (DoH/DoT/DoQ), per-domain rules + blocklists, the LocalSystem service
 with dual SDDL-locked pipes, drift reconcile + config-independent restore,
 packaging/signing, the five-page go-gui config client, and the opt-in tray with
@@ -623,13 +624,18 @@ not a status viewer.
   A `gui.lock` beside `gui.json` enforces a single GUI instance.
 - **Tray (opt-in)** — Settings → **Window & tray**: a **System tray icon**
   switch (off by default) plus, while it is on, independent **Minimize to tray**
-  and **Close to tray** switches. Single or double click opens/brings the window
-  to front; right click offers a disabled **Service: …** status row, **Open Sigil
-  DNS**, **Open log file**, **Clear DNS cache** (resolver cache + Windows DNS
-  cache), and **Exit**. If the icon cannot be created, the switch reverts with a
-  toast instead of leaving a dead setting. The tray's status row refreshes from a
-  live read every 5 s even while the window is hidden. This is go-gui's built-in
-  tray inside the `gui` binary, not the retired `tray` build tag.
+  and **Close to tray** switches. The icon lives in a **separate native host
+  process** (`sigildns-gui.exe --tray`, no window and no OpenGL), so the GUI
+  exits when closed or minimized to the tray instead of keeping a ~230 MB
+  GPU-backed process alive; the host costs ~25-30 MB. Single or double click
+  launches the GUI, or brings its window to front when it is already open;
+  right click offers a disabled **Service: …** status row, **Open Sigil DNS**,
+  **Open log file**, **Clear DNS cache** (resolver cache + Windows DNS cache),
+  and **Exit**. If the host cannot be started, the switch reverts with a toast
+  instead of leaving a dead setting; the host refreshes the status row from a
+  live read every 5 s and retries icon creation while the shell is starting.
+  This uses go-gui's tray backend in the host process, not the retired `tray`
+  build tag.
 - **Identity** — before trusting reads or sending writes, verify the pipe server
   *is* the service: `GetNamedPipeServerProcessId(conn)` == the SCM-reported
   `ProcessId`. Unverified → flag the UI as untrusted and refuse writes (kills
@@ -657,14 +663,15 @@ it registers a per-user Task Scheduler `ONLOGON` task (`SigilDNS`, task XML with
 a logon trigger and principal bound to this user, `InteractiveToken` and
 `HighestAvailable`) that launches `sigildns-gui.exe --tray`. The GUI is already
 elevated, so it creates the task without a prompt, and the task starts the tray
-elevated at sign-in **with no UAC prompt**. The XML also keeps the task startable
+host elevated at sign-in **with no UAC prompt**. The XML also keeps the task startable
 on battery and removes the default 72-hour execution limit, neither of which
 `schtasks` flags can express. The task is per-user, created only by an explicit
 setting, carries no resolver ids or config data, and is removed when the
 setting/tray is disabled and by uninstall. Its exe path is pinned to whatever
 binary the setting was enabled from (enable it from the installed copy). It
-starts the GUI only; it never applies config or starts the service, and it does
-not change the control/status pipe, the helper, or any per-action consent rule —
+starts the tray host only, never a window; it never applies config or starts the
+service, and it does not change the control/status pipe, the helper, or any
+per-action consent rule —
 every config write still goes through the one-shot `--apply` helper.
 
 ### 15.2 Sensitive data
@@ -712,7 +719,7 @@ every config write still goes through the one-shot `--apply` helper.
    `requireAdministrator` manifest, so they are elevated for their lifetime and
    prompt on every manual launch; the opt-in **Start tray icon on startup**
    setting registers a per-user `ONLOGON` task at `HighestAvailable`, so the tray
-   starts elevated at sign-in without UAC. It is removed when the setting or tray
+   host starts elevated at sign-in without UAC. It is removed when the setting or tray
    is disabled and by uninstall.*
 9. `config.yaml` and `state.json` remain SYSTEM+Administrators; user-scope files
    never hold secrets.
@@ -753,19 +760,20 @@ Status: **phases 0–8 are implemented.**
 7. **Packaging** — go-gui binary (no cgo), installer ships the GUI + Start-Menu
    shortcut, and a protocol-version mismatch is surfaced from `info`.
    Code signing stays optional, gated on repository secrets.
-8. **Tray** — an opt-in go-gui system-tray icon (off by default) with a live
-   service status row, Open, Open log file, Clear DNS cache (resolver + Windows
-   caches), Exit, and independent close-to-tray / minimize-to-tray switches; an
-   icon that cannot be created reverts the setting; optional `ONLOGON` autostart.
+8. **Tray** — an opt-in go-gui system-tray icon (off by default) in a separate
+   native host process, with a live service status row, Open, Open log file,
+   Clear DNS cache (resolver + Windows caches), Exit, and independent
+   close-to-tray / minimize-to-tray switches; a host that cannot be started
+   reverts the setting; optional `ONLOGON` autostart.
 
 **Polling model (CPU/power).** While the window is focused, the Status page reads
 the live service state — SCM state + status DTO only, never `config.yaml` —
 about every 1 s, and polling pauses while the window is unfocused/minimized. A
 minimized window is detected with `IsIconic` on the 1 s tick, so **Minimize to
-tray** can hide it; hiding also counts as unfocused and pauses the poller. While
-the tray icon is on, its status row is refreshed from a live read every 5 s even
-when the window is hidden, so a service-state change reaches the menu within
-about five seconds. The full config summary is fetched at startup, after the
+tray** can quit it to the host; quitting pauses/ends the poller. The tray host
+refreshes its status row from a live read every 5 s, independent of the window,
+so a service-state change reaches the menu within about five seconds. The full
+config summary is fetched at startup, after the
 user's own edits, on a page switch, and on a 30 s safety tick. An unchanged read
 pushes nothing and requests no repaint, so the on-demand render loop stays
 asleep when idle.

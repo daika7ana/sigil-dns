@@ -199,13 +199,12 @@ func TestSetPageSignalsRefresh(t *testing.T) {
 	}
 }
 
-// TestPollerMinimizeHidesWindow proves the minimize-to-tray branch hides the
-// window and records that it did; the branch must run even though a minimized
-// window is normally unfocused too.
-func TestPollerMinimizeHidesWindow(t *testing.T) {
+// TestPollerMinimizeQuitsWindow proves the minimize-to-tray branch quits this
+// window to the tray host; the branch must run even though a minimized window
+// is normally unfocused too.
+func TestPollerMinimizeQuitsWindow(t *testing.T) {
 	src := &countingSource{full: sampleSnapshot(), live: liveOnly(sampleSnapshot())}
 	app := statusApp()
-	app.tray.active.Store(true)
 	app.tray.minimize.Store(true)
 	app.tray.minimized = func() bool { return true }
 
@@ -216,32 +215,5 @@ func TestPollerMinimizeHidesWindow(t *testing.T) {
 	w.TestRender(nil)
 	startPoller(w, src, app.refresh, &app.logView, alwaysFocused(), &app.tray)
 
-	waitFor(t, w, func() bool { return !w.IsVisible() })
-
-	if !app.tray.hidden.Load() {
-		t.Fatal("window hidden but tray.hidden is false")
-	}
-}
-
-// TestPollerHiddenTrayRefreshesStatus proves the tray status line is refreshed
-// while the window is unfocused, at the tray cadence, so a hidden app does not
-// show a stale service state.
-func TestPollerHiddenTrayRefreshesStatus(t *testing.T) {
-	src := &countingSource{full: sampleSnapshot(), live: liveOnly(sampleSnapshot())}
-	app := statusApp()
-	app.tray.active.Store(true)
-	app.tray.statusEvery = 1
-
-	w := gogui.NewTestWindow(t, gogui.WindowCfg{
-		Width: defaultWidth, Height: defaultHeight, State: app,
-	})
-	w.SetView(view)
-	w.TestRender(nil)
-	startPoller(w, src, app.refresh, &app.logView, &atomic.Bool{}, &app.tray)
-
-	waitFor(t, w, func() bool {
-		_, live := src.counts()
-
-		return live >= 1
-	})
+	waitFor(t, w, func() bool { return w.CloseRequested() })
 }

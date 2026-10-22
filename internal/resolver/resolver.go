@@ -121,7 +121,7 @@ type Resolver struct {
 // until Start is called.
 func New(cfg Config) (r *Resolver, err error) {
 	r = &Resolver{
-		logger:        loggerOrDefault(cfg.Logger),
+		logger:        quietUpstreamErrors(loggerOrDefault(cfg.Logger)),
 		filterCfg:     cfg.Filter,
 		listen:        cfg.Listen,
 		cacheSize:     cfg.CacheSizeBytes,

@@ -86,16 +86,18 @@ The system tray icon is **off by default**. Settings → **Window & tray** has:
 - **System tray icon** — enable the notification-area icon.
 - **Start tray icon on startup** — while the tray is on, register a per-user
   Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest privileges)
-  that launches `sigildns-gui.exe --tray` at sign-in. The task starts the GUI
-  **elevated with no UAC prompt**; its exe path is pinned to the binary you
+  that launches `sigildns-gui.exe --tray` at sign-in. The task starts the tray
+  host **elevated with no UAC prompt**; its exe path is pinned to the binary you
   enabled the setting from, so enable it from the installed copy. Turning this
   off deletes the task, turning the tray off deletes it too, and uninstall
   removes it.
-- **Minimize to tray** / **Close to tray** — hide the window to the icon
-  instead of minimizing or exiting.
+- **Minimize to tray** / **Close to tray** — quit the window to the icon instead
+  of minimizing or stopping the icon. The icon is a separate native host
+  process (~25-30 MB, no window/OpenGL), so the GUI can exit instead of keeping
+  a GPU-backed window process alive at ~230 MB. Clicking the icon launches the
+  GUI again.
 
-A `--tray` launch never opens a visible window unless the tray icon could not be
-created or the tray setting is off; the tray icon's **Open** shows it.
+`--tray` runs that host and never opens a window.
 
 ## States
 

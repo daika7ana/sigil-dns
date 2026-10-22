@@ -17,25 +17,23 @@ const (
 	trayActionExit  = "exit"
 )
 
-// trayStatusEvery is how many paused 1 s ticks pass between tray status
-// refreshes while the window is hidden; the window poller is otherwise paused.
-const trayStatusEvery = 5
+// hostStart and hostStop are seams for the headless tests: a test run must
+// never launch or stop the real tray-host process.
+var (
+	hostStart = startTrayHost
+	hostStop  = stopTrayHost
+)
 
-// trayState is the cross-thread view of the tray.  The UI thread owns the
-// handle and settings; the poller reads only these atomics, so it can hide a
-// minimized window without touching App state.
-//
-// shortcut: go-gui does not re-add the icon after an Explorer restart, so a
-// window hidden at that moment is recovered by relaunching (focusExistingWindow).
+// trayState is the poller's cross-thread view of the tray.  The icon lives in
+// the separate tray-host process, so the window only needs to know whether a
+// minimize should quit it.  The poller reads only the atomic, so it never
+// touches UI-thread state.
 type trayState struct {
-	active   atomic.Bool // a tray icon currently exists
-	minimize atomic.Bool // hide the window when it is minimized
-	hidden   atomic.Bool // hidden because it was minimized
+	minimize atomic.Bool // quit the window to the tray when it is minimized
 
-	// minimized and statusEvery are seams for the headless poller tests; the
-	// zero values mean the Win32 check and trayStatusEvery.
-	minimized   func() bool
-	statusEvery int
+	// minimized is a seam for the headless poller tests; nil means the Win32
+	// check.
+	minimized func() bool
 }
 
 // isMinimized reports whether the window is minimized.
@@ -45,15 +43,6 @@ func (t *trayState) isMinimized() bool {
 	}
 
 	return windowMinimized(windowTitle)
-}
-
-// trayEvery is the tray status refresh cadence in paused ticks.
-func (t *trayState) trayEvery() int {
-	if t.statusEvery > 0 {
-		return t.statusEvery
-	}
-
-	return trayStatusEvery
 }
 
 // trayMenu is the right-click menu.  The status row leads and is disabled: it
@@ -98,124 +87,30 @@ func trayStatusText(s snapshot) string {
 	}
 }
 
-// startTray creates the tray icon and its menu.  It reports false when the
-// platform cannot create one, leaving the setting off.
-func (a *App) startTray(w *gogui.Window) (ok bool) {
-	gapp := w.App()
-	if gapp == nil {
-		return false
-	}
-
-	status := trayStatusText(a.snap)
-	h, err := gapp.SetSystemTray(a.trayConfig(w, status))
-	if err != nil {
-		if h != nil {
-			gapp.RemoveSystemTray(h) // a half-created icon must not linger
-		}
-		return false
-	}
-	if h == nil {
-		return false
-	}
-
-	a.trayHandle = h
-	a.tray.active.Store(true)
-	a.trayStatus = status
-	applyTrayTooltip(windowTitle) // go-gui does not set NIF_SHOWTIP
-
-	return true
-}
-
-// trayConfig builds the icon, menu and callback.  Creation and updates share
-// it so the callback stays in place when only the status text changes.
-func (a *App) trayConfig(w *gogui.Window, status string) gogui.SystemTrayCfg {
+// trayConfig builds the icon and menu.  The tray host uses it for Create and
+// Update, so the icon stays in place when only the status changes.
+func trayConfig(status string) gogui.SystemTrayCfg {
 	return gogui.SystemTrayCfg{
 		Tooltip: windowTitle,
 		IconPNG: appIconPNG,
 		Menu:    trayMenu(status),
-		// go-gui queues OnAction onto the UI thread, so the App fields below
-		// may be touched directly (see App.SetSystemTray).
-		OnAction: func(id string) { a.handleTrayAction(w, id) },
 	}
 }
 
-// handleTrayAction runs one right-click choice on the UI thread.
-func (a *App) handleTrayAction(w *gogui.Window, id string) {
-	switch id {
-	case "", trayActionOpen:
-		a.showWindow(w)
-	case trayActionLog:
-		// Do not raise the window: opening a file is not a request to see
-		// the app.  A missing log is a toast on the window if it happens to
-		// be visible; the tray action stays out of the user's way.
-		runOpenLog(gogui.EventCtx{Window: w})
-	case trayActionFlush:
-		// Same rule: clear the caches without bringing the window forward.
-		runRequest(w, applyRequest{action: actionClearCache})
-	case trayActionExit:
-		a.exitFromTray(w)
-	}
-}
-
-// syncTray updates the status row when the service state text changes.  The
-// poller queues this onto the UI thread.
-func (a *App) syncTray(w *gogui.Window, status string) {
-	if a.trayHandle == nil || status == a.trayStatus {
-		return
-	}
-	gapp := w.App()
-	if gapp == nil {
-		return
-	}
-
-	a.trayStatus = status
-	gapp.UpdateSystemTray(a.trayHandle, a.trayConfig(w, status))
-	applyTrayTooltip(windowTitle) // an update rewrites the tip flags
-}
-
-// stopTray removes the icon and forgets its handle.
-func (a *App) stopTray(w *gogui.Window) {
-	if gapp := w.App(); gapp != nil && a.trayHandle != nil {
-		gapp.RemoveSystemTray(a.trayHandle)
-	}
-	a.trayHandle = nil
-	a.tray.active.Store(false)
-	a.tray.hidden.Store(false)
-	a.trayStatus = ""
-}
-
-// showWindow restores the window from the tray, including after a minimize.
-// Visibility and the maximized state are read from Win32, not from go-gui's
-// hidden flag: a second launch can show the window without clearing it.
-func (a *App) showWindow(w *gogui.Window) {
-	a.tray.hidden.Store(false)
-	// A tray start creates the window transparent; reveal it now.
-	w.SetWindowOpacity(1)
-
-	zoomed := windowZoomed(windowTitle)
-	visible, minimized := windowVisible(windowTitle), windowMinimized(windowTitle)
-
-	if visible && !minimized {
-		ensureFocus(w) // already visible: raise it, don't restore
-
-		return
-	}
-
-	w.Show()
-	// Show does not request a frame, so ask for the layout pass it skips.
-	ensureFocus(w)
-	w.InvalidateLayout()
-	if zoomed {
-		// Show uses SW_RESTORE, which un-maximizes; put the window back.
-		maximizeWindow(windowTitle)
-	}
-}
-
-// exitFromTray leaves for good: the tray icon goes first, so closing the
-// window cannot be diverted back into the tray by the close preference.
-func (a *App) exitFromTray(w *gogui.Window) {
-	a.stopTray(w)
-	a.closeWindow(w)
+// quitWindow quits this process to the tray host: save the geometry while the
+// native window still exists, then close.  The host keeps the icon, so a later
+// Open relaunches the window.
+func (a *App) quitWindow(w *gogui.Window) {
+	a.savePosition()
+	a.saveSize(w)
+	a.persist()
+	_ = hostStart() // no-op when it is already running
+	w.Close()
+	// Close only sets a flag.  From a queued command the run loop can be about
+	// to block in waitMessage, so it would not see the flag until another
+	// message arrives; the process then keeps gui.lock and the next launch
+	// exits.  InvalidateRender wakes the loop.
+	w.InvalidateRender()
 }
 
 // windowNormal reports whether the window is neither minimized nor maximized.
@@ -226,33 +121,32 @@ var windowNormal = func(title string) bool {
 	return !windowMinimized(title) && !windowZoomed(title)
 }
 
-// closeWindow is the one close path for the title-bar button and Tray Exit.
-// It saves geometry while the window still exists, honours close-to-tray, and
-// removes the icon before the window goes away.
+// closeWindow is the one close path for the title-bar button.  It saves
+// geometry while the window still exists, then quits this process.  With
+// close-to-tray on the separate tray host keeps the icon; otherwise the icon
+// goes too, so closing exits the app entirely.
 func (a *App) closeWindow(w *gogui.Window) {
 	a.savePosition()
 	a.saveSize(w)
-	// Persist now, not only after RunApp returns: close-to-tray keeps the
-	// process alive, and the size the user just chose must survive a crash
-	// or a forced exit while the window is hidden.
+	// Persist now, not only after RunApp returns: the window's size must
+	// survive the process anyway.
 	a.persist()
-	if a.closeToTray() {
-		w.Hide()
-		return
+	// With close-to-tray on, the host is already running: it was started in
+	// OnInit (or when the switch was turned on).  Starting one here would race
+	// the tray Exit action, which closes this window while the host is
+	// exiting; the host would be gone and this would create a replacement,
+	// leaving an icon after "Exit".  Only stop the host when the user does not
+	// want to stay in the tray.
+	if !a.settings.Tray || !a.settings.CloseToTray {
+		hostStop()
 	}
 
-	a.stopTray(w)
 	w.Close()
-	// Close only sets a flag.  From a queued tray action the run loop can be
-	// about to block in waitMessage, so it would not see the flag until
-	// another message arrives; the process then keeps gui.lock and the next
-	// launch exits.  InvalidateRender wakes the loop.
+	// Close only sets a flag.  The run loop can be about to block in
+	// waitMessage, so it would not see the flag until another message arrives;
+	// the process then keeps gui.lock and the next launch exits.
+	// InvalidateRender wakes the loop.
 	w.InvalidateRender()
-}
-
-// closeToTray reports whether the close button should hide the window.
-func (a *App) closeToTray() bool {
-	return a.tray.active.Load() && a.settings.CloseToTray
 }
 
 // persist writes gui.json after a tray preference change.  Best-effort, like
@@ -264,8 +158,8 @@ func (a *App) persist() {
 }
 
 // savePosition remembers where the window is, for the next launch.  It only
-// reads a visible, normal window: a hidden or minimized window's rect is not
-// the position the user chose, and keeping the last normal value is correct.
+// reads a visible, normal window: a minimized window's rect is not the position
+// the user chose, and keeping the last normal value is correct.
 func (a *App) savePosition() {
 	if !windowVisible(windowTitle) || windowMinimized(windowTitle) || windowZoomed(windowTitle) {
 		return
@@ -288,22 +182,24 @@ func (a *App) saveSize(w *gogui.Window) {
 	}
 }
 
-// setTrayEnabled toggles the icon.  A platform that cannot create one leaves
-// the switch off and says so.
+// setTrayEnabled toggles the tray host process.  A platform that cannot start
+// one leaves the switch off and says so.
 func setTrayEnabled(ctx gogui.EventCtx, on bool) {
 	app := gogui.State[App](ctx.Window)
 
-	if on && !app.startTray(ctx.Window) {
-		app.showToast(ctx.Window, noticeMessage{
-			kind:  noticeWarning,
-			title: "System tray unavailable",
-			body:  "The tray icon could not be created.",
-		})
-		on = false
-	} else if !on {
-		app.stopTray(ctx.Window)
+	if on {
+		if err := hostStart(); err != nil {
+			app.showToast(ctx.Window, noticeMessage{
+				kind:  noticeWarning,
+				title: "System tray unavailable",
+				body:  "The tray host could not be started.",
+			})
+			on = false
+		}
+	} else {
+		hostStop()
 		// No tray to start into: drop the logon task too, or the next
-		// sign-in would run an invisible window.  If the task survives,
+		// sign-in would run an invisible host.  If the task survives,
 		// keep the preference and say so rather than pretending.
 		if app.settings.StartWithWindows {
 			if err := setStartWithWindows(false); err != nil {
@@ -361,7 +257,7 @@ func toggleTrayBehaviour(ctx gogui.EventCtx, fn func(*settings)) {
 func trayCard(t gogui.Theme, app *App) gogui.View {
 	rows := []gogui.View{
 		settingRow(t, "System tray icon",
-			"Keep Sigil DNS in the notification area when the window is hidden.",
+			"Keep Sigil DNS in the notification area when the window is closed.",
 			gogui.Switch(gogui.SwitchCfg{
 				ID:       "gui:tray:enabled",
 				A11YCfg:  gogui.A11YCfg{A11YLabel: "System tray icon"},
@@ -375,7 +271,7 @@ func trayCard(t gogui.Theme, app *App) gogui.View {
 	if app.settings.Tray {
 		rows = append(rows,
 			settingRow(t, "Start tray icon on startup",
-				"Launch hidden to the tray when you sign in to Windows, elevated with no UAC prompt.",
+				"Launch the tray icon when you sign in to Windows, elevated with no UAC prompt.",
 				gogui.Switch(gogui.SwitchCfg{
 					ID:       "gui:tray:autostart",
 					A11YCfg:  gogui.A11YCfg{A11YLabel: "Start tray icon on startup"},
@@ -385,7 +281,7 @@ func trayCard(t gogui.Theme, app *App) gogui.View {
 					},
 				})),
 			settingRow(t, "Minimize to tray",
-				"Hide the window in the tray when it is minimized.",
+				"Quit the window to the tray when it is minimized.",
 				gogui.Switch(gogui.SwitchCfg{
 					ID:       "gui:tray:minimize",
 					A11YCfg:  gogui.A11YCfg{A11YLabel: "Minimize to tray"},
@@ -397,7 +293,7 @@ func trayCard(t gogui.Theme, app *App) gogui.View {
 					},
 				})),
 			settingRow(t, "Close to tray",
-				"Keep running in the tray instead of exiting when the window is closed.",
+				"Quit the window to the tray instead of stopping the icon.",
 				gogui.Switch(gogui.SwitchCfg{
 					ID:       "gui:tray:close",
 					A11YCfg:  gogui.A11YCfg{A11YLabel: "Close to tray"},
