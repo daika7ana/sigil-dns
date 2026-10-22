@@ -45,7 +45,8 @@ SPEC §4.2 but **not implemented**) · `resolver`
 (embedded dnsproxy + filter + per-domain rules) · `filter` (urlfilter wrapper) · `providers` (presets) ·
 `config` (YAML) · `ipc` (dual named pipes) · `service` (SCM host) · `drift` (registry watch + reconcile) ·
 `elevate` (one-shot UAC helper + allowlisted config patch) · `gui` (`gui` tag, go-gui **config client**,
-full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`health`.
+five-page Status/Settings/Rules/Logging/About surface with an opt-in tray) ·
+plus `logging`/`winacl`/`redact`/`version`/`health`.
 
 - **Import cycle:** `internal/config` imports `internal/resolver`, so `internal/resolver` must NOT import
   `internal/config` (use the local `resolver.Rule` type).
@@ -116,7 +117,7 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 - `disable`/`restore`/`status` deliberately use a **config-independent** lifecycle.
 
 ## Security rules (SPEC §15.3)
-- Resolver ids live only in the admin-only config. **Never** put them on argv/env or send them over IPC;
+- Resolver ids live only in admin-only files (`config.yaml` and the ACLed `state.json`). **Never** put them on argv/env or send them over IPC;
   the redacting `redact.Handler` keeps them out of logs at every level. `debug` is the deliberate
   exception for query names (not credentials). The status pipe carries only sanitized DTOs.
 - Control pipe `\\.\pipe\sigildns` = SYSTEM + Administrators only. Status pipe
@@ -141,11 +142,13 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 - `.github/workflows/release.yml`: tag `v*` or `workflow_dispatch`; builds windows/amd64; reuses a green
   `ci.yml` run for the tagged commit and skips its duplicated vet/test steps (falls back to running them
   only when the SHA has no CI run at all; a red or still-running run blocks the release); ships the
-  `docs/` folder and `SPEC.md`; verifies every expected file and the checksum before upload; signs with
+  `docs/` folder, `SPEC.md`, and `CHANGELOG.md`; verifies every expected file and the checksum
+  before upload; signs with
   `signtool` only when `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` secrets exist (else skip +
   `::warning::`); zips (+ `SHA256SUMS.txt`) and publishes the Release **draft-first** (create draft →
   upload assets → `--draft=false`), so a failed run never exposes an assetless release. Notes come from
-  `release-notes/<tag>.md` if present, else `--generate-notes`. **The GUI exists only with `-tags gui`**, so any
+  `release-notes/<tag>.md` if present, else the matching `CHANGELOG.md` section, else `--generate-notes`.
+  **The GUI exists only with `-tags gui`**, so any
   packaging step must pass it to ship a GUI binary.
 - Always use `go-version-file: go.mod` in workflows — never `go-version: '1.27.x'` (setup-go v7 sets
   `GOTOOLCHAIN=local` and will not auto-fetch the toolchain `go.mod` requires).
@@ -158,5 +161,6 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 (GUI + built-in system tray; pre-1.0, pin deliberately; its Win32 tray menu resolves a click
 through the root-prefixed `menuNodes` slice, so `internal/gui/tray.go` shifts the menu IDs by one,
 and it never sets `NIF_SHOWTIP`, so `internal/gui/tray_tooltip_windows.go` enables the standard
-tooltip — re-check both on upgrade) · `Microsoft/go-winio v0.6.2` (**deliberately pinned** — v0.6.3 drags a
-`golang.org/x/*` upgrade cascade). Verify library APIs against the pinned tag's source, not against docs.
+tooltip — re-check both on upgrade) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3
+historically dragged a `golang.org/x/*` upgrade cascade, so re-check on upgrade). Verify library APIs
+against the pinned tag's source, not against docs.

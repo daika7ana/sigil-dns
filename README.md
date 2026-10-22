@@ -2,20 +2,23 @@
 
 <h1 align="center">Sigil DNS</h1>
 
+<p align="center"><a href="https://github.com/daika7ana/sigil-dns/actions/workflows/ci.yml"><img src="https://github.com/daika7ana/sigil-dns/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/daika7ana/sigil-dns/releases/latest"><img src="https://img.shields.io/github/v/release/daika7ana/sigil-dns?sort=semver" alt="Release"></a> <a href="LICENSE"><img src="https://img.shields.io/github/license/daika7ana/sigil-dns" alt="License"></a> <img src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D6" alt="Platform"> <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/daika7ana/sigil-dns" alt="Go"></a></p>
+
 <p align="center"><strong>System-wide encrypted DNS for Windows 11 — no kernel driver, no per-adapter fiddling.</strong></p>
 
 Sigil DNS quietly points Windows at a DNS resolver you trust. It runs a small
-loopback DNS server on `127.0.0.1:53` and `[::1]:53`, then installs a **single
-NRPT rule** covering every namespace. Your apps keep using the normal OS
-resolver — their queries just travel encrypted (DoH / DoT / DoQ) to the provider
-you picked, with per-domain routing and local blocklists along the way.
+loopback DNS server on `127.0.0.1:53` and `[::1]:53`, then installs a catch-all
+NRPT rule, with more-specific no-nameserver exemptions for per-domain bypass
+rules. Your apps keep using the normal OS resolver — their queries just travel
+encrypted (DoH / DoT / DoQ) to the provider you picked, with per-domain routing
+and local blocklists along the way.
 
-Turning it on is **one rule in**. Turning it off is **one clean restore out**. No
-driver, no network re-plumbing, no leftover state.
+Turning it on is **one catch-all rule in**. Turning it off is **one clean restore
+out**. No driver, no network re-plumbing, no leftover state.
 
-Prefer buttons to flags? The shipped **GUI** gives you a live Status page and a
-full Settings editor for the same engine. Prefer the terminal? Every command is
-there too.
+Prefer buttons to flags? The shipped **GUI** gives you a five-page configuration
+client (Status, Settings, Rules, Logging, About) for the same engine. Prefer the
+terminal? Every command is there too.
 
 > **New here?** Jump straight to [Install](#install) and [Quickstart](#quickstart).
 
@@ -23,7 +26,8 @@ there too.
 
 ## What it does
 
-- **Encrypts your DNS system-wide.** One NRPT rule covers all namespaces, so
+- **Encrypts your DNS system-wide.** A catch-all NRPT rule covers all namespaces
+  (per-domain bypass rules add more-specific no-nameserver exemptions), so
   normal apps get encrypted lookups without any per-app or per-adapter setup.
 - **Lets you choose the resolver.** Quad9, Cloudflare, NextDNS, ControlD, or any
   custom DoH / DoT / DoQ URL.
@@ -35,8 +39,8 @@ there too.
   recovers after a crash. A registry watcher and a 45 s reconcile loop put
   interception back if Windows, GPO, or another tool rewrites it.
 
-The design goal is the *outcome*: one rule in, one restore out, no per-adapter
-churn, no driver. See [SPEC.md](SPEC.md) for the full design.
+The design goal is the *outcome*: one catch-all rule in, one restore out, no
+per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 
 ## Features
 
@@ -53,17 +57,18 @@ churn, no driver. See [SPEC.md](SPEC.md) for the full design.
   re-apply interception if Windows, GPO, or another tool rewrites it.
 - **Crash recovery** — a dirty marker forces a restore on the next start, so a
   killed service can never leave the machine pointing at a dead resolver.
-- **Service + CLI** — one binary runs as the CLI or the Windows service.
-- **GUI config client** — a full-parity Status + Settings window: one-click
-  Enable / Disable / Restore, service install / remove, and profile / filtering
-  / cache editing. The shipped binary requests admin via an embedded manifest, so
-  it prompts UAC once at **launch** and runs elevated until you close it.
+- **Service + CLI** — one console binary runs as the CLI or the Windows service.
+- **GUI config client** — a five-page window (Status, Settings, Rules, Logging,
+  About): Start / Stop and Restore, service install / remove, and profile /
+  rules / filtering / cache editing. The shipped binaries request admin via an
+  embedded manifest, so Windows prompts UAC once at **launch** and the process
+  runs elevated until you close it.
 
 ## Requirements
 
 - **Windows 11 x64.**
 - **Administrator rights** to install the service and to enable/disable
-  interception (both touch NRPT and the SCM). The binary asks for elevation on
+  interception (both touch NRPT and the SCM). The binaries ask for elevation on
   every launch, so this is normally automatic.
 
 ---
@@ -133,7 +138,7 @@ the current executable with the `--service` argument. Uninstall with
 `sigildns service uninstall` (which stops the service first and restores
 interception).
 
-> The service runs as **LocalSystem** in v1. The least-privilege virtual account
+> The service runs as **LocalSystem**. The least-privilege virtual account
 > cannot create the IPC pipe instances, is locked out of its own state file, and
 > lacks the rights NRPT writes need. See SPEC §2.
 
@@ -147,7 +152,7 @@ interception).
    arguments).
 2. On **Settings**, pick a provider / variant / protocol in the profile editor
    and hit **Save**.
-3. Back on **Status**, press the power control to **Enable**.
+3. On **Settings**, press **Start** in the service card.
 
 The banner turns green (**Protected**) once the resolver is up and interception is
 applied. Everything the GUI does is available on the CLI too.
@@ -193,22 +198,41 @@ sigildns run --upstream https://dns.quad9.net/dns-query
 
 ## GUI
 
-`sigildns-gui.exe` is the full configuration client, in two pages:
+`sigildns-gui.exe` is the full configuration client, in five pages:
 
-- **Status** — a banner, a single power control (Enable / Disable, plus Restore
-  for a crash-leftover state), and profile / filtering / cache cards.
-- **Settings** — service install / remove and state, a profile list with add /
-  rename / delete / set-active, and a per-profile editor (provider / variant /
-  protocol, a masked resolver id, custom URL, bootstrap, fallback profile,
-  filtering + block response, cache and size).
+- **Status** — a banner, profile / filtering / cache cards, and **Restore now**
+  for a crash-leftover state.
+- **Settings** — a Start / Stop control plus service install / remove and state,
+  a profile list with add / rename / delete / set-active, a per-profile editor
+  (provider / variant / protocol, a masked resolver id, custom URL, bootstrap,
+  fallback profile, filtering + block response, cache and size), and
+  **Window & tray**.
+- **Rules** — filter lists and per-domain routing rules (Upstream or Bypass).
+- **Logging** — level, location, and a live log viewer.
+- **About** — version, IPC protocol, author, repository, license.
 
-Enable starts the service and applies interception; Disable removes it. The
-binary requests admin via an embedded manifest, so Windows shows **one UAC prompt
-when you launch it** and the window runs elevated until you close it — this
+Start runs the service and applies interception; Stop removes it. The binaries
+request admin via an embedded manifest, so Windows shows **one UAC prompt when
+you launch either one** and the process runs elevated until you close it — this
 applies to every `sigildns.exe` invocation, not just the GUI. A `gui.lock` next
 to `gui.json` keeps a single instance. Launch it from the Start Menu shortcut, or
 run `sigildns-gui.exe` with no arguments (`--gui` opens it explicitly). See
 [docs/GUI.md](docs/GUI.md).
+
+The **system tray icon is opt-in and off by default**. Enable it in Settings →
+**Window & tray**, where you can also make closing or minimizing the window hide
+it to the tray. Double-clicking the icon (or a single click) opens the window;
+right-click offers a disabled live service status row, Open, Open log file, Clear
+DNS cache (the resolver and Windows caches, so a new rule is not hidden by an old
+answer), and Exit. While the tray is on, **Start tray icon on startup** registers
+a per-user Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest
+privileges) that launches the GUI exe with `--tray` at sign-in. Because the task
+runs with highest privileges, the tray starts **elevated with no UAC prompt** — a
+documented user decision that extends the SPEC §15.3.8 exception. The task is
+explicit, pins the exe path it was enabled from (enable it from the installed
+copy), and is removed when the tray is disabled and by uninstall. The separate
+`--tray` command starts the GUI hidden to the tray in a `-tags gui` build; a
+`-tags tray` build remains a stub.
 
 ---
 
@@ -264,6 +288,21 @@ editor shows the saved `config.yaml` so you can still review and edit it.
 
 ---
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/RELEASE.md](docs/RELEASE.md) | Release process, packaging, and signing |
+| [docs/CONFIG.md](docs/CONFIG.md) | Every config field and validation rule |
+| [docs/GUI.md](docs/GUI.md) | GUI pages, tray, and controls |
+| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Interception gaps and WSL/IPS caveats |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common failures and recovery |
+| [SPEC.md](SPEC.md) | Authoritative design |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [LICENSE](LICENSE) | GPLv3 |
+
+---
+
 ## Known limitations
 
 The table below is the honest interception surface. Anything that does not use
@@ -295,7 +334,9 @@ sigildns <command> [flags]
 | `enable` | Bind listeners, health-check, persist state, apply interception, then run until Ctrl-C. On exit, disable and restore. |
 | `disable` | Stop the resolver, restore interception, clear the dirty marker. |
 | `restore` | Restore interception from persisted state (crash recovery). Works even if the config file is corrupt. |
-| `status` | Print the persisted state as JSON, or `state: none (<path>)` if never enabled. |
+| `status [--summary]` | Print the persisted state as JSON, or `state: none (<path>)` if never enabled; `--summary` prints the sanitized config summary instead. |
+| `reload` | Reload `config.yaml` through the running service (admin). |
+| `refresh` | Re-download filter lists through the running service (admin). |
 | `run` | Foreground resolver only, without touching interception (dev/CI). |
 | `providers list` | List the provider preset catalog. |
 | `providers show <provider>[/<variant>[/<protocol>]]` | Print the generated upstreams/bootstrap for a selection. |
@@ -306,6 +347,7 @@ sigildns <command> [flags]
 | `service start` | Start the Windows service. |
 | `service stop` | Stop the Windows service. |
 | `--service` | Run the service host (invoked by the SCM, not by hand). |
+| `--apply <path>` | Run the one-shot elevated helper (invoked by the GUI, not by hand). |
 | `--gui` | Run the GUI. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
 | `--tray` | Start hidden to the tray when the tray setting is on (`-tags gui` build; a `-tags tray` build remains a stub). |
 | `help`, `-h`, `--help` | Print usage. |
@@ -319,10 +361,10 @@ Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
 |---|---|---|
 | `--upstream <url>` | Upstream DNS URL. Highest precedence. | ControlD free p0 |
 | `--bootstrap <addr,...>` | Bootstrap resolver address(es), comma-separated. | `76.76.2.11:53` |
-| `--config <path>` | Config file path. | platform default (below) |
+| `--config <path>` | Config file path. | platform default |
 | `--profile <name>` | Config profile to use. | the config's active profile |
 | `--listen <addr,...>` | Loopback listen addresses, comma-separated. | `127.0.0.1:53,[::1]:53` |
-| `--state <path>` | State file path. | platform default (below) |
+| `--state <path>` | State file path. | platform default |
 
 > `providers show` uses its own parser and accepts `--id`, `--upstream`, and
 > `--bootstrap` (before or after the positional selection). Protocol is one of
@@ -335,9 +377,9 @@ Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
 The repo ships a Docker wrapper so no host Go toolchain is needed:
 
 ```sh
-dev/go build ./...          # compile check (Linux)
-dev/go test ./...           # unit tests
-GOOS=windows GOARCH=amd64 dev/go build -o sigildns.exe ./cmd/sigildns
+./dev/go build ./...          # compile check (Linux)
+./dev/go test ./...           # unit tests
+GOOS=windows GOARCH=amd64 ./dev/go build -o sigildns.exe ./cmd/sigildns
 
 # GUI binary (same module, GUI subsystem)
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H windowsgui" -o sigildns-gui.exe ./cmd/sigildns
@@ -346,35 +388,11 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./dev/go build -tags gui -ldflags "-H wi
 Cross-compiling to Windows is pure Go. Release builds produce **two binaries**
 from the one module: `sigildns.exe` (console subsystem — CLI, service host,
 and the `--apply` helper) and `sigildns-gui.exe` (GUI subsystem,
-`-tags gui -ldflags "-H windowsgui"` — the full Status + Settings client, still
+`-tags gui -ldflags "-H windowsgui"` — the five-page config client, still
 `--apply`-capable). A single exe cannot cleanly be both: a console-subsystem GUI
 leaves a stray console window, and a `windowsgui` CLI loses stdout (breaking
 `sigildns status`). The plain console build stays `sigildns.exe` with no gui
 tag.
-
-CI runs on `windows-latest` (`.github/workflows/ci.yml`); tagged releases build
-and publish from `.github/workflows/release.yml`, and are signed only when a
-signing certificate is configured — **current releases are unsigned** (see
-[Install](#install)). The **system tray icon is part of the GUI** and is **off by
-default**: enable it in Settings → Window & tray, where you can also make closing
-or minimizing the window hide it to the tray. Double-clicking the icon (or a
-single click) opens the window; right-click offers a disabled live service status row,
-Open, Open log file, Clear DNS cache (the resolver and Windows caches, so a new rule is not hidden
-by an old answer), and Exit. The separate `--tray` command starts the GUI
-hidden to the tray in a `-tags gui` build; a `-tags tray` build remains a stub,
-and CI still runs one to keep the tag compiling.
-
-While the tray is on, **Start tray icon on startup** registers a per-user
-Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest privileges) that
-launches the GUI exe with `--tray` at sign-in. Because the task runs with highest
-privileges, the tray starts **elevated with no UAC prompt** — a documented user
-decision that extends the SPEC §15.3.8 exception. The task is explicit, pins the
-exe path it was enabled from (enable it from the installed copy), and is removed
-when the tray is disabled and by uninstall.
-
-```sh
-dev/go build -tags tray ./...
-```
 
 ---
 
@@ -399,3 +417,4 @@ interface GUIDs. There is no local HTTP control channel.
 GPLv3 — see [LICENSE](LICENSE). The project is GPLv3 because it statically links
 `AdguardTeam/urlfilter`, which is GPL-3.0; the shipped binary is a combined
 work. There is no way to avoid the copyleft by running urlfilter out-of-process.
+See [CHANGELOG.md](CHANGELOG.md) for release history.

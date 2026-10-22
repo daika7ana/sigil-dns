@@ -180,6 +180,7 @@ jobs:
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
           Copy-Item 'SPEC.md'                    $stage -Force
+          Copy-Item 'CHANGELOG.md'               $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
           Copy-Item 'docs'                       $stage -Recurse -Force
           Copy-Item 'installer/setup.ps1'        (Join-Path $stage 'installer') -Force
@@ -210,6 +211,7 @@ jobs:
             'config.example.yaml'
             'README.md'
             'SPEC.md'
+            'CHANGELOG.md'
             'LICENSE'
             'docs/CONFIG.md'
             'docs/GUI.md'
@@ -268,9 +270,37 @@ jobs:
           $sums = (Resolve-Path 'dist/SHA256SUMS.txt').Path
 
           # Draft first: a failed run must never leave a public release with no assets.
+          # Notes: a curated release-notes/<tag>.md wins, then the matching
+          # CHANGELOG.md section, then GitHub's generated notes.
           $notesArgs = @('--generate-notes')
           if (Test-Path "release-notes/$tag.md") {
             $notesArgs = @('--notes-file', "release-notes/$tag.md")
+          } elseif (Test-Path 'CHANGELOG.md') {
+            $version = $tag.TrimStart('v')
+            $lines = @(Get-Content 'CHANGELOG.md')
+            $heading = '^##\s+\[' + [regex]::Escape($version) + '\]'
+            $start = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match $heading) { $start = $i; break }
+            }
+            if ($start -ge 0) {
+              $end = $lines.Count
+              for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+                if ($lines[$j] -match '^##\s+') { $end = $j; break }
+              }
+              $bodyLines = @()
+              if ($end -gt $start + 1) { $bodyLines = $lines[($start + 1)..($end - 1)] }
+              $body = ($bodyLines -join "`n").Trim()
+              if ($body) {
+                $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
+                Set-Content -Path $notesFile -Value $body -Encoding utf8
+                $notesArgs = @('--notes-file', $notesFile)
+              } else {
+                Write-Host "CHANGELOG.md section $version is empty; using generated notes."
+              }
+            } else {
+              Write-Host "No CHANGELOG.md section for $version; using generated notes."
+            }
           }
 
           gh release view $tag *> $null

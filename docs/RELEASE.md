@@ -6,16 +6,16 @@ This document is for maintainers. It describes how to cut a release, what the
 The user-facing documentation lives elsewhere; this file only covers the release
 process.
 
-## What ships (v1)
+## What ships
 
 The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
 
 - `sigildns.exe` — the console-subsystem binary: CLI, service host, and the
   headless `--apply` elevation helper.
-- `sigildns-gui.exe` — the GUI-subsystem configuration client (Status +
-  Settings), built `-tags gui -ldflags "-H windowsgui"`.
-- `config.example.yaml`, `README.md`, `SPEC.md`, `LICENSE`, and `docs/` (the
-  README links into it).
+- `sigildns-gui.exe` — the GUI-subsystem configuration client (Status,
+  Settings, Rules, Logging, and About), built `-tags gui -ldflags "-H windowsgui"`.
+- `config.example.yaml`, `README.md`, `SPEC.md`, `CHANGELOG.md`, `LICENSE`, and
+  `docs/` (the README links into it).
 - `installer/setup.ps1` — one entry point; prompts for Install or Uninstall and
   relaunches itself through UAC when started non-elevated.
 
@@ -23,7 +23,7 @@ The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
 download can be verified:
 
 ```powershell
-Get-FileHash .\sigildns_v0.1.0_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\sigildns_v0.2.0_windows_amd64.zip -Algorithm SHA256
 ```
 
 Release builds use the `gui` tag (never `-tags tray`); the **tray icon is part of
@@ -55,8 +55,8 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 2. Tag the release and push the tag:
 
    ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
    Pushing a `v*` tag triggers the workflow. It can also be run manually from
@@ -84,12 +84,13 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    still include function names and line numbers.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
-   binaries, `config.example.yaml`, `README.md`, `SPEC.md`, `LICENSE`, `docs/`,
-   and `installer/setup.ps1`.
+   binaries, `config.example.yaml`, `README.md`, `SPEC.md`, `CHANGELOG.md`,
+   `LICENSE`, `docs/`, and `installer/setup.ps1`.
 6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
    it (the zip itself is never signed).
 7. Verifies the package: extracts the zip, asserts every expected file is
-   present (both binaries, config, README, SPEC, LICENSE, `docs/`, installer),
+   present (both binaries, config, README, SPEC, CHANGELOG, LICENSE, `docs/`,
+   installer),
    recomputes the zip hash against `SHA256SUMS.txt`, and (when signing ran)
    requires a `Valid` Authenticode signature on each binary.
 8. Uploads the zip and checksums as a build artifact.
@@ -105,14 +106,19 @@ independently.
 
 ## Release notes
 
-Release notes come from `release-notes/<tag>.md` when that file exists in the
-tagged commit; otherwise the workflow falls back to
-`gh release create --generate-notes` (merged PRs and first-time contributors).
+Release notes come from, in order:
 
-Write curated notes for anything a user must act on — changed default
+1. `release-notes/<tag>.md` when that file exists in the tagged commit (a
+   curated override).
+2. The matching `## [<version>]` section of `CHANGELOG.md`, used verbatim.
+3. `gh release create --generate-notes` (merged PRs and first-time
+   contributors) when neither exists.
+
+Write the CHANGELOG entry for anything a user must act on — changed default
 profiles, interception or NRPT behaviour, service identity, config schema.
-Generated notes do not know which of those changed. No file is required for
-routine patch releases.
+Generated notes do not know which of those changed. A `release-notes/<tag>.md`
+override is only needed when the release text should differ from the changelog
+(for example, extra upgrade instructions).
 
 ## Code signing secrets
 

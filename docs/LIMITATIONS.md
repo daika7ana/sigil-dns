@@ -88,7 +88,7 @@ interface DNS for those names.
 Before you authenticate to a Wi-Fi captive portal, the portal works by
 intercepting plain DNS and HTTP. With encrypted upstreams and NRPT interception
 active, the bootstrap lookup for the DoH endpoint fails and you may be unable to
-reach the login page. v1 backs off on failure so you can reach the portal, but
+reach the login page. It backs off on failure so you can reach the portal, but
 this is a known rough edge: **disable Sigil DNS first on a network you have
 not yet authenticated to.**
 
@@ -155,12 +155,12 @@ loopback, so WSL workloads can bypass Sigil DNS. Options:
 - Mirrored networking mode (`networkingMode=mirrored`) generally makes WSL use
   the host's resolver directly.
 
-Neither is automated in v1. If WSL DNS does not behave as expected, verify with
+Neither is automated. If WSL DNS does not behave as expected, verify with
 `resolv.conf` / `wsl.exe --debug-shell` which resolver WSL is actually using.
 
 ## Why no kernel driver
 
 Closing every gap above requires WFP/NDIS-level interception. That was
-explicitly out of scope for v1 (see SPEC §1 Non-goals). The trade is a
+explicitly out of scope (see SPEC §1 Non-goals). The trade is a
 driver-free, easy-to-restore tool with a documented bypass surface, versus a
 kernel driver with much wider reach and much higher install/rollback risk.

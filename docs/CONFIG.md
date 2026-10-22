@@ -155,8 +155,9 @@ filtering:
 | `0.0.0.0` | Answers `0.0.0.0` (A) / `::` (AAAA) with `block_ttl`. |
 | `nxdomain` | Answers NXDOMAIN with no records. |
 
-Lists are hosts-format and AdGuard/ABP syntax, loaded manually (no scheduled
-updater in v1). Changing rules or lists flushes the resolver cache.
+Lists are hosts-format and AdGuard/ABP syntax, loaded manually (`sigildns
+refresh` or the GUI's Update blocklists); no scheduled updater. Changing rules
+or lists flushes the resolver cache.
 
 ## `log`
 
