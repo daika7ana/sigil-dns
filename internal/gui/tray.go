@@ -193,12 +193,18 @@ func (a *App) showWindow(w *gogui.Window) {
 	w.SetWindowOpacity(1)
 
 	zoomed := windowZoomed(windowTitle)
-	if windowVisible(windowTitle) && !windowMinimized(windowTitle) {
-		focusWindow(windowTitle) // already visible: raise it, don't restore
+	visible, minimized := windowVisible(windowTitle), windowMinimized(windowTitle)
+
+	if visible && !minimized {
+		ensureFocus(w) // already visible: raise it, don't restore
+
 		return
 	}
 
 	w.Show()
+	// Show does not request a frame, so ask for the layout pass it skips.
+	ensureFocus(w)
+	w.InvalidateLayout()
 	if zoomed {
 		// Show uses SW_RESTORE, which un-maximizes; put the window back.
 		maximizeWindow(windowTitle)

@@ -2,6 +2,8 @@
 
 package gui
 
+import gogui "github.com/go-gui-org/go-gui/gui"
+
 // Window-position persistence is a Windows-only best-effort: the GUI toolkit
 // exposes no position API, so the off-Windows build (used by the headless smoke
 // test) simply has nothing to move or read.
@@ -21,3 +23,6 @@ func maximizeWindow(string) {}
 func focusWindow(string) {}
 
 func focusExistingWindow() {}
+
+// ensureFocus is a no-op off Windows: nothing to activate or focus.
+func ensureFocus(*gogui.Window) {}

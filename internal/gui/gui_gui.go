@@ -241,7 +241,7 @@ func run(background bool) (err error) {
 				w.Hide()
 				return
 			}
-			focusWindow(windowTitle)
+			ensureFocus(w)
 			w.SetWindowOpacity(1) // reveal after the position is applied
 		},
 		OnCloseRequest: func(win *gogui.Window) {
