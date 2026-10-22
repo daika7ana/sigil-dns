@@ -115,6 +115,47 @@ func TestHandleRefreshLists(t *testing.T) {
 	}
 }
 
+// fakeClearer is an in-memory ipc.CacheClearer.
+type fakeClearer struct {
+	err   error
+	calls int
+}
+
+func (f *fakeClearer) ClearCache(context.Context) (err error) {
+	f.calls++
+
+	return f.err
+}
+
+// TestHandleClearCache covers the admin-only clear_cache method: rejected for a
+// non-admin caller, unsupported without a handler, and dispatched when wired.
+func TestHandleClearCache(t *testing.T) {
+	ctx := context.Background()
+
+	c := &fakeClearer{}
+	srv := NewServer(&fakeLifecycle{}, nil).SetCacheClearer(c)
+
+	if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodClearCache}); resp.OK ||
+		resp.Error != ErrForbidden.Error() {
+		t.Fatalf("clear_cache non-admin: %+v", resp)
+	}
+	if c.calls != 0 {
+		t.Fatal("non-admin caller reached the cleaner")
+	}
+
+	if resp := srv.Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodClearCache}); !resp.OK {
+		t.Fatalf("clear_cache admin: %+v", resp)
+	}
+	if c.calls != 1 {
+		t.Fatalf("clear calls = %d, want 1", c.calls)
+	}
+
+	if resp := NewServer(&fakeLifecycle{}, nil).Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodClearCache}); resp.OK ||
+		resp.Error != ErrUnsupported.Error() {
+		t.Fatalf("clear_cache without handler: %+v", resp)
+	}
+}
+
 func TestEnvelopeRoundTrip(t *testing.T) {
 	req := Request{Version: ProtocolVersion, Method: MethodStatus}
 	data, err := json.Marshal(req)

@@ -308,7 +308,7 @@ sigildns <command> [flags]
 | `service stop` | Stop the Windows service. |
 | `--service` | Run the service host (invoked by the SCM, not by hand). |
 | `--gui` | Run the GUI. Requires a `-tags gui` build; the GUI binary also opens it with no arguments. |
-| `--tray` | Run the tray UI. Requires a `-tags tray` build. Deferred to v1.1. |
+| `--tray` | Start hidden to the tray when the tray setting is on (`-tags gui` build; a `-tags tray` build remains a stub). |
 | `help`, `-h`, `--help` | Print usage. |
 
 ### Flags
@@ -356,9 +356,22 @@ tag.
 CI runs on `windows-latest` (`.github/workflows/ci.yml`); tagged releases build
 and publish from `.github/workflows/release.yml`, and are signed only when a
 signing certificate is configured — **current releases are unsigned** (see
-[Install](#install)). The tray UI remains **deferred to v1.1** — the `--tray`
-hook exists but no tray UI is built. CI additionally runs a `-tags tray` build
-to keep the tag compiling.
+[Install](#install)). The **system tray icon is part of the GUI** and is **off by
+default**: enable it in Settings → Window & tray, where you can also make closing
+or minimizing the window hide it to the tray. Double-clicking the icon (or a
+single click) opens the window; right-click offers a disabled live service status row,
+Open, Open log file, Clear DNS cache (the resolver and Windows caches, so a new rule is not hidden
+by an old answer), and Exit. The separate `--tray` command starts the GUI
+hidden to the tray in a `-tags gui` build; a `-tags tray` build remains a stub,
+and CI still runs one to keep the tag compiling.
+
+While the tray is on, **Start tray icon on startup** registers a per-user
+Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest privileges) that
+launches the GUI exe with `--tray` at sign-in. Because the task runs with highest
+privileges, the tray starts **elevated with no UAC prompt** — a documented user
+decision that extends the SPEC §15.3.8 exception. The task is explicit, pins the
+exe path it was enabled from (enable it from the installed copy), and is removed
+when the tray is disabled and by uninstall.
 
 ```sh
 dev/go build -tags tray ./...

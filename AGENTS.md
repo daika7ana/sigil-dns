@@ -37,7 +37,7 @@ admin/UAC on every launch.
 
 ## Architecture (the non-obvious parts)
 One binary, entrypoint `cmd/sigildns/main.go`, many modes: CLI commands, `--service` (SCM host),
-`--apply <path>` (elevated headless helper), `--gui`, `--tray`.
+`--apply <path>` (elevated headless helper), `--gui`, `--tray` (retired stub; the tray now lives in the GUI).
 
 `internal/`: `lifecycle` (enable/disable/restore orchestration) · `state` (atomic JSON + dirty marker +
 single-instance lock) · `intercept` (NRPT via PowerShell, primary; per-adapter fallback) · `resolver`
@@ -50,21 +50,30 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
   `internal/config` (use the local `resolver.Rule` type).
 - **Platform split** is `_windows.go` / `_other.go` build-tagged pairs. Every Windows implementation has a
   non-Windows stub returning a typed error so Linux builds stay green — add both when adding a feature.
-- **Build tags:** `gui` = the go-gui window; `tray` = retired stub (leave it). Keep default/Linux builds
-  GUI-free by keeping the tag.
+- **Build tags:** `gui` = the go-gui window (including its opt-in tray icon); `tray` = retired stub
+  (leave it). Keep default/Linux builds GUI-free by keeping the `gui` tag.
 - **GUI is a full config client**, not a status viewer (`internal/gui/`): `settings_view.go` (Settings
   page: service card + profile list add/rename/delete/set-active + per-profile editor), `draft.go`
   (editor buffer), `elevate_adapter.go` (**the only `internal/elevate` importer**; maps GUI actions to
-  `elevate.Request`), `instance.go` (`gui.lock` single-instance guard), `render_test.go` (headless
-  shape/colour assertions — no fonts in the container), `console_{windows,other}.go` (`detachConsole`).
-  The GUI is the **full-permission surface**; the default/Linux build stays GUI-free behind the `gui` tag.
+  `elevate.Request`), `instance.go` (`gui.lock` single-instance guard), `tray.go` (opt-in
+  go-gui system tray: off by default, plus close-to-tray / minimize-to-tray switches and a
+  start-at-sign-in switch that registers a per-user `ONLOGON` Task Scheduler task (`SigilDNS`, task
+  XML: logon trigger and principal bound to this user, `InteractiveToken`/`HighestAvailable`,
+  battery-start enabled, no run-time limit) launching `--tray` (no UAC at
+  sign-in — see the §15.3.8 exception; removed when the tray is disabled and by uninstall); single/double click shows the
+  window, right click offers Open / live service status / Open log file / Clear DNS cache / Exit),
+  `render_test.go` (headless shape/colour assertions — no fonts in the container),
+  `console_{windows,other}.go` (`detachConsole`).
+  The GUI is the **full configuration surface**; the default/Linux build stays GUI-free behind the `gui` tag.
 - **Elevated-helper allowlist** (`internal/elevate`): `Patch` is the whole config surface —
   `ActiveProfile` / per-profile `Profiles` (provider/variant/protocol/id/url/bootstrap/
   filtering/cache) plus structural `AddProfile` / `RenameProfile` / `DeleteProfile`; actions also include
-  `service_install|service_uninstall|service_start|service_stop`. Every field is validated (bootstrap as
+  `service_install|service_uninstall|service_start|service_stop` and the no-patch `refresh_lists` /
+  `clear_cache`. Every field is validated (bootstrap as
   IP literals, provider/variant/protocol against the registry, id charset/length, explicit-zero
-  rejection); ids travel only in the DPAPI-sealed body; blank id = keep. **No new IPC methods** — the
-  §15.3 privilege table is unchanged.
+  rejection); ids travel only in the DPAPI-sealed body; blank id = keep. The only control-pipe methods
+  are `reload` / `enable` / `disable` / `restore` / `refresh_lists` / `clear_cache`; each is classified
+  in the §15.3 privilege table.
 - **Uninstall is ordered and fail-closed** (`uninstallPlan`/`uninstallSequence`): restore interception →
   stop the service → verify interception is actually down (NRPT probe + one local config-independent
   restore retry) → only then delete. It never deletes while interception is unproven down.
@@ -110,7 +119,10 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 - Elevation is explicit (`elevate.Apply` → `ShellExecuteExW runas` → `--apply`). The shipped exe also
   embeds a `requireAdministrator` manifest (see above), so it is elevated for its lifetime; the
   `--apply` helper stays one-shot per write and re-validates everything, applying only the allowlisted
-  config surface (see Architecture). No persistent broker, no silent/auto elevation.
+  config surface (see Architecture). No persistent broker. The one silent-start exception is the opt-in
+  tray autostart: a per-user `ONLOGON` task (`SigilDNS`, task XML with a user-bound logon trigger,
+  `InteractiveToken` and `HighestAvailable`) created by the already-elevated GUI launches `--tray` at sign-in with no UAC — SPEC §15.1/§15.3.8, user
+  decision. It starts the GUI only; it never applies config or starts the service.
 
 ## CI & releases
 - `.github/workflows/ci.yml`: `main` pushes + PRs only, docs-only paths ignored (a tag push must not
@@ -134,6 +146,9 @@ full-parity Status + Settings) · plus `logging`/`winacl`/`redact`/`version`/`he
 
 ## Pinned dependencies (why)
 `AdguardTeam/dnsproxy v0.86.0` (engine; needs Go ≥1.26.8; **no `Config.BootstrapDNS` field** — bootstrap is
-`upstream.Options.Bootstrap`) · `AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.86.0`
-(GUI; pre-1.0, pin deliberately) · `Microsoft/go-winio v0.6.2` (**deliberately pinned** — v0.6.3 drags a
+`upstream.Options.Bootstrap`) · `AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.89.1`
+(GUI + built-in system tray; pre-1.0, pin deliberately; its Win32 tray menu resolves a click
+through the root-prefixed `menuNodes` slice, so `internal/gui/tray.go` shifts the menu IDs by one,
+and it never sets `NIF_SHOWTIP`, so `internal/gui/tray_tooltip_windows.go` enables the standard
+tooltip — re-check both on upgrade) · `Microsoft/go-winio v0.6.2` (**deliberately pinned** — v0.6.3 drags a
 `golang.org/x/*` upgrade cascade). Verify library APIs against the pinned tag's source, not against docs.

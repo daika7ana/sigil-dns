@@ -79,6 +79,24 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 - License GPLv3 (the project statically links `AdguardTeam/urlfilter`, which is
   GPL-3.0).
 
+## Tray
+
+The system tray icon is **off by default**. Settings → **Window & tray** has:
+
+- **System tray icon** — enable the notification-area icon.
+- **Start tray icon on startup** — while the tray is on, register a per-user
+  Task Scheduler `ONLOGON` task (`SigilDNS`, current user, highest privileges)
+  that launches `sigildns-gui.exe --tray` at sign-in. The task starts the GUI
+  **elevated with no UAC prompt**; its exe path is pinned to the binary you
+  enabled the setting from, so enable it from the installed copy. Turning this
+  off deletes the task, turning the tray off deletes it too, and uninstall
+  removes it.
+- **Minimize to tray** / **Close to tray** — hide the window to the icon
+  instead of minimizing or exiting.
+
+A `--tray` launch never opens a visible window unless the tray icon could not be
+created or the tray setting is off; the tray icon's **Open** shows it.
+
 ## States
 
 | State | Meaning |

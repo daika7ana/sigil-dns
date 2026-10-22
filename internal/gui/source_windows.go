@@ -4,12 +4,13 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
-	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/daika7ana/sigil-dns/internal/ipc"
 	"github.com/daika7ana/sigil-dns/internal/service"
@@ -109,28 +110,41 @@ func connFD(c net.Conn) (fd uintptr, ok bool) {
 }
 
 // serviceProcess reports the sigildns service's PID, whether it is running,
-// whether it is installed, and its state name from the SCM.  Querying status
-// needs no elevation (SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS are granted to
-// authenticated users).
+// whether it is installed, and its state name from the SCM.  It opens the SCM
+// and the service with the minimum rights: mgr.Connect/OpenService ask for
+// ALL_ACCESS, which a non-elevated GUI is not granted.
 func serviceProcess() (pid uint32, running, installed bool, state string, err error) {
-	m, err := mgr.Connect()
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {
 		return 0, false, false, "", err
 	}
-	defer func() { _ = m.Disconnect() }()
+	defer func() { _ = windows.CloseServiceHandle(scm) }()
 
-	s, err := m.OpenService(service.Name)
+	name, err := windows.UTF16PtrFromString(service.Name)
 	if err != nil {
-		return 0, false, false, "", nil // not installed
+		return 0, false, false, "", err
 	}
-	defer func() { _ = s.Close() }()
 
-	st, err := s.Query()
+	h, err := windows.OpenService(scm, name, windows.SERVICE_QUERY_STATUS)
 	if err != nil {
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			return 0, false, false, "", nil // not installed
+		}
+
+		return 0, false, false, "", err
+	}
+	defer func() { _ = windows.CloseServiceHandle(h) }()
+
+	var st windows.SERVICE_STATUS_PROCESS
+	var needed uint32
+	if err = windows.QueryServiceStatusEx(h, windows.SC_STATUS_PROCESS_INFO,
+		(*byte)(unsafe.Pointer(&st)), uint32(unsafe.Sizeof(st)), &needed); err != nil {
 		return 0, false, true, "", err
 	}
 
-	return st.ProcessId, st.State == svc.Running, true, serviceStateName(st.State), nil
+	sn := svc.State(st.CurrentState)
+
+	return st.ProcessId, sn == svc.Running, true, serviceStateName(sn), nil
 }
 
 // serviceStateName renders an SCM state as a short, plain word for the UI.

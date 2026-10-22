@@ -257,6 +257,8 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return startService()
 	case ActionServiceStop:
 		return stopServiceAndVerify(ctx)
+	case ActionClearCache:
+		return clearCaches(ctx)
 	}
 
 	changed := false
@@ -624,6 +626,31 @@ func uninstallService(ctx context.Context) (res Result) {
 	}
 
 	return Result{OK: true, Message: "service uninstalled (" + reason + ")"}
+}
+
+// clearCaches resets the resolver cache and the Windows DNS cache.  A running
+// service owns the resolver cache, so it clears both over the control pipe; a
+// stopped service has no in-process cache, so the helper flushes the OS cache
+// itself.  It never starts the service: a cache clear must not turn protection
+// on behind the user's back.
+func clearCaches(ctx context.Context) (res Result) {
+	running, pid := serviceRunning()
+	if running && pid != 0 {
+		if err := waitControlServer(ctx, pid); err != nil {
+			return Result{Err: err.Error()}
+		}
+		if err := ipc.NewClient(ipc.PipeName).ClearCache(ctx); err != nil {
+			return Result{Err: err.Error()}
+		}
+
+		return Result{OK: true, Message: "DNS cache cleared"}
+	}
+
+	if err := lifecycle.FlushDNS(ctx); err != nil {
+		return Result{Err: "could not clear the Windows DNS cache"}
+	}
+
+	return Result{OK: true, Message: "Windows DNS cache cleared"}
 }
 
 // driveControl verifies the control-pipe server identity, then issues the IPC

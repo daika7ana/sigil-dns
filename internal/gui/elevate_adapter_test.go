@@ -18,6 +18,7 @@ func TestElevateActionFor(t *testing.T) {
 		actionUninstall:     elevate.ActionServiceUninstall,
 		actionServiceStop:   elevate.ActionServiceStop,
 		actionRefreshLists:  elevate.ActionRefreshLists,
+		actionClearCache:    elevate.ActionClearCache,
 		actionSaveProfile:   elevate.ActionApply,
 		actionAddProfile:    elevate.ActionApply,
 		actionRenameProfile: elevate.ActionApply,
@@ -46,6 +47,7 @@ func TestServiceRequestHasEmptyPatch(t *testing.T) {
 		actionUninstall:    elevate.ActionServiceUninstall,
 		actionServiceStop:  elevate.ActionServiceStop,
 		actionRefreshLists: elevate.ActionRefreshLists,
+		actionClearCache:   elevate.ActionClearCache,
 	}
 
 	for a, want := range cases {

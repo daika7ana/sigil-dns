@@ -69,6 +69,13 @@ type ListRefresher interface {
 	RefreshLists(ctx context.Context) (err error)
 }
 
+// CacheClearer optionally handles the admin clear_cache method.  It is set on
+// the control pipe only.
+type CacheClearer interface {
+	// ClearCache clears the resolver cache and the OS DNS cache.
+	ClearCache(ctx context.Context) (err error)
+}
+
 // Authorizer derives the identity of a connected peer.  It is injected by the
 // transport (or by tests); it must never trust the request body.
 type Authorizer func(conn net.Conn) Caller
@@ -88,6 +95,7 @@ type Server struct {
 	reloader       Reloader
 	restorer       Restorer
 	refresher      ListRefresher
+	clearer        CacheClearer
 	logger         *slog.Logger
 	configPath     string
 	requestTimeout time.Duration
@@ -142,6 +150,13 @@ func (s *Server) SetRestorer(r Restorer) *Server {
 // SetListRefresher sets the filter-list refresh handler (control pipe only).
 func (s *Server) SetListRefresher(r ListRefresher) *Server {
 	s.refresher = r
+
+	return s
+}
+
+// SetCacheClearer sets the DNS cache reset handler (control pipe only).
+func (s *Server) SetCacheClearer(c CacheClearer) *Server {
+	s.clearer = c
 
 	return s
 }
@@ -219,6 +234,17 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 		}
 
 		if err := s.refresher.RefreshLists(ctx); err != nil {
+			return errorResponse(err)
+		}
+
+		return okResponse(nil)
+
+	case MethodClearCache:
+		if s.clearer == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		if err := s.clearer.ClearCache(ctx); err != nil {
 			return errorResponse(err)
 		}
 

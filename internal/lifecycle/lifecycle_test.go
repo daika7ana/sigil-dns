@@ -19,7 +19,8 @@ import (
 // testResolver is a resolverHandle that records Start/Shutdown into a shared
 // event log instead of binding sockets.
 type testResolver struct {
-	events *[]string
+	events      *[]string
+	cacheClears int
 }
 
 func (r *testResolver) Start(context.Context) error {
@@ -37,6 +38,7 @@ func (r *testResolver) Shutdown(context.Context) error {
 func (r *testResolver) SyntheticName() string              { return "probe.sigildns-test.invalid." }
 func (r *testResolver) UDPAddrs() []string                 { return []string{"127.0.0.1:53"} }
 func (r *testResolver) RefreshLists(context.Context) error { return nil }
+func (r *testResolver) ClearCache()                        { r.cacheClears++ }
 
 // testIntercept is an intercept.Controller that records calls, captures the
 // dirty flag it observes when Enable runs (proving the snapshot was persisted
@@ -469,5 +471,20 @@ func TestLifecycleInvariants(t *testing.T) {
 			err := tc.run(context.Background(), env)
 			tc.check(t, env, err)
 		})
+	}
+}
+
+// TestClearCacheClearsResolver proves the cache action reaches the running
+// resolver, not only the OS cache.
+func TestClearCacheClearsResolver(t *testing.T) {
+	env := newTestEnv(t)
+	res := &testResolver{events: env.events}
+	env.lc.res = res
+
+	if err := env.lc.ClearCache(context.Background()); err != nil {
+		t.Fatalf("ClearCache: %v", err)
+	}
+	if res.cacheClears != 1 {
+		t.Fatalf("resolver cache clears = %d, want 1", res.cacheClears)
 	}
 }

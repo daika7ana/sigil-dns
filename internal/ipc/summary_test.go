@@ -299,6 +299,7 @@ func TestPrivilegeTable(t *testing.T) {
 		MethodReload:        Admin,
 		MethodRestore:       Admin,
 		MethodRefreshLists:  Admin,
+		MethodClearCache:    Admin,
 	}
 	if len(methodPrivileges) != len(want) {
 		t.Fatalf("privilege table has %d entries, want %d", len(methodPrivileges), len(want))
@@ -339,7 +340,7 @@ func TestStatusPipeRejectsAdminMethods(t *testing.T) {
 	srv := NewServer(&fakeLifecycle{}, nil).SetReloader(&fakeReloader{}).SanitizeStatus()
 	ctx := context.Background()
 
-	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists} {
+	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists, MethodClearCache} {
 		resp := srv.Handle(ctx, ReadOnlyAuthorizer(nil), Request{Version: ProtocolVersion, Method: m})
 		if resp.OK || resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s on status pipe = %+v, want ErrForbidden", m, resp)

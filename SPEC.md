@@ -66,7 +66,7 @@ feature set of YogaDNS, without a kernel driver.
 - **GUI**: reads sanitized status over the read-only status pipe; state-changing ops go through the
   elevated `--apply` helper. On shipped builds the process is itself elevated at launch (manifest,
   §15.1), but the GUI code still never reads `config.yaml` directly. Built with **go-gui** — see §15.
-  (Supersedes the earlier "tray" idea; the `--tray` hook is retired.)
+  The GUI can host an optional system-tray icon (off by default); the standalone `--tray` hook stays retired.
 - One Go module; one binary with `--service` / `--cli` / `--gui` (build-tagged) / `--apply` modes.
 
 ---
@@ -80,7 +80,7 @@ feature set of YogaDNS, without a kernel driver.
 | Wire/types | `github.com/miekg/dns` | BSD-3 |
 | Filtering | `github.com/AdguardTeam/urlfilter` (`DNSEngine`) | **GPL-3.0** → whole app GPLv3 |
 | Windows service | `golang.org/x/sys/windows/svc` | BSD-3 |
-| Tray GUI | `fyne.io/systray` (maintained fork; Apache-2.0), **build-tagged** | Apache-2.0 |
+| Tray | go-gui built-in `SystemTrayCfg` (part of the `gui` build) | MIT |
 | Config | YAML (`gopkg.in/yaml.v3`) | MIT/Apache |
 | State/snapshot | JSON (stdlib), atomic write, ACL SYSTEM+Admins | — |
 
@@ -381,11 +381,13 @@ snapshot, dirty marker, active profile, last health result.
 2. **Config + providers** — YAML config, presets, DoH/DoT selection, single-instance guard.
 3. **Rules + filtering** — domain-rule parser (dnsmasq syntax) + urlfilter blocklists; cache flush.
 4. **Service + IPC + drift** — service wrapper, SDDL-locked dual pipes, drift watcher + reconcile
-   loop. *(Tray UI deferred to v1.1 — the `--tray` hook and read-only status pipe are in place.)*
+   loop. *(The `--tray` hook and read-only status pipe are in place; the opt-in tray now ships in the
+   GUI — see phase 8 and §15.1.)*
 5. **Packaging + signing** — installer, GH Actions release, docs.
 6. **GUI** — go-gui config client (§15): sanitized reads + elevated-helper apply, full profile /
-   filtering / cache editing, service management, enable/disable UX, packaging. *Rules/lists editing
-   shipped in a later GUI phase (§15.4 phase 5). Supersedes the earlier "tray" idea.*
+   filtering / cache editing, service management, enable/disable UX, packaging, and an optional
+   system-tray icon with minimize/close-to-tray (§15.1). *Rules/lists editing shipped in a later GUI
+   phase (§15.4 phase 5).*
 
 ### Cut from v1 (YAGNI — add on demand)
 optimistic cache · concurrent multi-profile resolution (many profiles are stored, one active at a
@@ -403,7 +405,7 @@ rule-editor UI beyond the GUI forms · `$dnsrewrite` UX.
 - **2**: unit tests — config parse, preset expansion, single-instance guard.
 - **3**: unit tests — per-domain rule selects correct upstream; blocked → `0.0.0.0`; allowlist
   overrides; cache flushed on rule change.
-- **4**: SCM install/start/stop; tray reflects state; pipe rejects non-admin writes; drift
+- **4**: SCM install/start/stop; status DTO reflects state; pipe rejects non-admin writes; drift
   re-applied; reconcile loop catches a simulated registry change.
 - **5**: signed exe installs on clean Win11 VM (SmartScreen OK); end-to-end with real provider.
 
@@ -439,13 +441,14 @@ switching and clean restore** — integration they don't ship. We reuse the hard
 
 ## 15. GUI — go-gui
 
-**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.86.0`.** Chosen over Wails and verified
+**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.89.1`.** Chosen over Wails and verified
 by a hello-world spike cross-built on Linux and run on Win11 24H2.
 - Rationale: pure Go — **no cgo, no WebView2, no Node/npm**; builds with the existing Docker wrapper
   (`CGO_ENABLED=0 GOOS=windows GOARCH=amd64`); cgo is needed only for the macOS Metal backend,
   which is irrelevant here.
 - Rejected: Wails v2 (needs Node + `wails build` on Windows + the WebView2 runtime), Fyne/systray
-  (cgo/MinGW), and the native `Shell_NotifyIcon` tray (superseded by a real window).
+  (cgo/MinGW), and a hand-rolled `Shell_NotifyIcon` tray — the icon uses go-gui's built-in
+  `SystemTrayCfg` / `SetSystemTray`, so it adds no dependency and needs no extra cgo.
 - Risk: go-gui is **pre-1.0** (created 2026-03, ~129★, frequent releases). Pin the version and
   update deliberately; the GUI is a client, so swapping the shell does not touch the service core.
 
@@ -466,19 +469,23 @@ packages. It is a **full-parity configuration client**, not a status viewer.
 - **Writes** — a **one-shot elevated helper**: the GUI re-launches the *same signed binary*
   `--apply <staging>` via `ShellExecuteW "runas"`. The helper re-loads and validates the staged patch
   with `internal/config`, writes `config.yaml` (atomic + ACL), then drives the service over the
-  existing admin control pipe (`reload` / `enable` / `disable` / `refresh_lists`). The allowlist is the
+  existing admin control pipe (`reload` / `enable` / `disable` / `refresh_lists` / `clear_cache`). The allowlist is the
   **whole config surface**: `ActiveProfile`, per-profile `Profiles` patches
   (provider / variant / protocol / id / custom URL / bootstrap / fallback profile / filtering / cache,
   plus **per-list
   operations** — toggle/add/remove existing lists by index — and **per-domain rules** with a per-rule
   `enabled` flag and a kind (an upstream rule, or a **bypass** rule that carries no upstream / keep)),
   the structural `AddProfile` / `RenameProfile` / `DeleteProfile`, and the service
-  actions `service_install` / `service_uninstall` / `service_start` / `service_stop` / `refresh_lists`.
+  actions `service_install` / `service_uninstall` / `service_start` / `service_stop` / `refresh_lists` /
+  `clear_cache`.
   Every field is validated (bootstrap as IP literals, provider / variant / protocol against the
   registry, id charset + length, explicit-zero rejection); ids travel only inside the DPAPI-sealed
-  staging body, and a blank id means *keep* (replace-only). Exactly one new control-pipe method was
-  added, `refresh_lists`; it is classified `Admin` in the §15.3 privilege table (the status pipe
-  rejects it). No persistent broker and no second privileged surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
+  staging body, and a blank id means *keep* (replace-only). Two new control-pipe methods were
+  added, `refresh_lists` and `clear_cache`; both are classified `Admin` in the §15.3 privilege table
+  (the status pipe rejects them). `clear_cache` has no input: it clears the running resolver's
+  dnsproxy cache and then the Windows DNS cache, so a newly added rule (for example a provider-side
+  bypass) also applies to names that are already cached. No persistent broker and no second
+  privileged surface. On the shipped manifest-elevated build (note below) the GUI process is *already* elevated,
   so a write no longer raises its own UAC prompt — consent is per **launch**, not per action — but the
   helper remains the sole writer and the only path that touches staged input.
 - **Surface** — five pages (left nav rail: Status, Settings, Rules, Logging, About). **Status**: a
@@ -495,6 +502,24 @@ packages. It is a **full-parity configuration client**, not a status viewer.
   an **Apply** that takes effect at the **next service start**, plus a live read-only tail of the log
   file with a 0–30 s refresh slider (0 = off) and **Open log file** / **Clear log file** actions.
   A `gui.lock` beside `gui.json` enforces a single GUI instance.
+- **Tray (opt-in)** — Settings → **Window & tray**: a **System tray icon** switch (off by default) plus,
+  while it is on, independent **Minimize to tray** and **Close to tray** switches. Single or double
+  click opens/brings the window to front; right click offers a disabled **Service: …** status row,
+  **Open Sigil DNS**, **Open log file**, **Clear DNS cache** (resolver cache + Windows DNS cache, so a
+  new bypass is not masked by a cached answer), and **Exit**. If the icon cannot
+  be created, the switch reverts with a toast instead of leaving a dead setting. While it is on,
+  **Start tray icon on startup** registers a per-user Task Scheduler `ONLOGON` task named `SigilDNS`,
+  written as task XML, launching the (quoted) exe with `--tray`. The logon trigger names this user —
+  Task Scheduler's "at log on of specific user", which `/SC ONLOGON` cannot express — and the principal
+  is the same user with `InteractiveToken` (no password stored) at `HighestAvailable`, so the task runs
+  only in that user's session. The XML also keeps the task startable on battery and
+  removes the default 72-hour execution limit, neither of which `schtasks` flags can express. The GUI already runs elevated, so it
+  creates the task without a prompt, and Task Scheduler starts the tray at sign-in **elevated with no
+  UAC prompt** (the service is not started by this task; the exe path is pinned to whatever binary the
+  setting was enabled from, so enable it from the installed copy). Turning the tray or the setting off
+  removes the task, and uninstall removes it too. This is a deliberate **user decision** extending the
+  §15.3.8 exception — see the manifest note below. This is
+  go-gui's built-in tray inside the `gui` binary, not the retired `tray` build tag.
 - **Identity** — before trusting reads or sending writes, verify the pipe server *is* the service:
   `GetNamedPipeServerProcessId(conn)` == the SCM-reported `ProcessId`. Unverified → flag the UI as
   untrusted and refuse writes (kills pipe-squatting without a nonce).
@@ -510,11 +535,24 @@ UAC prompt on **every** launch and the process runs elevated for its lifetime. T
 **user decision** that overrides the "no persistent elevated process" clause of §15.3.8; the rest of
 the security model is unchanged — the one-shot `--apply` helper still works (its `isElevated` check
 now trivially passes), the status pipe stays read-only/sanitized, the control pipe stays
-SYSTEM+Administrators only, service identity is still verified, and no silent/auto elevation (no
-scheduled task or COM broker) is introduced. Because there is a single binary, **all** invocations
+SYSTEM+Administrators only, service identity is still verified, and no silent/auto elevation is
+introduced by the manifest itself. Because there is a single binary, **all** invocations
 (`status`, `providers list`, `--gui`, …) now prompt UAC, not just the GUI. In effect the per-write
 consent gate is replaced by per-launch consent: the GUI holds an admin token for its whole lifetime,
 while the helper's re-validation, field allowlist, and ACL-enforced atomic write are unchanged.
+
+**Start tray icon on startup (further §15.3.8 exception, user decision).** The opt-in tray autostart
+registers a **per-user Task Scheduler `ONLOGON` task** (`SigilDNS`, task XML: logon trigger and
+principal bound to this user, `InteractiveToken` and `HighestAvailable`) that launches
+`sigildns-gui.exe --tray`. The GUI
+is already elevated, so it creates the
+task without a prompt, and the task starts the tray elevated at sign-in **with no UAC prompt**. This
+is the only scheduled task in the product: it is per-user, created only by an explicit setting,
+carries no resolver ids or config
+data, is removed when the setting/tray is disabled and by uninstall, and its pinned exe path is
+whatever binary the setting was enabled from (the installed copy in a normal install, so the setting
+should be enabled from there). It does not change the control/status pipe, the helper, or any per-action consent
+rule — every config write still goes through the one-shot `--apply` helper.
 
 ### 15.2 Sensitive data
 - Resolver ids live **only** in `%ProgramData%\SigilDNS\config.yaml` (SYSTEM+Administrators).
@@ -549,7 +587,10 @@ while the helper's re-validation, field allowlist, and ACL-enforced atomic write
 8. **No silent elevation** (no scheduled task / COM broker / "highest privileges" shortcut, no
    persistent elevated process, no auto-apply). *Exception (user decision, see §15.1): the shipped exe
    embeds a `requireAdministrator` manifest, so it is elevated for its lifetime; the manifest still
-   prompts UAC on every launch — elevation stays explicit, never silent.*
+   prompts UAC on every manual launch. The opt-in **Start tray icon on startup** setting is the one
+   further exception: an already-elevated explicit action registers a per-user `ONLOGON` task with
+   `/RL HIGHEST`, so the tray starts elevated at sign-in without UAC. It is removed when the setting or
+   tray is disabled and by uninstall.*
 9. `config.yaml` and `state.json` remain SYSTEM+Administrators; user-scope files never hold secrets.
 10. Never log credentials: the redacting `slog.Handler` (seeded from `providers.ExtractIDs`, re-seeded
     on reload) scrubs resolver ids, URL userinfo/query and `sdns://` at every level; it is the audited
@@ -560,7 +601,7 @@ while the helper's re-validation, field allowlist, and ACL-enforced atomic write
 12. Verify service identity before trusting reads or sending actions.
 
 ### 15.4 Phases
-Status: **phases 0–7 are implemented.**
+Status: **phases 0–8 are implemented.**
 0. **Preconditions** — DONE: ACL `config.yaml` (+ dir); upstreams redacted from logs; non-secret
    profile metadata (`provider`/`variant`/`protocol`).
 1. **IPC extension** — DONE: `info` + `config_summary` (status pipe, now with the `profiles` list),
@@ -583,16 +624,22 @@ Status: **phases 0–7 are implemented.**
 7. **Packaging** — DONE: go-gui binary (no cgo), installer ships the GUI + Start-Menu shortcut, and a
    protocol-version mismatch is surfaced from `info` (`source.go`). Code signing stays optional, gated
    on the repository secrets.
+8. **Tray** — DONE: an opt-in go-gui system-tray icon (off by default) with a live service status
+   row, Open, Open log file, Clear DNS cache (resolver + Windows caches) and Exit, plus independent
+   close-to-tray and minimize-to-tray switches; an icon that cannot be created reverts the setting.
 
 **Polling model (CPU/power):** while the window is focused the Status page reads the live service
 state — SCM state + status DTO only, never `config.yaml` — about every 1 s, and polling pauses while
-the window is unfocused/minimized. The full config summary is fetched at startup, after the user's own
+the window is unfocused/minimized. A minimized window is detected with `IsIconic` on the 1 s tick, so
+**Minimize to tray** can hide it; hiding also counts as unfocused and pauses the poller. While the
+tray icon is on, its status row is refreshed from a live read every 5 s even when the window is
+hidden, so a service-state change reaches the menu within about five seconds. The full config summary is fetched at startup, after the user's own
 edits, on a page switch, and on a 30 s safety tick. An unchanged read pushes nothing and requests no
 repaint, so the on-demand render loop stays asleep when idle.
 
 Build: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build` (no cgo anywhere). The GUI lives behind a
-`gui` build tag (like `tray`) so the Linux `go build ./...` stays lean; the `--apply` helper mode is
-always present and headless.
+`gui` build tag so the Linux `go build ./...` stays lean; the retired `tray` tag is unrelated. The
+`--apply` helper mode is always present and headless.
 
 ### 15.5 Verification (per phase, Windows VM/CI gated)
 Planted id never appears in `config_summary` JSON or any log; a non-admin cannot connect to the

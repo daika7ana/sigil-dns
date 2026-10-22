@@ -28,6 +28,15 @@ type settings struct {
 	Height int    `json:"height,omitempty"`
 	Theme  string `json:"theme,omitempty"`
 
+	// Tray is the opt-in system tray icon.  It is off by default; the
+	// behaviours below are only honoured while it is on.
+	Tray           bool `json:"tray,omitempty"`
+	MinimizeToTray bool `json:"minimize_to_tray,omitempty"`
+	CloseToTray    bool `json:"close_to_tray,omitempty"`
+
+	// StartWithWindows launches the tray at sign-in via the per-user logon task.
+	StartWithWindows bool `json:"start_with_windows,omitempty"`
+
 	// X and Y are the window's top-left in screen pixels, remembered on close
 	// and restored on open.  Zero (omitted) means "let the OS place it" — a
 	// genuine (0,0) window is not preserved.

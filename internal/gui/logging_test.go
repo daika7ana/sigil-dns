@@ -132,7 +132,7 @@ func TestLogViewerUpdatesThroughPoller(t *testing.T) {
 	w.SetView(view)
 	w.TestRender(nil)
 
-	startPoller(w, fakeSource{snap: app.snap}, make(chan struct{}, 1), &app.logView, alwaysFocused())
+	startPoller(w, fakeSource{snap: app.snap}, make(chan struct{}, 1), &app.logView, alwaysFocused(), &app.tray)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for app.logText == "" && time.Now().Before(deadline) {

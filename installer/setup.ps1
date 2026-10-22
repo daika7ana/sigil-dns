@@ -241,6 +241,9 @@ function Uninstall-SigilDns {
         }
     }
 
+    # Remove the logon task the tray autostart registers (ignore if absent).
+    & schtasks.exe /Delete /TN 'SigilDNS' /F 2>$null | Out-Null
+
     if (Test-Path -LiteralPath $InstallDir) {
         Remove-Item -Recurse -Force -LiteralPath $InstallDir
         Write-Host "Removed $InstallDir"

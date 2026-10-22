@@ -79,6 +79,7 @@ func (f *fakeDaemon) Disable(context.Context) (err error) {
 func (f *fakeDaemon) Restore(context.Context) (err error) { return nil }
 
 func (f *fakeDaemon) RefreshLists(context.Context) (err error) { return nil }
+func (f *fakeDaemon) ClearCache(context.Context) (err error)   { return nil }
 
 func TestReloadSwapWhenIdle(t *testing.T) {
 	old := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}

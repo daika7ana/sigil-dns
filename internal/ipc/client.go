@@ -70,6 +70,12 @@ func (c *Client) RefreshLists(ctx context.Context) (err error) {
 	return c.callTimeout(ctx, MethodRefreshLists, nil, reloadTimeout)
 }
 
+// ClearCache asks the service (control pipe) to clear its resolver cache and
+// the Windows DNS cache.
+func (c *Client) ClearCache(ctx context.Context) (err error) {
+	return c.callTimeout(ctx, MethodClearCache, nil, reloadTimeout)
+}
+
 // call performs one request/response exchange with the default timeout.
 func (c *Client) call(ctx context.Context, method Method, out any) (err error) {
 	return c.callTimeout(ctx, method, out, clientTimeout)

@@ -26,8 +26,10 @@ download can be verified:
 Get-FileHash .\sigildns_v0.1.0_windows_amd64.zip -Algorithm SHA256
 ```
 
-Release builds use the `gui` tag (never `-tags tray`); the **tray UI is deferred
-to v1.1**.
+Release builds use the `gui` tag (never `-tags tray`); the **tray icon is part of
+the GUI** and is off by default (Settings → Window & tray). In a `gui` build the
+`--tray` command starts the window hidden in the tray; the `-tags tray` build
+remains a stub.
 
 Both binaries embed `cmd/sigildns/sigildns.manifest`, which requests
 `requireAdministrator`: Windows shows a UAC prompt on every launch and the

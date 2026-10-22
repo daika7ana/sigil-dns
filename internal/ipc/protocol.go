@@ -32,10 +32,13 @@ const (
 
 	// CapRefreshLists marks the admin refresh_lists method.
 	CapRefreshLists
+
+	// CapClearCache marks the admin clear_cache method.
+	CapClearCache
 )
 
 // Capabilities is the set of capability bits this build supports.
-const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore | CapRefreshLists
+const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore | CapRefreshLists | CapClearCache
 
 // Method is an IPC request method.
 type Method string
@@ -68,6 +71,12 @@ const (
 	// privileges.  It re-downloads the active profile's filter lists and
 	// rebuilds the filter engine without tearing down interception.
 	MethodRefreshLists Method = "refresh_lists"
+
+	// MethodClearCache is state-changing and requires administrator
+	// privileges.  It clears the running resolver's cache and the Windows
+	// DNS cache, so a newly added rule (e.g. a provider-side bypass) takes
+	// effect for names already cached.
+	MethodClearCache Method = "clear_cache"
 )
 
 // Privilege classifies a method's required caller identity (SPEC §15.3.2).
@@ -94,6 +103,7 @@ var methodPrivileges = map[Method]Privilege{
 	MethodReload:        Admin,
 	MethodRestore:       Admin,
 	MethodRefreshLists:  Admin,
+	MethodClearCache:    Admin,
 }
 
 // valid reports whether m is a known method.

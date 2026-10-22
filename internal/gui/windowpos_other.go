@@ -10,4 +10,14 @@ func restoreWindowPosition(string, int, int) {}
 
 func windowPosition(string) (x, y int, ok bool) { return 0, 0, false }
 
+func windowMinimized(string) bool { return false }
+
+func windowVisible(string) bool { return false }
+
+func windowZoomed(string) bool { return false }
+
+func maximizeWindow(string) {}
+
 func focusWindow(string) {}
+
+func focusExistingWindow() {}

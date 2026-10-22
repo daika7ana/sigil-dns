@@ -40,6 +40,11 @@ const (
 	// service over the verified control pipe (elevate.ActionRefreshLists).
 	actionRefreshLists guiAction = "lists:refresh"
 
+	// actionClearCache clears the resolver cache and the Windows DNS cache.
+	// It carries no config patch and drives the running service over the
+	// verified control pipe (elevate.ActionClearCache).
+	actionClearCache guiAction = "cache:clear"
+
 	// actionSaveLog writes the Logging page's level and path.  It maps onto
 	// elevate.ActionApply and carries only the log patch (LOGGING_PLAN §4.7).
 	actionSaveLog guiAction = "log:save"
@@ -122,6 +127,8 @@ var actionMetas = map[guiAction]actionMeta{
 		"Waiting for elevation to set the active profile...", "Active profile set", "Could not set the active profile"},
 	actionRefreshLists: {"Update blocklists", gogui.ButtonSecondary,
 		"Waiting for the service to update blocklists...", "Blocklists updated", "Could not update blocklists"},
+	actionClearCache: {"Clear DNS cache", gogui.ButtonSecondary,
+		"Waiting for the service to clear the DNS cache...", "DNS cache cleared", "Could not clear the DNS cache"},
 	actionSaveLog: {"Apply", gogui.ButtonPrimary,
 		"Waiting for elevation to save logging...", "Logging saved", "Could not save logging"},
 }

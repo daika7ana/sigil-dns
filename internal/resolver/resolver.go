@@ -246,7 +246,7 @@ func (r *Resolver) RefreshLists(ctx context.Context) (err error) {
 func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error) {
 	if !fc.Enabled || len(fc.Lists) == 0 {
 		r.setFilterState(nil)
-		r.clearCache()
+		r.ClearCache()
 
 		return nil
 	}
@@ -276,7 +276,7 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 		blockResponse: fc.BlockResponse,
 		ttl:           ttl,
 	})
-	r.clearCache()
+	r.ClearCache()
 
 	return nil
 }
@@ -491,8 +491,8 @@ func (r *Resolver) UDPAddrs() (addrs []string) {
 	return addrs
 }
 
-// clearCache flushes the resolver cache.  Call on every state change.
-func (r *Resolver) clearCache() {
+// ClearCache flushes the resolver cache.  Call on every state change.
+func (r *Resolver) ClearCache() {
 	if r.proxy != nil {
 		r.proxy.ClearCache()
 	}

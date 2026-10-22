@@ -61,6 +61,11 @@ const (
 	// rebuilds the filter engine.  It does not touch the config; it drives the
 	// running service over the verified control pipe.
 	ActionRefreshLists Action = "refresh_lists"
+
+	// ActionClearCache clears the resolver cache and the Windows DNS cache.
+	// It does not touch the config; when the service is running it drives the
+	// verified control pipe, else it flushes the OS cache directly.
+	ActionClearCache Action = "clear_cache"
 )
 
 // valid reports whether a is a known action.
@@ -68,7 +73,7 @@ func (a Action) valid() (ok bool) {
 	switch a {
 	case ActionEnable, ActionRestore, ActionApply,
 		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop,
-		ActionRefreshLists:
+		ActionRefreshLists, ActionClearCache:
 		return true
 	default:
 		return false
@@ -90,7 +95,7 @@ func (a Action) serviceAction() (ok bool) {
 // restore, and the service-only refresh_lists action).
 func (a Action) noPatch() (ok bool) {
 	return a.serviceAction() || a == ActionEnable || a == ActionRestore ||
-		a == ActionRefreshLists
+		a == ActionRefreshLists || a == ActionClearCache
 }
 
 // Patch is the allowlisted set of config fields a request may change.  Only the

@@ -5,6 +5,7 @@ package gui
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -189,7 +190,7 @@ func TestSettingsPageRenders(t *testing.T) {
 
 	for _, id := range []string{
 		"gui:nav:status", "gui:nav:settings", "gui:nav:rules", "gui:nav:about",
-		"gui:service:stop", "gui:service:uninstall",
+		"gui:service:stop", "gui:service:uninstall", "gui:tray:enabled",
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",
 		"gui:edit:bootstrap", "gui:edit:filtering", "gui:edit:block", "gui:edit:cache",
@@ -931,6 +932,309 @@ func TestSettingsPositionRoundTrip(t *testing.T) {
 	}
 	if got.Width != want.Width || got.Height != want.Height || got.Theme != want.Theme {
 		t.Fatalf("settings = %+v, want %+v", got, want)
+	}
+}
+
+// TestTraySettingsRoundTrip proves the opt-in tray preferences survive gui.json,
+// and that an absent file leaves the tray off.
+func TestTraySettingsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gui.json")
+
+	if got := loadSettings(path); got.Tray || got.MinimizeToTray || got.CloseToTray {
+		t.Fatalf("missing gui.json enabled the tray: %+v", got)
+	}
+
+	want := settings{Tray: true, MinimizeToTray: true, CloseToTray: true}
+	if err := saveSettings(path, want); err != nil {
+		t.Fatalf("saveSettings: %v", err)
+	}
+
+	got := loadSettings(path)
+	if !got.Tray || !got.MinimizeToTray || !got.CloseToTray {
+		t.Fatalf("tray settings = %+v, want %+v", got, want)
+	}
+}
+
+// TestCloseToTrayNeedsActiveTray proves the close preference cannot hide the
+// window when no tray icon exists: closing must still exit.
+func TestCloseToTrayNeedsActiveTray(t *testing.T) {
+	app := &App{settings: settings{CloseToTray: true}}
+	if app.closeToTray() {
+		t.Error("closeToTray with no active tray, want false")
+	}
+
+	app.tray.active.Store(true)
+	if !app.closeToTray() {
+		t.Error("closeToTray with active tray and preference on, want true")
+	}
+}
+
+// TestTrayMenuHasExpectedActions proves the right-click menu carries the
+// status row, the three actions, and exit, in the order the user sees.
+func TestTrayMenuHasExpectedActions(t *testing.T) {
+	items := trayMenu("Service: Running")
+
+	if len(items) != 7 {
+		t.Fatalf("tray menu has %d items, want 7", len(items))
+	}
+	if !items[0].Disabled || items[0].Text != "Service: Running" {
+		t.Errorf("item 0 = %+v, want the disabled current status", items[0])
+	}
+	if !items[1].Separator || items[1].ID != trayActionOpen {
+		t.Errorf("item 1 = %+v, want the Open separator", items[1])
+	}
+
+	want := []string{"Open Sigil DNS", "Open log file", "Clear DNS cache"}
+	for i, text := range want {
+		if got := items[i+2]; got.Text != text || got.Disabled {
+			t.Errorf("item %d = %+v, want enabled %q", i+2, got, text)
+		}
+	}
+	if !items[5].Separator || items[5].ID != trayActionExit {
+		t.Errorf("item 5 = %+v, want the Exit separator", items[5])
+	}
+	if items[6].Text != "Exit" || items[6].Separator {
+		t.Errorf("item 6 = %+v, want Exit", items[6])
+	}
+}
+
+// TestTrayMenuIDsCompensateGoGUIRoot pins the workaround for go-gui v0.89.1's
+// Win32 tray menu: a click on item i resolves through menuNodes[i], whose
+// element 0 is the root, so it fires item i-1's ID.  If a go-gui upgrade fixes
+// that, this test still passes but the real menu will be wrong: the shortcut
+// comment on trayMenu is the reminder to re-check it.
+func TestTrayMenuIDsCompensateGoGUIRoot(t *testing.T) {
+	items := trayMenu("Service: Running")
+
+	nodes := []string{""} // go-gui's root menuNode
+	for _, it := range items {
+		nodes = append(nodes, it.ID)
+	}
+
+	want := map[int]string{
+		2: trayActionOpen,
+		3: trayActionLog,
+		4: trayActionFlush,
+		6: trayActionExit,
+	}
+	for click, action := range want {
+		if click >= len(nodes) {
+			t.Fatalf("click %d has no menu node", click)
+		}
+		if got := nodes[click]; got != action {
+			t.Errorf("click on item %d fires %q, want %q", click, got, action)
+		}
+	}
+}
+
+// TestCloseWindowSavesSize proves Tray Exit captures the live window size
+// before destroying the window; the final save after RunApp cannot read it.
+func TestCloseWindowSavesSize(t *testing.T) {
+	app := settingsApp()
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	ww, wh := w.WindowSize()
+	app.closeWindow(w)
+
+	if app.settings.Width != ww || app.settings.Height != wh {
+		t.Errorf("saved size = %dx%d, want %dx%d",
+			app.settings.Width, app.settings.Height, ww, wh)
+	}
+	if !w.CloseRequested() {
+		t.Error("closeWindow did not request the close")
+	}
+}
+
+// TestSaveSizeIgnoresNonNormalWindow proves a maximized or minimized window's
+// transient size never replaces the size the user chose in the normal state.
+func TestSaveSizeIgnoresNonNormalWindow(t *testing.T) {
+	orig := windowNormal
+	windowNormal = func(string) bool { return false }
+	defer func() { windowNormal = orig }()
+
+	app := &App{settings: settings{Width: 1145, Height: 858}}
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{Width: 1278, Height: 1031})
+
+	app.saveSize(w)
+
+	if app.settings.Width != 1145 || app.settings.Height != 858 {
+		t.Errorf("size = %dx%d after a non-normal save, want 1145x858",
+			app.settings.Width, app.settings.Height)
+	}
+}
+
+// TestSaveSizeUsesNormalWindow proves a normal window's live size is kept.
+func TestSaveSizeUsesNormalWindow(t *testing.T) {
+	orig := windowNormal
+	windowNormal = func(string) bool { return true }
+	defer func() { windowNormal = orig }()
+
+	app := &App{}
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{Width: 1145, Height: 858})
+
+	app.saveSize(w)
+
+	if app.settings.Width != 1145 || app.settings.Height != 858 {
+		t.Errorf("size = %dx%d, want 1145x858",
+			app.settings.Width, app.settings.Height)
+	}
+}
+
+// TestCloseToTrayPersistsSize proves the close-to-tray path writes the size
+// before hiding: the process keeps running, so waiting for RunApp to return
+// would lose the size on a crash or forced exit.
+func TestCloseToTrayPersistsSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gui.json")
+	app := settingsApp()
+	app.guiPath = path
+	app.settings.CloseToTray = true
+	app.tray.active.Store(true)
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+	ww, wh := w.WindowSize()
+
+	app.closeWindow(w)
+
+	if w.CloseRequested() {
+		t.Fatal("close-to-tray requested a real close")
+	}
+	got := loadSettings(path)
+	if got.Width != ww || got.Height != wh {
+		t.Errorf("persisted size = %dx%d, want %dx%d", got.Width, got.Height, ww, wh)
+	}
+}
+
+// TestTrayConfigCarriesTooltip proves the tray config carries the app name;
+// a Windows-only shim turns it into the standard tooltip (go-gui omits
+// NIF_SHOWTIP, which would otherwise suppress it).
+func TestTrayConfigCarriesTooltip(t *testing.T) {
+	cfg := (&App{}).trayConfig(nil, "Service: Running")
+	if cfg.Tooltip != windowTitle {
+		t.Errorf("tray tooltip = %q, want %q", cfg.Tooltip, windowTitle)
+	}
+}
+
+// TestTrayActionsDoNotRaiseWindow proves opening a log file or clearing the
+// caches leaves a hidden window hidden: only Open asks to see the app.
+func TestTrayActionsDoNotRaiseWindow(t *testing.T) {
+	orig := openPath
+	openPath = func(string) error { return nil }
+	defer func() { openPath = orig }()
+
+	for _, id := range []string{trayActionLog, trayActionFlush} {
+		t.Run(id, func(t *testing.T) {
+			app := settingsApp()
+			w := newSettingsWindow(t, app)
+			w.TestRender(nil)
+			w.Hide()
+
+			app.handleTrayAction(w, id)
+
+			if w.IsVisible() {
+				t.Errorf("%s raised the window, want it to stay hidden", id)
+			}
+		})
+	}
+}
+
+// TestTrayStatusText proves the status row never claims protection for a
+// service that is not installed, stopped, or unverified.
+func TestTrayStatusText(t *testing.T) {
+	tests := []struct {
+		name string
+		snap snapshot
+		want string
+	}{
+		{"unknown", snapshot{}, "Service: Unknown"},
+		{"not installed", snapshot{scmState: "not installed"}, "Service: Not installed"},
+		{"running", snapshot{installed: true, scmState: "running"}, "Service: Running"},
+		{"stopped", snapshot{installed: true, scmState: "stopped"}, "Service: Stopped"},
+		{"unverified", snapshot{installed: true, scmState: "running", trust: trustUnverified}, "Service: Unverified"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trayStatusText(tt.snap); got != tt.want {
+				t.Errorf("trayStatusText = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTrayBehaviourSwitchesOnlyWithTray proves the close/minimize options stay
+// hidden until the tray icon is enabled.
+func TestTrayBehaviourSwitchesOnlyWithTray(t *testing.T) {
+	app := settingsApp()
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	for _, id := range []string{"gui:tray:autostart", "gui:tray:minimize", "gui:tray:close"} {
+		if len(w.ResolveID(id)) != 0 {
+			t.Errorf("%q rendered with the tray off", id)
+		}
+	}
+
+	app.settings.Tray = true
+	w.InvalidateLayout()
+	w.TestRender(nil)
+
+	for _, id := range []string{"gui:tray:autostart", "gui:tray:minimize", "gui:tray:close"} {
+		if len(w.ResolveID(id)) == 0 {
+			t.Errorf("%q missing with the tray on", id)
+		}
+	}
+}
+
+// TestTrayEnableFailureReverts proves a platform that cannot create the icon
+// leaves the setting off instead of persisting a dead toggle.
+func TestTrayEnableFailureReverts(t *testing.T) {
+	app := settingsApp()
+	w := newSettingsWindow(t, app)
+
+	setTrayEnabled(gogui.EventCtx{Window: w}, true)
+
+	if app.settings.Tray {
+		t.Error("settings.Tray = true after tray creation failed")
+	}
+	if app.tray.active.Load() {
+		t.Error("tray.active = true after tray creation failed")
+	}
+}
+
+// TestTrayToggleSyncsMinimize proves the poller's atomic copy follows the
+// setting change, since the poller cannot read the UI-thread settings.
+func TestTrayToggleSyncsMinimize(t *testing.T) {
+	app := settingsApp()
+	app.settings.Tray = true
+	w := newSettingsWindow(t, app)
+
+	toggleTrayBehaviour(gogui.EventCtx{Window: w}, func(s *settings) {
+		s.MinimizeToTray = true
+	})
+
+	if !app.tray.minimize.Load() {
+		t.Error("tray.minimize = false after enabling Minimize to tray")
+	}
+}
+
+// TestDisableTrayClearsStartWithWindows proves turning the tray off drops the
+// startup preference (and the logon task), since there is no tray to start into.
+func TestDisableTrayClearsStartWithWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("would delete the machine's real SigilDNS logon task")
+	}
+
+	app := settingsApp()
+	app.settings.Tray = true
+	app.settings.StartWithWindows = true
+	w := newSettingsWindow(t, app)
+
+	setTrayEnabled(gogui.EventCtx{Window: w}, false)
+
+	if app.settings.StartWithWindows {
+		t.Error("settings.StartWithWindows = true after disabling the tray")
 	}
 }
 

@@ -123,6 +123,8 @@ func elevateActionFor(a guiAction) (elevate.Action, bool) {
 		return elevate.ActionServiceStop, true
 	case actionRefreshLists:
 		return elevate.ActionRefreshLists, true
+	case actionClearCache:
+		return elevate.ActionClearCache, true
 	case actionSaveProfile, actionAddProfile, actionRenameProfile, actionDeleteProfile, actionSetActive, actionSaveLog:
 		return elevate.ActionApply, true
 	default:

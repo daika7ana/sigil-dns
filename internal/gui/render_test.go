@@ -57,7 +57,7 @@ func TestStatusLayout(t *testing.T) {
 
 // TestSettingsLayout proves the Settings page lays out the same way.
 func TestSettingsLayout(t *testing.T) {
-	ids := []string{"gui:card:service", "gui:card:profiles", "gui:card:editor"}
+	ids := []string{"gui:card:service", "gui:card:tray", "gui:card:profiles", "gui:card:editor"}
 
 	for _, size := range []struct {
 		name string
@@ -78,7 +78,7 @@ func TestSettingsLayoutWhileStopped(t *testing.T) {
 	app.page = pageSettings
 
 	assertPageLayout(t, app, defaultWidth, defaultHeight,
-		[]string{"gui:card:service", "gui:card:profiles", "gui:card:editor"})
+		[]string{"gui:card:service", "gui:card:tray", "gui:card:profiles", "gui:card:editor"})
 }
 
 // TestRulesLayout proves the Rules page lays out: both editor cards are

@@ -24,6 +24,7 @@ func TestValidate(t *testing.T) {
 	}{
 		{"enable", Request{Action: ActionEnable, UUID: "u"}, false},
 		{"restore", Request{Action: ActionRestore, UUID: "u"}, false},
+		{"clear cache", Request{Action: ActionClearCache, UUID: "u"}, false},
 		{"apply", Request{Action: ActionApply, UUID: "u"}, false},
 		{"unknown action", Request{Action: "frobnicate", UUID: "u"}, true},
 		{"missing uuid", Request{Action: ActionEnable}, true},
@@ -71,6 +72,11 @@ func TestValidatePatchShape(t *testing.T) {
 			wantErr: true,
 		},
 		{name: "service action empty patch", req: Request{Action: ActionServiceStop, UUID: "u"}, wantErr: false},
+		{
+			name:    "clear cache takes no patch",
+			req:     Request{Action: ActionClearCache, UUID: "u", Patch: Patch{ActiveProfile: new("x")}},
+			wantErr: true,
+		},
 		{
 			name:    "enable takes no patch",
 			req:     Request{Action: ActionEnable, UUID: "u", Patch: Patch{ActiveProfile: new("x")}},

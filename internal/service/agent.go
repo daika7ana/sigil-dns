@@ -72,6 +72,9 @@ type Lifecycle interface {
 	// RefreshLists re-downloads the active profile's filter lists and rebuilds
 	// the filter engine without tearing down interception.
 	RefreshLists(ctx context.Context) (err error)
+
+	// ClearCache clears the resolver cache and the OS DNS cache.
+	ClearCache(ctx context.Context) (err error)
 }
 
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
@@ -213,6 +216,15 @@ func (l *lockedLifecycle) RefreshLists(ctx context.Context) (err error) {
 	return l.lc.RefreshLists(ctx)
 }
 
+// ClearCache implements ipc.CacheClearer, serialized with the other lifecycle
+// calls.
+func (l *lockedLifecycle) ClearCache(ctx context.Context) (err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.lc.ClearCache(ctx)
+}
+
 // Start binds the IPC listeners, runs crash recovery, then enables
 // interception.  A recovery or enable failure is returned so the service
 // stops: a running service always means protection is on, never a half state.
@@ -329,7 +341,7 @@ func (a *Agent) startIPC() (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc).SetListRefresher(a.lc)
+	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc).SetListRefresher(a.lc).SetCacheClearer(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
 			a.logger.Error("ipc control serve stopped", "err", sErr)

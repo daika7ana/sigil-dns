@@ -59,6 +59,7 @@ type resolverHandle interface {
 	SyntheticName() string
 	UDPAddrs() []string
 	RefreshLists(ctx context.Context) error
+	ClearCache()
 }
 
 // Lifecycle owns the resolver, state store, and interception controller.
@@ -332,6 +333,17 @@ func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
 	return l.res.RefreshLists(ctx)
 }
 
+// ClearCache clears the running resolver's cache and the OS DNS cache.  A
+// stopped resolver still gets the OS flush: there is no in-process cache to
+// clear, and the Windows cache may hold an answer that predates a rule change.
+func (l *Lifecycle) ClearCache(ctx context.Context) (err error) {
+	if l.res != nil {
+		l.res.ClearCache()
+	}
+
+	return FlushDNS(ctx)
+}
+
 // resolverConfig builds the resolver configuration from the lifecycle config.
 func (l *Lifecycle) resolverConfig() (cfg resolver.Config) {
 	return resolver.Config{
@@ -411,19 +423,36 @@ func (l *Lifecycle) release() {
 
 // flush flushes the OS DNS cache.  It is a no-op off Windows.
 func (l *Lifecycle) flush(ctx context.Context) {
+	if err := FlushDNS(ctx); err != nil {
+		l.logger.WarnContext(ctx, "ipconfig /flushdns failed", "err", err)
+	}
+}
+
+// FlushDNS clears the Windows resolver cache.  ipconfig.exe is resolved
+// through the system API, never %SystemRoot% or PATH, so an inherited
+// environment cannot steer the elevated helper to another executable.
+// It is a no-op off Windows.
+func FlushDNS(ctx context.Context) (err error) {
 	if runtime.GOOS != "windows" {
-		return
+		return nil
 	}
 
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(c, "ipconfig", "/flushdns")
+	ipconfig, pathErr := ipconfigPath()
+	if pathErr != nil {
+		return pathErr
+	}
+
+	cmd := exec.CommandContext(c, ipconfig, "/flushdns")
 	hideWindow(cmd)
 
-	if err := cmd.Run(); err != nil {
-		l.logger.WarnContext(ctx, "ipconfig /flushdns failed", "err", err)
+	if err = cmd.Run(); err != nil {
+		return fmt.Errorf("ipconfig /flushdns: %w", err)
 	}
+
+	return nil
 }
 
 // upstreamsOrDefault returns the configured upstreams or the resolver default.

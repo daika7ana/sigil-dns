@@ -103,6 +103,12 @@ func run(args []string) (err error) {
 	case "--gui":
 		return cmdGUI(rest)
 	case "--tray":
+		// A gui build starts the window hidden to the tray; other builds keep
+		// the retired tray stub, which reports ErrNotBuilt.
+		if guiErr := gui.RunBackground(); !errors.Is(guiErr, gui.ErrNotBuilt) {
+			return guiErr
+		}
+
 		return cmdTray(rest)
 	case "-h", "--help", "help":
 		usage()
@@ -536,6 +542,7 @@ type svcDaemon interface {
 	Disable(ctx context.Context) (err error)
 	Restore(ctx context.Context) (err error)
 	RefreshLists(ctx context.Context) (err error)
+	ClearCache(ctx context.Context) (err error)
 }
 
 // serviceLifecycle lets crash recovery run even when the config is corrupt:
@@ -587,6 +594,11 @@ func (s *serviceLifecycle) Restore(ctx context.Context) (err error) { return s.i
 // RefreshLists re-downloads the active profile's filter lists (SPEC §15.1).
 func (s *serviceLifecycle) RefreshLists(ctx context.Context) (err error) {
 	return s.inner.RefreshLists(ctx)
+}
+
+// ClearCache clears the resolver cache and the Windows DNS cache.
+func (s *serviceLifecycle) ClearCache(ctx context.Context) (err error) {
+	return s.inner.ClearCache(ctx)
 }
 
 // Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
@@ -977,7 +989,7 @@ Commands:
   service stop       stop the Windows service
   --service          run the service host (invoked by the SCM)
   --gui              run the status window (requires a -tags gui build)
-  --tray             run the tray UI (requires a -tags tray build)
+  --tray             start hidden to the system tray (gui build; tray setting on)
 
 Flags:
   --upstream <url>      upstream DNS URL (highest precedence)

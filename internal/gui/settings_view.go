@@ -31,6 +31,7 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 
 	content = append(content,
 		serviceCard(t, app),
+		trayCard(t, app),
 		profilesCard(t, app, floor),
 		editorCard(t, app, floor),
 		versionCaption(t, app),

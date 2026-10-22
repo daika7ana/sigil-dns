@@ -5,3 +5,7 @@ package gui
 // Run starts the status window.  Stub: the default build has no GUI, so this
 // returns ErrNotBuilt and the caller stays headless (SPEC §15).
 func Run() (err error) { return ErrNotBuilt }
+
+// RunBackground is Run started hidden to the tray.  Stub: the default build has
+// no GUI.
+func RunBackground() (err error) { return ErrNotBuilt }
