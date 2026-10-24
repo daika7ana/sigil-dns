@@ -19,10 +19,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	want := &State{
-		Mode:      ModeOn,
-		Intercept: MechanismNRPT,
-		Upstream:  "https://freedns.controld.com/p0",
-		Dirty:     true,
+		Mode:        ModeOn,
+		Intercept:   MechanismNRPT,
+		Upstream:    "https://freedns.controld.com/p0",
+		Dirty:       true,
+		NameServers: []string{"127.0.0.1"},
 	}
 	if err := s.Save(want); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -38,8 +39,49 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if !got.Dirty || got.Mode != ModeOn || got.Upstream != want.Upstream {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
+	if len(got.NameServers) != 1 || got.NameServers[0] != "127.0.0.1" {
+		t.Errorf("NameServers = %v, want [127.0.0.1]", got.NameServers)
+	}
 	if got.Timestamp.IsZero() {
 		t.Error("Timestamp not set")
+	}
+}
+
+// TestSaveReplacesCorruptFile pins A6: Save must overwrite an unparseable state
+// file instead of returning its load error.
+func TestSaveReplacesCorruptFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(path)
+	if _, err := s.Load(); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Load = %v, want ErrCorrupt", err)
+	}
+	if err := s.Save(&State{Mode: ModeOff}); err != nil {
+		t.Fatalf("Save over corrupt state: %v", err)
+	}
+
+	got, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if got.Mode != ModeOff {
+		t.Fatalf("Mode = %q, want %q", got.Mode, ModeOff)
+	}
+}
+
+// TestLoadRejectsUnknownMode pins A6: valid JSON with no usable mode cannot
+// gate recovery and must be treated as corrupt.
+func TestLoadRejectsUnknownMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewStore(path).Load(); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Load = %v, want ErrCorrupt", err)
 	}
 }
 

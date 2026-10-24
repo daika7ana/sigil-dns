@@ -13,7 +13,7 @@ func New(*slog.Logger) Controller { return stub{} }
 type stub struct{}
 
 // Enable implements Controller.
-func (stub) Enable(context.Context, []string) error { return ErrUnsupported }
+func (stub) Enable(context.Context, []string, []string) error { return ErrUnsupported }
 
 // Disable implements Controller.
 func (stub) Disable(context.Context) error { return ErrUnsupported }

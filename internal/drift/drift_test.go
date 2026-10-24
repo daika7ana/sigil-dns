@@ -3,10 +3,21 @@ package drift
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestExpectedNamespaces pins the bypass-domain to NRPT-namespace mapping used
+// by the drift comparison.
+func TestExpectedNamespaces(t *testing.T) {
+	got := expectedNamespaces([]string{"*.Corp.Example", "", "corp.example", "local.example."})
+	want := []string{"", "corp.example", "local.example"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expectedNamespaces = %q, want %q", got, want)
+	}
+}
 
 func TestDecide(t *testing.T) {
 	cases := []struct {
@@ -43,6 +54,70 @@ func TestDecide(t *testing.T) {
 			name:     "nothing expected",
 			expected: State{},
 			actual:   State{NRPTOurs: false},
+			want:     DecisionOK,
+		},
+		{
+			name:     "catch-all missing while an exemption survives",
+			expected: State{NRPTOurs: true, Namespaces: []string{"", "corp.example"}},
+			actual:   State{NRPTOurs: true, Namespaces: []string{"corp.example"}},
+			want:     DecisionApply,
+		},
+		{
+			name:     "bypass exemption missing",
+			expected: State{NRPTOurs: true, Namespaces: []string{"", "corp.example"}},
+			actual:   State{NRPTOurs: true, Namespaces: []string{""}},
+			want:     DecisionApply,
+		},
+		{
+			name:     "stale own rule is drift",
+			expected: State{NRPTOurs: true, Namespaces: []string{""}},
+			actual:   State{NRPTOurs: true, Namespaces: []string{"", "old.example"}},
+			want:     DecisionApply,
+		},
+		{
+			name: "catch-all name servers differ",
+			expected: State{
+				NRPTOurs:   true,
+				Namespaces: []string{""},
+				Servers:    map[string][]string{"": {"127.0.0.1"}},
+			},
+			actual: State{
+				NRPTOurs:   true,
+				Namespaces: []string{""},
+				Servers:    map[string][]string{"": {"127.0.0.1", "::1"}},
+			},
+			want: DecisionApply,
+		},
+		{
+			name: "catch-all name servers match",
+			expected: State{
+				NRPTOurs:   true,
+				Namespaces: []string{""},
+				Servers:    map[string][]string{"": {"::1", "127.0.0.1"}},
+			},
+			actual: State{
+				NRPTOurs:   true,
+				Namespaces: []string{""},
+				Servers:    map[string][]string{"": {"0:0:0:0:0:0:0:1", "127.0.0.1"}},
+			},
+			want: DecisionOK,
+		},
+		{
+			name:     "foreign conflict with missing ours",
+			expected: State{NRPTOurs: true, Namespaces: []string{""}},
+			actual:   State{NRPTConflicts: []string{"vpn|."}},
+			want:     DecisionApply,
+		},
+		{
+			name:     "conflict only when ours is present",
+			expected: State{NRPTOurs: true, Namespaces: []string{""}},
+			actual:   State{NRPTOurs: true, Namespaces: []string{""}, NRPTConflicts: []string{"vpn|."}},
+			want:     DecisionConflict,
+		},
+		{
+			name:     "namespaces compare dot-normalized",
+			expected: State{NRPTOurs: true, Namespaces: []string{" .Corp.Example. "}},
+			actual:   State{NRPTOurs: true, Namespaces: []string{"corp.example"}},
 			want:     DecisionOK,
 		},
 	}
@@ -143,9 +218,10 @@ func TestReconcilerGivesUpOnPersistentDrift(t *testing.T) {
 		t.Fatal("Run did not give up")
 	}
 
-	// Attempts 1 and 2 re-apply; attempt 3 gives up and auto-disables.
-	if got := ap.applies.Load(); got != 2 {
-		t.Errorf("apply calls = %d, want 2", got)
+	// Re-applies 1 and 2 fail their re-probe; the third failed re-apply
+	// auto-disables.
+	if got := ap.applies.Load(); got != 3 {
+		t.Errorf("apply calls = %d, want 3", got)
 	}
 	if got := dis.disables.Load(); got != 1 {
 		t.Errorf("disable calls = %d, want 1", got)
@@ -231,6 +307,69 @@ func TestReconcilerConflictDoesNotFight(t *testing.T) {
 	}
 	if got := dis.disables.Load(); got != 0 {
 		t.Errorf("disable calls = %d, want 0", got)
+	}
+}
+
+func TestReconcilerConflictDoesNotResetStrikes(t *testing.T) {
+	conflict := Observation{
+		Expected: State{NRPTOurs: true, Namespaces: []string{""}},
+		Actual:   State{NRPTOurs: true, Namespaces: []string{""}, NRPTConflicts: []string{"vpn|."}},
+	}
+	// Two failed re-applies, one conflict tick, then a third failed re-apply.
+	p := &fakeProber{fn: func(call int) (Observation, error) {
+		if call == 5 {
+			return conflict, nil
+		}
+
+		return driftObs(), nil
+	}}
+	ap := &fakeApplier{}
+	dis := &fakeDisabler{}
+
+	r := NewReconciler(Options{Prober: p, Applier: ap, Disabler: dis, Interval: time.Millisecond, MaxAttempts: 3})
+
+	done, cancel := runAsync(r)
+	defer cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a conflict tick reset the strike count")
+	}
+
+	if got := dis.disables.Load(); got != 1 {
+		t.Errorf("disable calls = %d, want 1", got)
+	}
+}
+
+func TestReconcileBypassOnlyDriftNeverDisables(t *testing.T) {
+	obs := Observation{
+		Expected: State{NRPTOurs: true, Namespaces: []string{"", "corp.example"}},
+		Actual:   State{NRPTOurs: true, Namespaces: []string{""}},
+	}
+	p := &fakeProber{fn: func(int) (Observation, error) { return obs, nil }}
+	ap := &fakeApplier{}
+	dis := &fakeDisabler{}
+
+	// MaxAttempts 1 would disable on the first strike if best-effort bypass
+	// drift were ever counted.
+	r := NewReconciler(Options{Prober: p, Applier: ap, Disabler: dis, MaxAttempts: 1})
+
+	attempts := 0
+	for i := 0; i < 5; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatal("reconcile stopped for a bypass-only drift")
+		}
+	}
+
+	if got := ap.applies.Load(); got != 1 {
+		t.Errorf("apply calls = %d, want 1 (retry once, then stop)", got)
+	}
+	if got := dis.disables.Load(); got != 0 {
+		t.Errorf("disable calls = %d, want 0", got)
+	}
+	if attempts != 0 {
+		t.Errorf("attempts = %d, want 0", attempts)
 	}
 }
 

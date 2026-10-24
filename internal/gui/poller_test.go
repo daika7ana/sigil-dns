@@ -203,8 +203,13 @@ func TestSetPageSignalsRefresh(t *testing.T) {
 // window to the tray host; the branch must run even though a minimized window
 // is normally unfocused too.
 func TestPollerMinimizeQuitsWindow(t *testing.T) {
+	origStart := hostStart
+	hostStart = func() error { return nil }
+	t.Cleanup(func() { hostStart = origStart })
+
 	src := &countingSource{full: sampleSnapshot(), live: liveOnly(sampleSnapshot())}
 	app := statusApp()
+	app.tray.want.Store(true)
 	app.tray.minimize.Store(true)
 	app.tray.minimized = func() bool { return true }
 

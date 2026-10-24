@@ -324,6 +324,11 @@ func (c *Config) normalize() {
 		} else if p.Cache.SizeBytes == 0 {
 			p.Cache.SizeBytes = DefaultCacheSizeBytes
 		}
+		// Only an absent field (nil) gets the default: an explicit empty list is
+		// deliberate (NextDNS Ultralow must stay bootstrap-free).
+		if p.Bootstrap == nil {
+			p.Bootstrap = []string{resolver.DefaultBootstrap}
+		}
 		p.filteringDefaults()
 
 		// Display-only metadata: trim only, never validate.
@@ -565,6 +570,12 @@ func (p *Profile) ApplySelection(sel providers.Selection) (err error) {
 
 	p.Upstreams = ep.Upstreams
 	p.Bootstrap = ep.Bootstrap
+	if p.Bootstrap == nil {
+		// Preserve bootstrap-free expansions (NextDNS Ultralow, or a Custom
+		// profile with no bootstrap) as explicit empty, which normalize must
+		// not turn into the default.
+		p.Bootstrap = []string{}
+	}
 
 	provider := strings.TrimSpace(sel.Provider)
 	variant := strings.TrimSpace(sel.Variant)

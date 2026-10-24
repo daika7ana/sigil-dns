@@ -756,7 +756,7 @@ func cmdServiceHost(args []string) (err error) {
 	slc.stop = agent.RequestStop
 	agent.SetConfigPath(o.configPath)
 	agent.SetReloader(slc.Reload)
-	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l, agent.RequestStop))
+	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l, agent.RequestStop, agent.Interlock()))
 
 	return service.Run(agent)
 }

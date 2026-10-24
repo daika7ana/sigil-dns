@@ -17,9 +17,11 @@ var ErrUnsupported = errors.New("dns interception is not supported on this platf
 
 // Controller applies and removes the DNS interception.
 type Controller interface {
-	// Enable turns interception on, exempting the bypass namespaces (domains
-	// to resolve with the system's own DNS).  It must be idempotent.
-	Enable(ctx context.Context, bypass []string) error
+	// Enable turns interception on, sending queries to servers (IP literals)
+	// and exempting the bypass namespaces (domains to resolve with the
+	// system's own DNS).  An empty servers list means the dual-stack loopback
+	// default.  It must be idempotent.
+	Enable(ctx context.Context, bypass []string, servers []string) error
 
 	// Disable removes interception.  It must be idempotent.
 	Disable(ctx context.Context) error
@@ -28,16 +30,24 @@ type Controller interface {
 // NRPTState is the observed NRPT state: whether our rule is present and the
 // foreign rules that may conflict.
 type NRPTState struct {
+	// Namespaces are our own rules' namespaces, dot-normalized.
+	Namespaces []string
+
+	// Servers maps each own rule's normalized namespace to its NameServers.
+	// A bypass exemption has an empty (nil) list.
+	Servers map[string][]string
+
 	// Conflicts are foreign equal-or-more-specific rules (DisplayName|Namespace).
 	Conflicts []string
 
-	// Ours is true when our own rule is present.
+	// Ours is true when any of our own rules is present.
 	Ours bool
 }
 
-// nrptNamespace normalizes a domain to NRPT suffix form (leading dot), or ""
-// when nothing usable remains.
-func nrptNamespace(domain string) string {
+// NRPTNamespace normalizes a bypass domain to its NRPT suffix form (leading
+// dot), or "" when nothing usable remains.  Drift uses the same mapping when it
+// builds the expected rule set.
+func NRPTNamespace(domain string) string {
 	name := strings.TrimSuffix(strings.TrimSpace(domain), ".")
 	name = strings.TrimPrefix(name, "*.")
 	if name == "*" {
@@ -53,14 +63,19 @@ func nrptNamespace(domain string) string {
 // nrptNormalize reduces an NRPT namespace to its dot-free comparison key.
 func nrptNormalize(ns string) string { return strings.Trim(strings.TrimSpace(ns), ".") }
 
-// nrptEnableScript builds the PowerShell that re-adds our catch-all rule plus an
-// exemption (no name servers) per bypass namespace, then prints one rule=<ns>
-// line per our rule so the caller can verify what actually took effect.
-func nrptEnableScript(namespaces []string) string {
+// nrptEnableScript builds the PowerShell that re-adds our catch-all rule on
+// servers plus an exemption (no name servers) per bypass namespace, then prints
+// one rule=<ns> line per our rule so the caller can verify what actually took
+// effect.
+func nrptEnableScript(namespaces, servers []string) string {
+	if len(servers) == 0 {
+		servers = []string{"127.0.0.1", "::1"}
+	}
+
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
-	b.WriteString("Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n")
-	b.WriteString("Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'Sigil DNS' | Out-Null\n")
+	b.WriteString("Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | Remove-DnsClientNrptRule -Force\n")
+	fmt.Fprintf(&b, "Add-DnsClientNrptRule -Namespace '.' -NameServers %s -DisplayName 'Sigil DNS' | Out-Null\n", psList(servers))
 	for _, ns := range namespaces {
 		// A rejected exemption must not abort the whole enable: verification
 		// below reports it and the fallback retries it with explicit servers.
@@ -97,7 +112,7 @@ func nrptFallbackScript(namespaces []string, servers []string) string {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
 	for _, ns := range namespaces {
-		fmt.Fprintf(&b, "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' -and $_.Namespace -eq %s } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue\n", psQuote(ns))
+		fmt.Fprintf(&b, "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' -and $_.Namespace -eq %s } | Remove-DnsClientNrptRule -Force\n", psQuote(ns))
 		fmt.Fprintf(&b, "try { Add-DnsClientNrptRule -Namespace %s -NameServers %s -DisplayName 'Sigil DNS' -ErrorAction Stop | Out-Null } catch { }\n", psQuote(ns), psList(servers))
 	}
 	b.WriteString(nrptPrintRules)

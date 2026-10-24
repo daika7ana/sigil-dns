@@ -50,12 +50,14 @@ type testIntercept struct {
 	disableErr    error
 	enabled       int
 	disabled      int
+	servers       []string
 	dirtyAtEnable *bool
 }
 
-func (i *testIntercept) Enable(_ context.Context, _ []string) error {
+func (i *testIntercept) Enable(_ context.Context, _, servers []string) error {
 	*i.events = append(*i.events, "intercept-enable")
 	i.enabled++
+	i.servers = servers
 	if st, err := i.store.Load(); err == nil {
 		dirty := st.Dirty
 		i.dirtyAtEnable = &dirty
@@ -237,6 +239,13 @@ func TestLifecycleInvariants(t *testing.T) {
 				}
 				if st.Mode != state.ModeOn || !st.Dirty {
 					t.Fatalf("state = %+v, want mode=on dirty=true", st)
+				}
+				// NRPT must advertise only the addresses that actually bound.
+				if !reflect.DeepEqual(st.NameServers, []string{"127.0.0.1"}) {
+					t.Fatalf("NameServers = %v, want [127.0.0.1]", st.NameServers)
+				}
+				if !reflect.DeepEqual(e.ic.servers, st.NameServers) {
+					t.Fatalf("intercept servers = %v, want %v", e.ic.servers, st.NameServers)
 				}
 			},
 		},
@@ -426,7 +435,7 @@ func TestLifecycleInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "restore with corrupt state still disables interception",
+			name: "restore with corrupt state disables and recovers",
 			setup: func(t *testing.T, e *testEnv) {
 				t.Helper()
 				if err := os.WriteFile(e.path, []byte("{not valid json"), 0o600); err != nil {
@@ -436,17 +445,21 @@ func TestLifecycleInvariants(t *testing.T) {
 			run: func(ctx context.Context, e *testEnv) error { return e.lc.Restore(ctx) },
 			check: func(t *testing.T, e *testEnv, err error) {
 				t.Helper()
-				if err == nil {
-					t.Fatal("Restore should surface the corrupt-state error")
-				}
-				if errors.Is(err, state.ErrNoState) {
-					t.Fatalf("err = %v, corrupt is not missing", err)
-				}
-				if !strings.Contains(err.Error(), "parsing state") {
-					t.Fatalf("err = %v, want the original parse error", err)
+				if err != nil {
+					t.Fatalf("Restore: %v, want recovery", err)
 				}
 				if e.ic.disabled != 1 {
 					t.Fatalf("intercept disable = %d, want 1 (best-effort cleanup)", e.ic.disabled)
+				}
+				if _, sErr := os.Stat(e.path + ".corrupt"); sErr != nil {
+					t.Fatalf("corrupt state was not quarantined: %v", sErr)
+				}
+				st, lErr := e.store.Load()
+				if lErr != nil {
+					t.Fatalf("Load after recovery: %v", lErr)
+				}
+				if st.Mode != state.ModeOff || st.Dirty {
+					t.Fatalf("state = %+v, want a clean off state", st)
 				}
 			},
 		},

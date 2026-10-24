@@ -120,6 +120,11 @@ func NewAgent(lc Lifecycle, logger *slog.Logger, endpoint string) (a *Agent) {
 // Start.
 func (a *Agent) SetWatcher(w *drift.Reconciler) { a.watcher = w }
 
+// Interlock is the mutex that serializes lifecycle operations.  The drift
+// reconciler holds it across a re-apply so a concurrent disable cannot
+// interleave between the state check and the NRPT write.
+func (a *Agent) Interlock() *sync.Mutex { return &a.lc.mu }
+
 // RequestStop asks the service host to stop the service.  It is called when
 // drift can no longer be reconciled, so the service goes from on to off
 // instead of running unprotected.
@@ -307,6 +312,11 @@ func (a *Agent) cleanup(ctx context.Context) (err error) {
 		if errors.Is(sErr, state.ErrNoState) {
 			// Never enabled: nothing to restore.
 			return nil
+		}
+		if errors.Is(sErr, state.ErrCorrupt) {
+			// Disable restores interception and rewrites a clean off state, so a
+			// file corrupted mid-run still disarms on stop.
+			return a.lc.Disable(ctx)
 		}
 
 		return sErr

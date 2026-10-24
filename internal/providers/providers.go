@@ -702,11 +702,16 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 	}
 }
 
-// decodePathID URL-decodes a DoH path into an id.  An empty path means no id.
+// decodePathID URL-decodes the leading DoH path segment into an id, the
+// position NextDNS/ControlD put it in.  Later segments (a device or client
+// name) are not part of the id.  An empty path means no id.
 func decodePathID(path string) (id string, ok bool) {
 	path = strings.Trim(path, "/")
 	if path == "" {
 		return "", false
+	}
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		path = path[:i]
 	}
 
 	decoded, err := url.PathUnescape(path)

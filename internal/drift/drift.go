@@ -13,8 +13,12 @@ package drift
 import (
 	"context"
 	"log/slog"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/daika7ana/sigil-dns/internal/intercept"
 )
 
 // Defaults for the reconcile loop (SPEC §4.6 specifies 30-60 s).
@@ -25,6 +29,14 @@ const (
 
 // State is an abstraction of the interception state used for comparisons.
 type State struct {
+	// Namespaces are the expected (or observed) NRPT namespaces, dot-free.
+	Namespaces []string
+
+	// Servers maps a namespace to its NameServers when that is part of the
+	// expectation (the catch-all). A namespace absent from the map is not
+	// compared.
+	Servers map[string][]string
+
 	// NRPTConflicts are foreign equal-or-more-specific NRPT rules.
 	NRPTConflicts []string
 
@@ -49,19 +61,157 @@ const (
 
 // Decide compares the expected state with the actual state.  It is pure.
 //
+//   - any expected namespace missing from the actual rules -> DecisionApply,
+//     before the conflict check so a foreign rule never masks a missing one;
 //   - a foreign NRPT rule conflicts only when we rely on NRPT -> DecisionConflict;
-//   - our missing NRPT rule -> DecisionApply;
 //   - otherwise -> DecisionOK.
 func Decide(expected, actual State) (d Decision) {
-	if expected.NRPTOurs && len(actual.NRPTConflicts) > 0 {
-		return DecisionConflict
-	}
-
-	if expected.NRPTOurs && !actual.NRPTOurs {
+	if expectedMissing(expected, actual) {
 		return DecisionApply
 	}
 
+	if expected.NRPTOurs && actual.NRPTOurs && len(actual.NRPTConflicts) > 0 {
+		return DecisionConflict
+	}
+
 	return DecisionOK
+}
+
+// namespaceKey normalizes an NRPT namespace to its dot-free comparison key.
+// DNS names compare case-insensitively.
+func namespaceKey(ns string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(ns), "."))
+}
+
+// expectedNamespaces is the catch-all plus every bypass namespace, deduped and
+// normalized for comparison with the observed rule set.
+func expectedNamespaces(bypass []string) (out []string) {
+	seen := map[string]bool{"": true}
+	out = append(out, "") // the catch-all "."
+
+	for _, domain := range bypass {
+		ns := intercept.NRPTNamespace(domain)
+		if ns == "" {
+			continue
+		}
+		key := namespaceKey(ns)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+
+	return out
+}
+
+// expectedMissing reports whether the actual rule set differs from expected:
+// a missing expected namespace, a stale extra "Sigil DNS" rule, or a
+// catch-all with the wrong name servers all count as drift.
+func expectedMissing(expected, actual State) bool {
+	if len(expected.Namespaces) == 0 {
+		// Legacy callers only set the boolean.
+		return expected.NRPTOurs && !actual.NRPTOurs
+	}
+
+	want := make(map[string]bool, len(expected.Namespaces))
+	for _, ns := range expected.Namespaces {
+		want[namespaceKey(ns)] = true
+	}
+	present := make(map[string]bool, len(actual.Namespaces))
+	for _, ns := range actual.Namespaces {
+		key := namespaceKey(ns)
+		present[key] = true
+
+		if !want[key] {
+			// Our own stale rule (e.g. a removed bypass exemption).
+			return true
+		}
+	}
+	for key := range want {
+		if !present[key] {
+			return true
+		}
+	}
+
+	for ns, servers := range expected.Servers {
+		if !sameServers(servers, actual.Servers[namespaceKey(ns)]) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// sameServers compares two name-server lists as canonical-IP sets.  Windows may
+// reformat IPv6 literals, so parse before comparing; non-IP strings fall back
+// to case-insensitive text.
+func sameServers(want, got []string) bool {
+	a := make(map[string]struct{}, len(want))
+	for _, s := range want {
+		a[canonServer(s)] = struct{}{}
+	}
+	b := make(map[string]struct{}, len(got))
+	for _, s := range got {
+		b[canonServer(s)] = struct{}{}
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for s := range a {
+		if _, ok := b[s]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func canonServer(s string) string {
+	s = strings.TrimSpace(s)
+	if ip, err := netip.ParseAddr(s); err == nil {
+		return ip.String()
+	}
+
+	return strings.ToLower(s)
+}
+
+// catchAllMissing reports whether the expected catch-all (key "") is absent
+// from the actual rules or points at the wrong name servers.  A catch-all
+// mismatch is a protection failure, so it drives strikes and auto-disable.
+func catchAllMissing(expected, actual State) bool {
+	if len(expected.Namespaces) == 0 {
+		return expected.NRPTOurs && !actual.NRPTOurs
+	}
+
+	wants := false
+	for _, ns := range expected.Namespaces {
+		if namespaceKey(ns) == "" {
+			wants = true
+
+			break
+		}
+	}
+	if !wants {
+		return false
+	}
+
+	present := false
+	for _, ns := range actual.Namespaces {
+		if namespaceKey(ns) == "" {
+			present = true
+
+			break
+		}
+	}
+	if !present {
+		return true
+	}
+	if servers, ok := expected.Servers[""]; ok {
+		return !sameServers(servers, actual.Servers[""])
+	}
+
+	return false
 }
 
 // Observation is what a Prober reports: the expected state and the observed one.
@@ -109,6 +259,11 @@ type Reconciler struct {
 	interval    time.Duration
 	maxAttempts int
 	onDisable   func()
+
+	// bypassRetried records that a bypass-only drift was already re-applied.
+	// A permanently rejected exemption is best-effort and must never
+	// auto-disable protection.  reconcile is serialized, so no lock is needed.
+	bypassRetried bool
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -186,18 +341,68 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			r.logger.InfoContext(ctx, "drift resolved")
 		}
 		*attempts = 0
+		r.bypassRetried = false
 
 	case DecisionConflict:
 		r.logger.WarnContext(ctx,
 			"conflicting NRPT rule detected; not fighting it (VPN/other DNS tool)",
 			"rules", obs.Actual.NRPTConflicts,
 		)
-		*attempts = 0
 
 	case DecisionApply:
-		*attempts++
+		// Only a bypass exemption is missing and it already failed once: it is
+		// best-effort, so never retry into the auto-disable path.
+		if !catchAllMissing(obs.Expected, obs.Actual) && r.bypassRetried {
+			r.logger.WarnContext(ctx,
+				"bypass exemption missing; not retrying until rules are clean",
+				"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
+			)
 
-		if *attempts >= r.maxAttempts {
+			return false
+		}
+
+		r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts+1)
+
+		if r.applier != nil {
+			if aErr := r.applier.Apply(ctx); aErr != nil {
+				r.logger.ErrorContext(ctx, "re-apply failed", "err", aErr)
+			}
+		}
+
+		// A strike is a re-apply that did not stick, so probe again instead of
+		// counting the detection: only the third failed re-apply disables.
+		after, pErr := r.prober.Probe(ctx)
+		if pErr != nil {
+			r.logger.WarnContext(ctx, "drift re-probe failed", "err", pErr)
+
+			return false
+		}
+
+		switch Decide(after.Expected, after.Actual) {
+		case DecisionOK:
+			*attempts = 0
+			r.bypassRetried = false
+
+		case DecisionApply:
+			if !catchAllMissing(after.Expected, after.Actual) {
+				r.logger.WarnContext(ctx,
+					"bypass exemption could not be applied; catch-all protection is active",
+					"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+				)
+				r.bypassRetried = true
+				*attempts = 0
+
+				return false
+			}
+
+			*attempts++
+
+			if *attempts < r.maxAttempts {
+				r.logger.WarnContext(ctx, "drift persists after re-apply", "attempts", *attempts)
+
+				return false
+			}
+
 			r.logger.ErrorContext(ctx,
 				"persistent drift; auto-disabling interception",
 				"attempts", *attempts,
@@ -220,14 +425,6 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			}
 
 			return true
-		}
-
-		r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts)
-
-		if r.applier != nil {
-			if aErr := r.applier.Apply(ctx); aErr != nil {
-				r.logger.ErrorContext(ctx, "re-apply failed", "err", aErr)
-			}
 		}
 	}
 

@@ -257,6 +257,7 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 	}
 	if len(raw) == 0 {
 		r.setFilterState(nil)
+		r.ClearCache()
 
 		return nil
 	}

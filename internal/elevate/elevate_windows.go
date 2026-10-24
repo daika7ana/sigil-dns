@@ -208,6 +208,15 @@ func HelperMain(reqPath string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
 	defer cancel()
 
+	// Never die without a verdict: a panic must still write .res, or the
+	// caller waits out its timeout.  runAction is the only call after this
+	// point, so this cannot double-write a result.
+	defer func() {
+		if r := recover(); r != nil {
+			err = writeResult(reqPath, Result{Err: "internal error"})
+		}
+	}()
+
 	return writeResult(reqPath, runAction(ctx, req))
 }
 

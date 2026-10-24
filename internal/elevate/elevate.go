@@ -830,10 +830,16 @@ func applyListPatch(lists *[]config.FilterList, lp ListPatch) (err error) {
 			return errors.New("list index is out of range")
 		}
 	}
+	removed := make(map[int]struct{}, len(lp.Remove))
 	for _, i := range lp.Remove {
 		if i < 0 || i >= len(cur) {
 			return errors.New("list index is out of range")
 		}
+		if _, dup := removed[i]; dup {
+			return fmt.Errorf("duplicate list index %d", i)
+		}
+
+		removed[i] = struct{}{}
 	}
 
 	for i, enabled := range lp.SetEnabled {

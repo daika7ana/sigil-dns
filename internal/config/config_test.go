@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
 )
 
 func TestDefault(t *testing.T) {
@@ -30,6 +31,38 @@ func TestDefault(t *testing.T) {
 	}
 	if p.Cache == nil || !p.Cache.Enabled || p.Cache.SizeBytes != DefaultCacheSizeBytes {
 		t.Errorf("default cache = %+v, want enabled %d", p.Cache, DefaultCacheSizeBytes)
+	}
+}
+
+// TestNormalizeBootstrapNilVsEmpty pins A1: only an omitted field gets the
+// default; an explicit empty list (NextDNS Ultralow) stays empty.
+func TestNormalizeBootstrapNilVsEmpty(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		want  []string
+	}{
+		{"omitted gets the default", "", []string{resolver.DefaultBootstrap}},
+		{"explicit empty stays empty", "    bootstrap: []\n", []string{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			body := "profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n" + tc.extra
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			c, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := c.Profiles[DefaultProfileName].Bootstrap
+			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Fatalf("Bootstrap = %v (nil=%v), want %v (nil=%v)", got, got == nil, tc.want, tc.want == nil)
+			}
+		})
 	}
 }
 
@@ -575,6 +608,9 @@ func TestApplySelection(t *testing.T) {
 		}
 		if p.Provider != "nextdns" || p.Variant != "ultralow" || p.Protocol != "dot" {
 			t.Errorf("metadata = %q/%q/%q", p.Provider, p.Variant, p.Protocol)
+		}
+		if p.Bootstrap == nil || len(p.Bootstrap) != 0 {
+			t.Errorf("ultralow bootstrap should stay explicitly empty, got %v", p.Bootstrap)
 		}
 	})
 

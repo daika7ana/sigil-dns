@@ -18,20 +18,20 @@ func TestNrptNamespace(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if got := nrptNamespace(tc.in); got != tc.want {
-			t.Errorf("nrptNamespace(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := NRPTNamespace(tc.in); got != tc.want {
+			t.Errorf("NRPTNamespace(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
 
 func TestNrptEnableScript(t *testing.T) {
-	script := nrptEnableScript([]string{".a.example", ".b.example"})
+	script := nrptEnableScript([]string{".a.example", ".b.example"}, []string{"127.0.0.1", "::1"})
 
-	if !strings.Contains(script, "Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue") {
+	if !strings.Contains(script, "Remove-DnsClientNrptRule -Force") {
 		t.Errorf("script lacks the removal preamble:\n%s", script)
 	}
-	if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace '.' -NameServers 127.0.0.1,'::1' -DisplayName 'Sigil DNS'") {
-		t.Errorf("script lacks the catch-all:\n%s", script)
+	if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace '.' -NameServers '127.0.0.1','::1' -DisplayName 'Sigil DNS'") {
+		t.Errorf("script lacks the catch-all with the bound servers:\n%s", script)
 	}
 	for _, ns := range []string{"'.a.example'", "'.b.example'"} {
 		if !strings.Contains(script, "Add-DnsClientNrptRule -Namespace "+ns+" -DisplayName 'Sigil DNS'") {
@@ -47,6 +47,18 @@ func TestNrptEnableScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "Write-Output ('rule=' + $_.Namespace)") {
 		t.Errorf("script lacks the rule= echo:\n%s", script)
+	}
+}
+
+func TestNrptEnableScriptServers(t *testing.T) {
+	// No bound servers (legacy caller) keeps the dual-stack default.
+	if got := nrptEnableScript(nil, nil); !strings.Contains(got, "-NameServers '127.0.0.1','::1'") {
+		t.Errorf("empty servers did not default to dual-stack:\n%s", got)
+	}
+
+	// IPv4-only must advertise only that address.
+	if got := nrptEnableScript(nil, []string{"127.0.0.1"}); !strings.Contains(got, "-NameServers '127.0.0.1' -DisplayName") {
+		t.Errorf("IPv4-only bind advertised extra servers:\n%s", got)
 	}
 }
 
@@ -72,5 +84,10 @@ func TestNrptFallbackScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "$_.Namespace -eq '.a.example'") {
 		t.Errorf("remove must target the exact namespace:\n%s", script)
+	}
+	// A rejected removal must abort the fallback, or the duplicate rule left
+	// behind silently keeps the exemption unverified.
+	if strings.Contains(script, "SilentlyContinue") {
+		t.Errorf("fallback removal must not swallow errors:\n%s", script)
 	}
 }

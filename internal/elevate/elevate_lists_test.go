@@ -52,6 +52,11 @@ func TestApplyListPatch(t *testing.T) {
 			patch:   ListPatch{Remove: []int{3}},
 			wantErr: true,
 		},
+		{
+			name:    "duplicate remove rejected before mutation",
+			patch:   ListPatch{SetEnabled: map[int]bool{1: false}, Remove: []int{0, 0}},
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -60,10 +65,10 @@ func TestApplyListPatch(t *testing.T) {
 			err := applyListPatch(&lists, tc.patch)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatal("expected an out-of-range error")
+					t.Fatal("expected a validation error")
 				}
 				if !reflect.DeepEqual(lists, base()) {
-					t.Fatalf("out-of-range check mutated lists: %v", lists)
+					t.Fatalf("validation error mutated lists: %v", lists)
 				}
 
 				return

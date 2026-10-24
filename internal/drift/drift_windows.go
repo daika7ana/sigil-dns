@@ -24,12 +24,20 @@ const (
 
 	// registryDebounce coalesces bursts of registry writes.
 	registryDebounce = 2 * time.Second
+
+	// interceptTimeout bounds a re-apply/disable while the lifecycle interlock
+	// is held, so a hung PowerShell call cannot block the control surface.
+	// Enable runs up to three scripts (snapshot, add, fallback), and a cold
+	// DnsClient provider is slow, so leave room rather than auto-disabling a
+	// healthy host on the first cold call.
+	interceptTimeout = 60 * time.Second
 )
 
 // NewSystemReconciler returns a Reconciler wired to the Windows registry watcher
-// and NRPT interception.
-func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()) (r *Reconciler) {
-	s := &system{statePath: statePath}
+// and NRPT interception.  interlock must be the mutex the service lifecycle
+// holds for enable/disable/reload, so a re-apply cannot race a disable.
+func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func(), interlock *sync.Mutex) (r *Reconciler) {
+	s := &system{statePath: statePath, interlock: interlock}
 
 	return NewReconciler(Options{
 		Prober: s, Applier: s, Disabler: s, Logger: logger, OnDisable: onDisable,
@@ -39,6 +47,17 @@ func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()
 // system implements Prober, Applier, and Disabler against the persisted state.
 type system struct {
 	statePath string
+	interlock *sync.Mutex
+}
+
+// lock returns the matching unlock, or a no-op when no interlock is wired.
+func (s *system) lock() (unlock func()) {
+	if s.interlock == nil {
+		return func() {}
+	}
+	s.interlock.Lock()
+
+	return s.interlock.Unlock
 }
 
 // Probe reads the expected state from the state file and the actual state from
@@ -61,31 +80,70 @@ func (s *system) Probe(ctx context.Context) (obs Observation, err error) {
 		return Observation{}, nErr
 	}
 
+	// A legacy state has no NameServers; compare namespaces only.
+	var servers map[string][]string
+	if len(st.NameServers) > 0 {
+		servers = map[string][]string{"": st.NameServers}
+	}
+
 	return Observation{
-		Expected: State{NRPTOurs: true},
-		Actual:   State{NRPTOurs: nrpt.Ours, NRPTConflicts: nrpt.Conflicts},
+		Expected: State{
+			NRPTOurs:   true,
+			Namespaces: expectedNamespaces(st.Bypass),
+			Servers:    servers,
+		},
+		Actual: State{
+			NRPTOurs:      nrpt.Ours,
+			Namespaces:    nrpt.Namespaces,
+			Servers:       nrpt.Servers,
+			NRPTConflicts: nrpt.Conflicts,
+		},
 	}, nil
 }
 
-// Apply re-applies NRPT interception.
+// Apply re-applies NRPT interception.  It holds the lifecycle interlock across
+// the state read and the rule add, so a concurrent disable cannot remove the
+// rules between the mode check and the re-apply.
 func (s *system) Apply(ctx context.Context) (err error) {
+	unlock := s.lock()
+	defer unlock()
+
 	st, err := state.NewStore(s.statePath).Load()
 	if err != nil {
 		return err
 	}
+	if st.Mode != state.ModeOn {
+		return nil
+	}
 
-	return intercept.New(nil).Enable(ctx, st.Bypass)
+	// Bound every PowerShell call: this path holds the lifecycle interlock, and
+	// a hung DnsClient provider must not block every IPC action forever.
+	callCtx, cancel := context.WithTimeout(ctx, interceptTimeout)
+	defer cancel()
+
+	return intercept.New(nil).Enable(callCtx, st.Bypass, st.NameServers)
 }
 
 // Disable removes interception and clears the state after persistent drift.
 func (s *system) Disable(ctx context.Context) (err error) {
-	if err = intercept.New(nil).Disable(ctx); err != nil {
+	unlock := s.lock()
+	defer unlock()
+
+	callCtx, cancel := context.WithTimeout(ctx, interceptTimeout)
+	defer cancel()
+
+	if err = intercept.New(nil).Disable(callCtx); err != nil {
 		return err
 	}
 
 	store := state.NewStore(s.statePath)
+	if err = store.MarkClean(); err != nil && !errors.Is(err, state.ErrNoState) {
+		// MarkClean quarantines and replaces a corrupt file itself, so no
+		// special case is needed here.
+		return err
+	}
 
-	return store.MarkClean()
+	return nil
 }
 
 // watchRegistry watches both interface parameter keys and nudges the reconciler.

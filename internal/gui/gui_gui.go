@@ -301,19 +301,44 @@ func run() (err error) {
 			// get a native-size frame instead of a scaled-down one.
 			installWindowIcons()
 			if app.settings.Tray {
-				if err := hostStart(); err != nil {
-					// The setting survived from a previous session but the
-					// platform cannot honour it now; turn it off rather than
-					// leaving a close-to-tray preference with no icon.
-					app.settings.Tray = false
-					app.tray.minimize.Store(false)
-					app.showToast(w, noticeMessage{
-						kind:  noticeWarning,
-						title: "System tray unavailable",
-						body:  "The tray host could not be started.",
+				app.tray.want.Store(true)
+				gen := app.tray.gen.Add(1)
+				go func() {
+					err := hostStart()
+					if !app.tray.want.Load() {
+						hostStop()
+
+						return
+					}
+					if err == nil {
+						return
+					}
+
+					// Do not block first paint for a host that may be dead;
+					// the switch reverts when the queued command runs.
+					w.QueueCommand(func(w *gogui.Window) {
+						a := gogui.State[App](w)
+						if a.tray.gen.Load() != gen || !a.tray.want.Load() {
+							return
+						}
+						a.settings.Tray = false
+						a.tray.want.Store(false)
+						a.tray.minimize.Store(false)
+
+						body := "The tray host could not be started."
+						if a.dropTrayStartup() {
+							body += " Sign-in may still start it in the background."
+						}
+
+						a.showToast(w, noticeMessage{
+							kind:  noticeWarning,
+							title: "System tray unavailable",
+							body:  body,
+						})
+						a.persist()
+						w.InvalidateLayout()
 					})
-					app.persist()
-				}
+				}()
 			}
 			startPoller(w, src, app.refresh, &app.logView, &focused, &app.tray)
 			if restoring {

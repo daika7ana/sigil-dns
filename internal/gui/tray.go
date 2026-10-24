@@ -31,6 +31,16 @@ var (
 type trayState struct {
 	minimize atomic.Bool // quit the window to the tray when it is minimized
 
+	// gen invalidates an in-flight start when the user toggles again; want is
+	// the latest intent, so a stale start only stops a host the user no longer
+	// wants.
+	gen  atomic.Uint64
+	want atomic.Bool
+
+	// starting serializes minimize-to-tray starts, so a slow start does not
+	// spawn one host per poll tick.
+	starting atomic.Bool
+
 	// minimized is a seam for the headless poller tests; nil means the Win32
 	// check.
 	minimized func() bool
@@ -104,13 +114,58 @@ func (a *App) quitWindow(w *gogui.Window) {
 	a.savePosition()
 	a.saveSize(w)
 	a.persist()
-	_ = hostStart() // no-op when it is already running
-	w.Close()
-	// Close only sets a flag.  From a queued command the run loop can be about
-	// to block in waitMessage, so it would not see the flag until another
-	// message arrives; the process then keeps gui.lock and the next launch
-	// exits.  InvalidateRender wakes the loop.
-	w.InvalidateRender()
+
+	// Starting can wait seconds for the icon; do it off the frame thread and
+	// keep one start in flight so the poller cannot spawn a host per tick.
+	if !a.tray.starting.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.tray.starting.Store(false)
+
+		err := hostStart()
+		if !a.tray.want.Load() {
+			hostStop()
+
+			return
+		}
+		w.QueueCommand(func(w *gogui.Window) {
+			app := gogui.State[App](w)
+			if !app.tray.want.Load() {
+				hostStop()
+
+				return
+			}
+			if err != nil {
+				app.settings.Tray = false
+				app.tray.want.Store(false)
+				app.tray.minimize.Store(false)
+
+				body := "The tray host could not be started; the window stays open."
+				if app.dropTrayStartup() {
+					body += " Sign-in may still start it in the background."
+				}
+
+				app.showToast(w, noticeMessage{
+					kind:  noticeWarning,
+					title: "System tray unavailable",
+					body:  body,
+				})
+				app.persist()
+				w.InvalidateLayout()
+
+				return
+			}
+			if !app.tray.isMinimized() {
+				return // restored while the host was starting
+			}
+
+			app.tray.minimize.Store(false)
+			w.Close()
+			// Close only sets a flag; wake the loop so it sees it.
+			w.InvalidateRender()
+		})
+	}()
 }
 
 // windowNormal reports whether the window is neither minimized nor maximized.
@@ -138,6 +193,10 @@ func (a *App) closeWindow(w *gogui.Window) {
 	// leaving an icon after "Exit".  Only stop the host when the user does not
 	// want to stay in the tray.
 	if !a.settings.Tray || !a.settings.CloseToTray {
+		// Invalidate an in-flight start so it cannot leave an icon behind
+		// after this process exits.
+		a.tray.want.Store(false)
+		a.tray.gen.Add(1)
 		hostStop()
 	}
 
@@ -182,42 +241,98 @@ func (a *App) saveSize(w *gogui.Window) {
 	}
 }
 
+// dropTrayStartup removes the per-user sign-in task when the tray cannot run.
+// It reports whether a task may still remain (removal failed).
+func (a *App) dropTrayStartup() (mayRemain bool) {
+	if !a.settings.StartWithWindows {
+		return false
+	}
+	if err := setStartWithWindows(false); err != nil {
+		return true
+	}
+	a.settings.StartWithWindows = false
+
+	return false
+}
+
 // setTrayEnabled toggles the tray host process.  A platform that cannot start
-// one leaves the switch off and says so.
+// one leaves the switch off and says so.  Starting can wait seconds for the
+// icon, so it runs off the frame thread and posts the result back.
 func setTrayEnabled(ctx gogui.EventCtx, on bool) {
 	app := gogui.State[App](ctx.Window)
+	gen := app.tray.gen.Add(1)
+	app.tray.want.Store(on)
 
-	if on {
-		if err := hostStart(); err != nil {
-			app.showToast(ctx.Window, noticeMessage{
-				kind:  noticeWarning,
-				title: "System tray unavailable",
-				body:  "The tray host could not be started.",
-			})
-			on = false
-		}
-	} else {
+	if !on {
 		hostStop()
 		// No tray to start into: drop the logon task too, or the next
 		// sign-in would run an invisible host.  If the task survives,
 		// keep the preference and say so rather than pretending.
-		if app.settings.StartWithWindows {
-			if err := setStartWithWindows(false); err != nil {
-				app.showToast(ctx.Window, noticeMessage{
-					kind:  noticeWarning,
-					title: "Could not remove the startup task",
-					body:  "Sign-in still starts the tray in the background.",
-				})
-			} else {
-				app.settings.StartWithWindows = false
-			}
+		if app.dropTrayStartup() {
+			app.showToast(ctx.Window, noticeMessage{
+				kind:  noticeWarning,
+				title: "Could not remove the startup task",
+				body:  "Sign-in still starts the tray in the background.",
+			})
 		}
+		app.settings.Tray = false
+		app.tray.minimize.Store(false)
+		app.persist()
+		ctx.Window.InvalidateLayout()
+
+		return
 	}
 
-	app.settings.Tray = on
-	app.tray.minimize.Store(on && app.settings.MinimizeToTray)
+	// Show the user's intent at once; the callback reverts it on failure.
+	app.settings.Tray = true
+	app.tray.minimize.Store(app.settings.MinimizeToTray)
 	app.persist()
 	ctx.Window.InvalidateLayout()
+
+	win := ctx.Window
+	go func() {
+		err := hostStart()
+		if !app.tray.want.Load() {
+			// The user turned the tray off (or the window closed) while the
+			// host was starting; a queued callback would never run after
+			// close, so stop the child here.
+			hostStop()
+
+			return
+		}
+
+		win.QueueCommand(func(w *gogui.Window) {
+			a := gogui.State[App](w)
+			if a.tray.gen.Load() != gen {
+				// A newer toggle won.  Only stop the host if the latest
+				// intent is off; an in-flight "on" owns it.
+				if !a.tray.want.Load() {
+					hostStop()
+				}
+
+				return
+			}
+			if err != nil {
+				hostStop()
+				a.settings.Tray = false
+				a.tray.want.Store(false)
+				a.tray.minimize.Store(false)
+
+				body := "The tray host could not be started."
+				if a.dropTrayStartup() {
+					body += " Sign-in may still start it in the background."
+				}
+
+				a.showToast(w, noticeMessage{
+					kind:  noticeWarning,
+					title: "System tray unavailable",
+					body:  body,
+				})
+			}
+			a.persist()
+			w.InvalidateLayout()
+		})
+	}()
 }
 
 // toggleStartWithWindows registers or removes the per-user logon task.  A

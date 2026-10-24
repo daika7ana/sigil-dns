@@ -1295,6 +1295,12 @@ func TestTrayEnableFailureReverts(t *testing.T) {
 
 	setTrayEnabled(gogui.EventCtx{Window: w}, true)
 
+	// The start runs off the frame thread; drive frames until its result lands.
+	for i := 0; i < 400 && app.settings.Tray; i++ {
+		w.FrameFn()
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	if app.settings.Tray {
 		t.Error("settings.Tray = true after the tray host could not start")
 	}
