@@ -460,7 +460,7 @@ docs/CONFIG.md.
   which we do not ship), GH Actions + `signtool`, gated on repository secrets
   (`WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`). Without them the
   artifacts are unsigned and SmartScreen warns.
-- Ship: both binaries, `installer/setup.ps1`, `config.example.yaml`, README,
+- Ship: both binaries, `install.ps1`, `config.example.yaml`, README,
   SPEC, LICENSE, docs/, and `SHA256SUMS.txt` beside the zip. Releases publish
   draft-first (create draft → upload → undraft) so a failed run never exposes an
   assetless release. Notes come from `release-notes/<tag>.md` when present, else

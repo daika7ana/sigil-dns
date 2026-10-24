@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-24
+
+### Added
+- Install with a single PowerShell command; the latest release is downloaded and verified for you.
+- HTTP/3 (DoH3) support for providers and custom profiles that offer it.
+- The About page now checks for a newer release and can download the right build for you.
+
+### Changed
+- One installer now handles install, upgrade, and uninstall, and can make `sigildns` available in every terminal and open the app when done.
+- Unattended installs can skip every prompt with `-Quiet`.
+
+### Fixed
+- Custom DoT and DoQ upstreams no longer fail when the protocol menu still shows DoH.
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

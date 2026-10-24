@@ -51,7 +51,8 @@ jobs:
       # GUI headless smoke test (software renderer; no GPU/display needed).  Run
       # on both runners: Linux for fast feedback, Windows for the real target.
       - run: go test -tags gui ./internal/gui/
-      # setup.ps1 ships in the release zip but is never executed by CI.
+      # install.ps1 ships in the release zip and is also the one-line installer.
+      # It is never executed by CI.
       - name: Parse PowerShell scripts
         if: runner.os == 'Windows'
         shell: pwsh

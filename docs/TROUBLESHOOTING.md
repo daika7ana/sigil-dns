@@ -10,17 +10,17 @@ Defender, or ask IT. A signature is the only signal that names the publisher —
 the hash only proves the download is intact.
 
 The `.ps1` inside the zip carries the same Mark-of-the-Web, so under the default
-`RemoteSigned` policy PowerShell refuses to run `setup.ps1` ("not digitally
+`RemoteSigned` policy PowerShell refuses to run `install.ps1` ("not digitally
 signed"). Override the policy for this run, or unblock the extracted folder and
 rerun:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\setup.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 Get-ChildItem -Recurse | Unblock-File
 ```
 
 Double-clicking a `.ps1` starts a **non-elevated** shell (or opens it in an
-editor, depending on the association). `setup.ps1` detects that and relaunches
+editor, depending on the association). `install.ps1` detects that and relaunches
 itself through UAC, so double-click works; if it opened in an editor, use
 right-click → **Run with PowerShell**. A group policy that forbids elevation
 (`ConsentPromptBehaviorAdmin`) blocks both — an elevated prompt started by IT is

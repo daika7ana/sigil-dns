@@ -173,17 +173,16 @@ jobs:
 
           $stage = Join-Path $env:RUNNER_TEMP 'sigildns-stage'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $stage 'installer') | Out-Null
 
           Copy-Item 'dist/sigildns.exe'        $stage -Force
           Copy-Item 'dist/sigildns-gui.exe'    $stage -Force
+          Copy-Item 'install.ps1'                $stage -Force
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
           Copy-Item 'SPEC.md'                    $stage -Force
           Copy-Item 'CHANGELOG.md'               $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
           Copy-Item 'docs'                       $stage -Recurse -Force
-          Copy-Item 'installer/setup.ps1'        (Join-Path $stage 'installer') -Force
 
           $zip = "dist/sigildns_${version}_windows_amd64.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
@@ -208,6 +207,7 @@ jobs:
           $expected = @(
             'sigildns.exe'
             'sigildns-gui.exe'
+            'install.ps1'
             'config.example.yaml'
             'README.md'
             'SPEC.md'
@@ -218,7 +218,6 @@ jobs:
             'docs/LIMITATIONS.md'
             'docs/RELEASE.md'
             'docs/TROUBLESHOOTING.md'
-            'installer/setup.ps1'
           )
           foreach ($rel in $expected) {
             if (-not (Test-Path (Join-Path $out $rel))) {

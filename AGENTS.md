@@ -29,7 +29,7 @@ admin/UAC on every launch.
 
 ## Environment gotchas
 - `./dev/go build ./...` occasionally fails on a cold container/module cache. **Re-run** — a single FAIL is not proof.
-- `pwsh` is not installed on the host, so `installer/*.ps1` and `scripts/*.ps1` cannot be syntax-checked locally; they are only parsed for real on CI.
+- `pwsh` is not installed on the host, so `install.ps1` and `scripts/*.ps1` cannot be syntax-checked locally; they are only parsed for real on CI.
 - Windows-only code/tests never execute locally; `GOOS=windows ... vet` is the strongest local check.
 - The GUI software renderer has no fonts in the container, so headless text assertions are shape/colour-based.
 - `gh run list` must be filtered with **`--workflow CI`**: the auto dependency-graph workflow shares `headSha` and otherwise matches.

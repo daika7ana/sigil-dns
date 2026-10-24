@@ -16,7 +16,12 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
   Settings, Rules, Logging, and About), built `-tags gui -ldflags "-H windowsgui"`.
 - `config.example.yaml`, `README.md`, `SPEC.md`, `CHANGELOG.md`, `LICENSE`, and
   `docs/` (the README links into it).
-- `installer/setup.ps1` — one entry point; prompts for Install or Uninstall and
+- `install.ps1` — the single installer: next to the binaries it installs those
+  files and shows an Install / Uninstall menu; started from the one-line URL it
+  downloads and verifies the latest release first and then shows the same menu.
+  After installing it offers to add the install folder to the system PATH and to
+  open the GUI. `-Quiet` skips the menu and prompts for unattended installs;
+  `-AddToPath` and `-OpenGui` opt into those changes explicitly. Either way it
   relaunches itself through UAC when started non-elevated.
 
 The GUI update checker matches assets by the platform the running binary was
@@ -30,6 +35,17 @@ download can be verified:
 ```powershell
 Get-FileHash .\sigildns_v0.3.0_windows_amd64.zip -Algorithm SHA256
 ```
+
+The one-line install script lives at `install.ps1` in the repository root and is
+served from `main`, so it needs no release step:
+
+```powershell
+irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 | iex
+```
+
+It resolves the latest release through the GitHub API, verifies the zip against
+`SHA256SUMS.txt`, and installs from the extracted copy. The same file ships at
+the zip root, where it installs the local binaries instead of downloading.
 
 Release builds use the `gui` tag (never `-tags tray`); the **tray icon is part of
 the GUI build** and is off by default (Settings → Window & tray). In a `gui`
@@ -89,13 +105,13 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    still include function names and line numbers.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
-   binaries, `config.example.yaml`, `README.md`, `SPEC.md`, `CHANGELOG.md`,
-   `LICENSE`, `docs/`, and `installer/setup.ps1`.
+   binaries, `install.ps1`, `config.example.yaml`, `README.md`, `SPEC.md`,
+   `CHANGELOG.md`, `LICENSE`, and `docs/`.
 6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
    it (the zip itself is never signed).
 7. Verifies the package: extracts the zip, asserts every expected file is
-   present (both binaries, config, README, SPEC, CHANGELOG, LICENSE, `docs/`,
-   installer),
+   present (both binaries, `install.ps1`, config, README, SPEC, CHANGELOG,
+   LICENSE, `docs/`),
    recomputes the zip hash against `SHA256SUMS.txt`, and (when signing ran)
    requires a `Valid` Authenticode signature on each binary.
 8. Uploads the zip and checksums as a build artifact.

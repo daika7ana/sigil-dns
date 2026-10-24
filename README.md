@@ -91,42 +91,85 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 > Get-FileHash .\sigildns_<version>_windows_amd64.zip -Algorithm SHA256
 > ```
 
-### Option A — packaged installer (recommended)
+### Option A — one-line install (recommended)
 
-**Double-click `installer\setup.ps1`** — if Windows opens it in an editor
-instead, right-click it and pick **Run with PowerShell**. Started without
-elevation, the script relaunches itself through UAC, so you do not need to open
-an Administrator prompt by hand. It then asks:
+From a normal (non-elevated) PowerShell window:
+
+```powershell
+irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 | iex
+```
+
+It downloads the latest release, verifies the zip against the release's
+`SHA256SUMS.txt`, then shows the Install / Uninstall menu in the elevated window
+(**one UAC prompt**). After installing it offers to add the install folder to the
+system PATH (so `sigildns` works in any new terminal) and to open the GUI.
+Running it again upgrades an existing install.
+
+Piping a remote script into `iex` runs it sight unseen. To inspect it first:
+
+```powershell
+irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 -OutFile install.ps1
+notepad install.ps1
+.\install.ps1
+```
+
+If PowerShell refuses to run the saved file ("not digitally signed"), unblock it
+first: `Unblock-File .\install.ps1`.
+
+Uninstall (keeps `%ProgramData%\SigilDNS`; add `-RemoveData` to delete it too):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1))) -Uninstall
+```
+
+The saved script takes the same switches: `.\install.ps1 -Uninstall -RemoveData`,
+or `.\install.ps1 -Install -DesktopShortcut`. For unattended installs add
+`-Quiet` (no menu, no prompts); the PATH and GUI changes are then opt-in with
+`-AddToPath` and `-OpenGui`.
+
+### Option B — packaged installer
+
+**Double-click `install.ps1`** in the extracted folder — if Windows opens it in
+an editor instead, right-click it and pick **Run with PowerShell**. Started
+without elevation, the script relaunches itself through UAC, so you do not need
+to open an Administrator prompt by hand. It then asks:
 
 ```
 Sigil DNS setup
   1. Install or upgrade
   2. Uninstall
-Choose 1 or 2:
+  3. Exit
+Choose 1, 2 or 3:
 ```
+
+This is the same script as the one-liner above; with the binaries next to it, it
+installs those local files instead of downloading anything.
 
 From an **elevated PowerShell** the same menu appears:
 
 ```powershell
-.\installer\setup.ps1
+.\install.ps1
 ```
 
-Non-interactive use (skips the menu):
+Non-interactive use (skips the menu; `-Quiet` also skips the PATH/GUI prompts):
 
 ```powershell
-.\installer\setup.ps1 -Install [-DesktopShortcut]
-.\installer\setup.ps1 -Uninstall [-RemoveData]
+.\install.ps1 -Install [-DesktopShortcut] [-AddToPath] [-OpenGui]
+.\install.ps1 -Uninstall [-RemoveData]
+.\install.ps1 -Quiet -Install [-AddToPath] [-OpenGui]
 ```
 
 If PowerShell refuses to run the script ("not digitally signed"), unblock the
 extracted files first: `Get-ChildItem -Recurse | Unblock-File`.
 
 The installer registers the Windows service and drops a **Start Menu shortcut**
-named Sigil DNS that launches the GUI. Just run it from there whenever you
-want to change something. Uninstall keeps `%ProgramData%\SigilDNS` (config and
-state); pass `-RemoveData` to delete it too.
+named Sigil DNS that launches the GUI. After installing it offers to add the
+install folder to the system PATH and to open the GUI. Just run it from the Start
+Menu whenever you want to change something. Uninstall keeps
+`%ProgramData%\SigilDNS` (config and state) and removes the PATH entry; pass
+`-RemoveData` to delete the data too.
 
-### Option B — manual
+### Option C — manual
 
 From an **elevated PowerShell**, after building or downloading the binary:
 
