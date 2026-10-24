@@ -313,7 +313,11 @@ func (c *Config) Save(path string) (err error) {
 		return err
 	}
 
-	data, err := yaml.Marshal(c)
+	// The retired 0.1.x mode key is accepted on load but never written back.
+	out := *c
+	out.Mode = ""
+
+	data, err := yaml.Marshal(&out)
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}

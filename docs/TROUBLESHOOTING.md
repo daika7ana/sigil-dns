@@ -84,6 +84,8 @@ The most common owner is `SharedAccess` (Internet Connection Sharing), started
 by Hyper-V, WSL, Docker, or HNS. Find the owner:
 
 ```powershell
+Get-NetUDPEndpoint -LocalPort 53 |
+    Select-Object LocalAddress, LocalPort, OwningProcess
 Get-NetTCPConnection -LocalPort 53 -State Listen |
     Select-Object LocalAddress, LocalPort, OwningProcess
 Get-Process -Id <OwningProcess>

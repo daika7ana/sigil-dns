@@ -357,6 +357,7 @@ func TestExtractID(t *testing.T) {
 		{"nextdns_doq", NextDNS, DoQ, []string{"quic://abc123.dns.nextdns.io:853"}, "abc123", nil},
 		{"nextdns_doh3", NextDNS, DoH3, []string{"h3://dns.nextdns.io/abc123"}, "abc123", nil},
 		{"nextdns_doh_urlencoded", NextDNS, DoH, []string{"https://dns.nextdns.io/ab%63"}, "abc", nil},
+		{"nextdns_doh_encoded_slash", NextDNS, DoH, []string{"https://dns.nextdns.io/ab%2Fcd"}, "ab/cd", nil},
 		{"nextdns_doh_device_segment", NextDNS, DoH, []string{"https://dns.nextdns.io/abc123/device"}, "abc123", nil},
 		{"controld_doh", ControlD, DoH, []string{"https://dns.controld.com/xyz789"}, "xyz789", nil},
 		{"controld_doh_name_segment", ControlD, DoH, []string{"https://dns.controld.com/xyz789/name"}, "xyz789", nil},

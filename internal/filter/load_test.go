@@ -58,12 +58,20 @@ func TestLoadRejectsNonOKStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := LoadAll(context.Background(), []List{{Source: srv.URL}})
+	source := srv.URL + "/ads.txt?token=secret"
+	_, err := LoadAll(context.Background(), []List{{Source: source}})
 	if err == nil {
 		t.Fatal("expected error for HTTP 404")
 	}
-	if strings.Contains(err.Error(), srv.URL) {
-		t.Errorf("error leaked the source: %v", err)
+	// The scheme+host label is intentional; the path and query may carry a
+	// token and must not appear.
+	for _, secret := range []string{"/ads.txt", "token=secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error leaked %q: %v", secret, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "not found (404)") {
+		t.Errorf("error does not name the status: %v", err)
 	}
 }
 

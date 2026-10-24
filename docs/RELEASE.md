@@ -33,7 +33,7 @@ The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
 download can be verified:
 
 ```powershell
-Get-FileHash .\sigildns_v0.3.0_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\sigildns_<version>_windows_amd64.zip -Algorithm SHA256
 ```
 
 The one-line install script lives at `install.ps1` in the repository root and is

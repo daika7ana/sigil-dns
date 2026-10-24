@@ -67,7 +67,8 @@ plus `logging`/`winacl`/`redact`/`version`/`health`.
   poll, Open / Open log file / Clear DNS cache / Exit, a message-only control window as its
   single-instance guard and exit channel; ~25-30 MB, so the GUI exits when closed/minimized to the
   tray instead of keeping the OpenGL window process alive), `view.go` (page views: the Status dashboard
-  and the About cards), `status_graph.go` (the hero shield canvas), `copy.go` (**the alert-copy boundary**:
+  and the About cards), `update.go` (the About Updates card: release check, SHA256SUMS-verified
+  download), `status_graph.go` (the hero shield canvas), `copy.go` (**the alert-copy boundary**:
   title plus one-sentence body, generic backend confirmations and title restatements dropped),
   `render_test.go` (headless shape/colour assertions — no fonts in the container),
   `console_{windows,other}.go` (`detachConsole`).
@@ -165,7 +166,7 @@ plus `logging`/`winacl`/`redact`/`version`/`health`.
 
 ## Pinned dependencies (why)
 `AdguardTeam/dnsproxy v0.86.0` (engine; needs Go ≥1.26.8; **no `Config.BootstrapDNS` field** — bootstrap is
-`upstream.Options.Bootstrap`) · `AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.89.1`
+`upstream.Options.Bootstrap`) · `AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.92.0`
 (GUI + tray backend; pre-1.0, pin deliberately; its Win32 tray menu resolves a click
 through the root-prefixed `menuNodes` slice, so `internal/gui/tray.go` shifts the menu IDs by one,
 and it never sets `NIF_SHOWTIP`, so `internal/gui/tray_tooltip_windows.go` enables the standard

@@ -59,7 +59,7 @@ func (t *trayState) isMinimized() bool {
 // reports the service state, so a stopped or unverified service is never shown
 // as protected.
 //
-// shortcut: go-gui v0.89.1 (through v0.92.0) resolves a Win32 tray click
+// shortcut: go-gui v0.92.0 resolves a Win32 tray click
 // through its menuNodes slice, whose element 0 is the root.  A click on item i
 // therefore fires item i-1's ID, and item 0 fires nothing.  The IDs below are
 // shifted one item down, with the disabled status row first and a separator

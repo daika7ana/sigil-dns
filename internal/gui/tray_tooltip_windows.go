@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// go-gui v0.89.1 sets NOTIFYICON_VERSION_4 but never NIF_SHOWTIP.  Windows
+// go-gui v0.92.0 sets NOTIFYICON_VERSION_4 but never NIF_SHOWTIP.  Windows
 // suppresses the standard tooltip in that version unless the flag is present,
 // so the icon has no hover text.  These calls set it on go-gui's icon.
 //

@@ -239,9 +239,13 @@ profiles:
 
 Ultralow needs one system-resolver lookup at startup to resolve the DoH
 hostname. To avoid the system resolver, use `anycast`, which pins anycast IPs
-(worse routing):
+(worse routing).
+
+Presets that need a resolver id take `--id` (prompt, input hidden) or
+`--id-file <path>` (`-` reads stdin); a value on the command line is refused.
 
 ```powershell
+sigildns providers show nextdns/ultralow/doh --id          # prompts, input hidden
 sigildns providers show nextdns/ultralow/doh --id-file <path>
 sigildns providers show nextdns/anycast/doh  --id-file <path>
 ```
