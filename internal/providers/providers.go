@@ -18,13 +18,14 @@ type Protocol string
 
 // Upstream protocols.
 const (
-	DoH Protocol = "doh"
-	DoT Protocol = "dot"
-	DoQ Protocol = "doq"
+	DoH  Protocol = "doh"
+	DoH3 Protocol = "doh3"
+	DoT  Protocol = "dot"
+	DoQ  Protocol = "doq"
 )
 
 // Protocols returns all supported protocols in display order.
-func Protocols() []Protocol { return []Protocol{DoH, DoT, DoQ} }
+func Protocols() []Protocol { return []Protocol{DoH, DoH3, DoT, DoQ} }
 
 // Valid reports whether p is a known protocol.
 func (p Protocol) Valid() bool {
@@ -312,6 +313,8 @@ func expandCloudflare(variant string, proto Protocol) (ep Endpoints, err error) 
 		ep.Upstreams = []string{hostURL(DoT, m.dotHost)}
 	case DoQ:
 		ep.Upstreams = []string{hostURL(DoQ, m.dohHost)}
+	case DoH3:
+		ep.Upstreams = []string{hostURL(DoH3, m.dohHost)}
 	default:
 		ep.Upstreams = []string{dohURL(m.dohHost)}
 	}
@@ -335,6 +338,8 @@ func expandNextDNS(variant string, proto Protocol, id string) (ep Endpoints, err
 	switch proto {
 	case DoH:
 		ep.Upstreams = []string{"https://dns.nextdns.io/" + id}
+	case DoH3:
+		ep.Upstreams = []string{"h3://dns.nextdns.io/" + id}
 	default:
 		ep.Upstreams = []string{hostURL(proto, id+".dns.nextdns.io")}
 	}
@@ -402,24 +407,29 @@ func expandControlD(variant string, proto Protocol, id string) (ep Endpoints, er
 // dohURL returns a DoH URL for host.
 func dohURL(host string) string { return "https://" + host + "/dns-query" }
 
-// hostURL returns a DoT or DoQ URL for a hostname (DoH falls back to the DoH
-// form).  proto must be DoT or DoQ.
+// hostURL returns a DoT, DoQ, or DoH3 URL for a hostname (DoH falls back to
+// the DoH form).  proto must be DoT, DoQ, or DoH3.
 func hostURL(proto Protocol, host string) (u string) {
 	switch proto {
 	case DoT:
 		return "tls://" + host + ":853"
 	case DoQ:
 		return "quic://" + host + ":853"
+	case DoH3:
+		return "h3://" + host + "/dns-query"
 	default:
 		return dohURL(host)
 	}
 }
 
-// controlDURL builds a ControlD DoH/DoT/DoQ URL for a base host and id/preset.
+// controlDURL builds a ControlD DoH-family/DoT/DoQ URL for a base host and
+// id/preset.
 func controlDURL(proto Protocol, base, id string) (u string) {
 	switch proto {
 	case DoH:
 		return "https://" + base + "/" + id
+	case DoH3:
+		return "h3://" + base + "/" + id
 	case DoT:
 		return "tls://" + id + "." + base + ":853"
 	case DoQ:
@@ -560,7 +570,8 @@ func providerForHost(host string) (provider string) {
 	}
 }
 
-// protoForScheme maps a URL scheme to a transport, or "" when unknown.
+// protoForScheme maps a URL scheme to a transport, or "" when unknown.  It
+// accepts metadata-only aliases (dot/doq) that dnsproxy itself cannot fetch.
 func protoForScheme(scheme string) (proto Protocol) {
 	switch scheme {
 	case "tls", "dot":
@@ -569,13 +580,43 @@ func protoForScheme(scheme string) (proto Protocol) {
 		return DoQ
 	case "http", "https":
 		return DoH
+	case "h3":
+		return DoH3
 	default:
 		return ""
 	}
 }
 
-// schemeIsDoH reports whether scheme is a plain HTTP(S) DoH scheme.
-func schemeIsDoH(scheme string) (ok bool) { return scheme == "http" || scheme == "https" }
+// ProtocolForURL maps a custom upstream URL to the transport dnsproxy will use
+// for it.  ok is false for schemes dnsproxy cannot fetch (e.g. sdns://) and for
+// metadata-only aliases.
+func ProtocolForURL(rawURL string) (proto Protocol, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", false
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return DoH, true
+	case "h3":
+		return DoH3, true
+	case "tls":
+		return DoT, true
+	case "quic":
+		return DoQ, true
+	default:
+		return "", false
+	}
+}
+
+// isDoH reports whether proto is a DoH transport, over HTTP/2/1.1 or HTTP/3.
+func isDoH(proto Protocol) bool { return proto == DoH || proto == DoH3 }
+
+// schemeIsDoH reports whether scheme is a DoH scheme (HTTP(S) or HTTP/3).
+func schemeIsDoH(scheme string) (ok bool) {
+	return scheme == "http" || scheme == "https" || scheme == "h3"
+}
 
 // isSharedDoHHost reports hosts whose DoH path is a shared public preset
 // rather than a user's private id (ControlD freedns).
@@ -630,7 +671,7 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 
 	switch provider {
 	case NextDNS:
-		if proto == DoH {
+		if isDoH(proto) {
 			if host != "dns.nextdns.io" {
 				return "", false
 			}
@@ -645,7 +686,7 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 		if host == "freedns.controld.com" || strings.HasSuffix(host, ".freedns.controld.com") {
 			return "", false
 		}
-		if proto == DoH {
+		if isDoH(proto) {
 			if host != "dns.controld.com" {
 				return "", false
 			}

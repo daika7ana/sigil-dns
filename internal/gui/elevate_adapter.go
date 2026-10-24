@@ -174,10 +174,15 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	}
 
 	// URL applies to the custom provider only, and only when the user filled
-	// it in (blank = keep the existing upstream).
+	// it in (blank = keep the existing upstream).  Its scheme is the transport,
+	// so a typed URL overrides the stale protocol picker value; the helper
+	// still rejects a scheme it cannot fetch.
 	if provider == providers.Custom {
 		if u := strings.TrimSpace(d.url); u != "" {
 			pp.URL = new(u)
+			if proto, ok := providers.ProtocolForURL(u); ok {
+				pp.Protocol = new(string(proto))
+			}
 		}
 	}
 

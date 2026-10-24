@@ -37,6 +37,13 @@ func TestExpandQuad9(t *testing.T) {
 			bootstrap: []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"},
 		},
 		{
+			name:      "secure_doh3",
+			variant:   "secure",
+			proto:     DoH3,
+			upstreams: []string{"h3://dns.quad9.net/dns-query"},
+			bootstrap: []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"},
+		},
+		{
 			name:      "noblock",
 			variant:   "noblock",
 			proto:     DoH,
@@ -94,6 +101,7 @@ func TestExpandCloudflare(t *testing.T) {
 		{"standard_doh", "standard", DoH, []string{"https://cloudflare-dns.com/dns-query"}, standardBoot},
 		{"standard_dot", "standard", DoT, []string{"tls://1dot1dot1dot1.cloudflare-dns.com:853"}, standardBoot},
 		{"standard_doq", "standard", DoQ, []string{"quic://cloudflare-dns.com:853"}, standardBoot},
+		{"standard_doh3", "standard", DoH3, []string{"h3://cloudflare-dns.com/dns-query"}, standardBoot},
 		{"security_doh", "security", DoH, []string{"https://security.cloudflare-dns.com/dns-query"}, securityBoot},
 		{"security_dot", "security", DoT, []string{"tls://security.cloudflare-dns.com:853"}, securityBoot},
 		{"security_doq", "security", DoQ, []string{"quic://security.cloudflare-dns.com:853"}, securityBoot},
@@ -168,6 +176,13 @@ func TestExpandNextDNS(t *testing.T) {
 			bootstrap: nil,
 		},
 		{
+			name:      "ultralow_doh3_no_bootstrap",
+			variant:   "ultralow",
+			proto:     DoH3,
+			upstreams: []string{"h3://dns.nextdns.io/abc123"},
+			bootstrap: nil,
+		},
+		{
 			name:      "anycast_has_bootstrap",
 			variant:   "anycast",
 			proto:     DoH,
@@ -237,6 +252,14 @@ func TestExpandControlD(t *testing.T) {
 			proto:     DoQ,
 			id:        "xyz",
 			upstreams: []string{"quic://xyz.dns.controld.com:853"},
+			bootstrap: customBoot,
+		},
+		{
+			name:      "custom_doh3",
+			variant:   "custom",
+			proto:     DoH3,
+			id:        "xyz",
+			upstreams: []string{"h3://dns.controld.com/xyz"},
 			bootstrap: customBoot,
 		},
 		{
@@ -332,8 +355,10 @@ func TestExtractID(t *testing.T) {
 		{"nextdns_doh", NextDNS, DoH, []string{"https://dns.nextdns.io/abc123"}, "abc123", nil},
 		{"nextdns_dot", NextDNS, DoT, []string{"tls://abc123.dns.nextdns.io:853"}, "abc123", nil},
 		{"nextdns_doq", NextDNS, DoQ, []string{"quic://abc123.dns.nextdns.io:853"}, "abc123", nil},
+		{"nextdns_doh3", NextDNS, DoH3, []string{"h3://dns.nextdns.io/abc123"}, "abc123", nil},
 		{"nextdns_doh_urlencoded", NextDNS, DoH, []string{"https://dns.nextdns.io/ab%63"}, "abc", nil},
 		{"controld_doh", ControlD, DoH, []string{"https://dns.controld.com/xyz789"}, "xyz789", nil},
+		{"controld_doh3", ControlD, DoH3, []string{"h3://dns.controld.com/xyz789"}, "xyz789", nil},
 		{"controld_dot", ControlD, DoT, []string{"tls://xyz789.dns.controld.com:853"}, "xyz789", nil},
 		{"controld_doq", ControlD, DoQ, []string{"quic://xyz789.dns.controld.com:853"}, "xyz789", nil},
 		{"nextdns_ambiguous", NextDNS, DoH, []string{
@@ -392,11 +417,13 @@ func TestExtractIDs(t *testing.T) {
 			"https://dns.nextdns.io/bbb222",
 		}, []string{"aaa111", "bbb222"}},
 		{"metadata absent doh", "", "", []string{"https://dns.nextdns.io/abc123"}, []string{"abc123"}},
+		{"metadata absent h3", "", "", []string{"h3://dns.nextdns.io/abc123"}, []string{"abc123"}},
 		{"metadata absent dot", "", "", []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
 		{"scheme overrides wrong proto", NextDNS, DoH, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
 		{"custom provider known dot host", Custom, DoT, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
 		{"mismatched provider cross dot host", NextDNS, DoT, []string{"tls://xyz789.dns.controld.com:853"}, []string{"xyz789"}},
 		{"custom host doh path", NextDNS, DoH, []string{"https://custom.example.com/secret42"}, []string{"secret42"}},
+		{"custom host h3 path", "", "", []string{"h3://custom.example.com/secret42"}, []string{"secret42"}},
 		{"freedns not seeded", ControlD, DoH, []string{"https://freedns.controld.com/p0"}, nil},
 		{"public endpoint not seeded", "", "", []string{"https://dns.quad9.net/dns-query"}, nil},
 		{"deduped", NextDNS, DoH, []string{
@@ -420,6 +447,31 @@ func TestExtractIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProtocolForURL pins the scheme->transport map shared by the custom-URL
+// validation in the elevated helper and the GUI's draft-to-patch adapter.
+func TestProtocolForURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want Protocol
+		ok   bool
+	}{
+		{"https://dns.quad9.net/dns-query", DoH, true},
+		{" h3://dns.quad9.net/dns-query ", DoH3, true},
+		{"tls://dns.quad9.net:853", DoT, true},
+		{"quic://dns.quad9.net:853", DoQ, true},
+		{"sdns://AQcAAAAA", "", false},
+		{"dot://dns.quad9.net:853", "", false}, // metadata alias, not fetchable
+		{"", "", false},
+	}
+
+	for _, tc := range cases {
+		got, ok := ProtocolForURL(tc.url)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("ProtocolForURL(%q) = (%q, %v), want (%q, %v)", tc.url, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 

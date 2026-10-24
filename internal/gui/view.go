@@ -720,6 +720,8 @@ func protocolChip(p string) (label string) {
 	switch strings.ToLower(strings.TrimSpace(p)) {
 	case "doh":
 		return "DoH"
+	case "doh3":
+		return "DoH3"
 	case "dot":
 		return "DoT"
 	case "doq":

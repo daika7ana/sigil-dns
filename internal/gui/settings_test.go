@@ -726,9 +726,9 @@ func TestProtocolSelectCarriesProtocol(t *testing.T) {
 		t.Fatalf("commit protocol select: %v", err)
 	}
 
-	// sampleSnapshot's protocol is "doh"; the next option is "dot".
-	if app.draft.protocol != "dot" {
-		t.Fatalf("draft.protocol = %q, want dot", app.draft.protocol)
+	// sampleSnapshot's protocol is "doh"; the next option is "doh3".
+	if app.draft.protocol != "doh3" {
+		t.Fatalf("draft.protocol = %q, want doh3", app.draft.protocol)
 	}
 
 	req, ok := buildElevateRequest(applyRequest{action: actionSaveProfile, draft: &app.draft})
@@ -736,8 +736,8 @@ func TestProtocolSelectCarriesProtocol(t *testing.T) {
 		t.Fatal("buildElevateRequest returned !ok")
 	}
 	pp, ok := req.Patch.Profiles[app.draft.name]
-	if !ok || pp.Protocol == nil || *pp.Protocol != "dot" {
-		t.Fatalf("patch protocol = %v, want dot", pp.Protocol)
+	if !ok || pp.Protocol == nil || *pp.Protocol != "doh3" {
+		t.Fatalf("patch protocol = %v, want doh3", pp.Protocol)
 	}
 }
 

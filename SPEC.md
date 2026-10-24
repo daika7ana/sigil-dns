@@ -234,8 +234,10 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
 
 - Listeners: UDP + TCP on `127.0.0.1:53` and `[::1]:53` (plain DNS — Windows
   apps cannot speak DoQ to us; DoQ/DoT/DoH are **upstream** protocols only).
-- Upstream protocols: **DoH, DoT, and DoQ** (`quic://host:853`, handled by
-  dnsproxy via quic-go). DoQ needs **UDP/853**, often blocked on restrictive
+- Upstream protocols: **DoH, DoH3, DoT, and DoQ** (`quic://host:853`, handled by
+  dnsproxy via quic-go). DoH3 is HTTP/3-only DoH (`h3://host/dns-query`, UDP/443)
+  with no TCP fallback; it requires a provider that serves HTTP/3. DoQ needs
+  **UDP/853**, often blocked on restrictive
   networks → fall back to DoT/DoH. DoQ hostnames: Quad9 `dns.quad9.net:853`,
   ControlD `quic://pN.freedns.controld.com` / `<id>.dns.controld.com`, NextDNS
   `quic://<id>.dns.nextdns.io:853`.
@@ -282,7 +284,7 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
 ## 7. Providers (presets)
 
 Presets are **dual-stack** (IPv4 + IPv6) and each exposes: filtering variant,
-protocol (DoH/DoT/**DoQ**), bootstrap mode, and profile/client id. Endpoints were
+protocol (DoH/DoH3/DoT/**DoQ**), bootstrap mode, and profile/client id. Endpoints were
 verified against provider documentation (2026-10).
 
 ### 7.1 Quad9 — 4 variants (all validate DNSSEC since 2026-06-15)
@@ -307,7 +309,8 @@ verified against provider documentation (2026-10).
 | Family | malware + adult (1.1.1.3) | `family.cloudflare-dns.com` | `family.cloudflare-dns.com` | `1.1.1.3`, `1.0.0.3`; `2606:4700:4700::1113`, `2606:4700:4700::1003` |
 
 - **No resolver id** (public preset): nothing is passed in the URL.
-- DoH, DoT, and DoQ are all supported; DoQ reuses the DoH host.
+- DoH, DoH3, DoT, and DoQ are all supported; DoQ reuses the DoH host, and DoH3
+  reuses the DoH URL path with the `h3://` scheme.
 - All three variants configure both bootstrap families.
 
 ### 7.3 NextDNS — Ultralow vs Anycast
@@ -353,7 +356,7 @@ verified against provider documentation (2026-10).
   variants enable it).
 
 ### 7.6 Custom
-User-entered DoH/DoT URL plus optional bootstrap (v4/v6). Raw upstream escape
+User-entered DoH/DoH3/DoT URL plus optional bootstrap (v4/v6). Raw upstream escape
 hatch for power users.
 
 ---

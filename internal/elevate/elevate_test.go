@@ -467,12 +467,20 @@ func TestApplyRequestProtocolChangePreservesID(t *testing.T) {
 			"https://dns.nextdns.io/abcd1234", "abcd1234", "quic://abcd1234.dns.nextdns.io:853",
 		},
 		{
+			"nextdns_doh_to_doh3", providers.NextDNS, "ultralow", providers.DoH, providers.DoH3,
+			"https://dns.nextdns.io/abcd1234", "abcd1234", "h3://dns.nextdns.io/abcd1234",
+		},
+		{
 			"controld_doh_to_dot", providers.ControlD, "custom", providers.DoH, providers.DoT,
 			"https://dns.controld.com/xyz789", "xyz789", "tls://xyz789.dns.controld.com:853",
 		},
 		{
 			"controld_doh_to_doq", providers.ControlD, "custom", providers.DoH, providers.DoQ,
 			"https://dns.controld.com/xyz789", "xyz789", "quic://xyz789.dns.controld.com:853",
+		},
+		{
+			"controld_doh_to_doh3", providers.ControlD, "custom", providers.DoH, providers.DoH3,
+			"https://dns.controld.com/xyz789", "xyz789", "h3://dns.controld.com/xyz789",
 		},
 	}
 
@@ -579,6 +587,21 @@ func TestApplyRequestCustomProtocol(t *testing.T) {
 		}
 		got := cfg.Profiles[def]
 		if !slices.Equal(got.Upstreams, []string{"tls://new.example:853"}) || got.Protocol != "dot" {
+			t.Fatalf("upstreams/protocol = %v/%q", got.Upstreams, got.Protocol)
+		}
+	})
+
+	t.Run("typed h3 url matching protocol ok", func(t *testing.T) {
+		cfg := newCustomCfg("https://old.example/dns-query", "doh")
+		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+			def: {Provider: ptr(providers.Custom), URL: new("h3://new.example/dns-query"), Protocol: new("doh3")},
+		}}}
+
+		if err := applyRequest(cfg, req, "rev"); err != nil {
+			t.Fatalf("applyRequest: %v", err)
+		}
+		got := cfg.Profiles[def]
+		if !slices.Equal(got.Upstreams, []string{"h3://new.example/dns-query"}) || got.Protocol != "doh3" {
 			t.Fatalf("upstreams/protocol = %v/%q", got.Upstreams, got.Protocol)
 		}
 	})

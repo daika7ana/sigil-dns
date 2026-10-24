@@ -108,7 +108,7 @@ per_domain:
 | Field | Type | Rules |
 |---|---|---|
 | `domains` | list of strings | Required, non-empty. A domain must not contain `/`. |
-| `upstream` | string | Required non-empty on an upstream rule: any DoH/DoT/DoQ URL, or `#`. Forbidden on a bypass rule. |
+| `upstream` | string | Required non-empty on an upstream rule: any DoH/DoH3/DoT/DoQ URL, or `#`. Forbidden on a bypass rule. |
 | `bypass` | bool | Default `false`. Set `true` to resolve the domains via the system's normal DNS instead of Sigil DNS. Forbids `upstream`. |
 
 Matching semantics (dnsproxy's dnsmasq parser):
@@ -212,7 +212,11 @@ Generate the exact block:
 sigildns providers show quad9/secure/doh
 sigildns providers show quad9/secure/dot   # tls://dns.quad9.net:853
 sigildns providers show quad9/secure/doq   # quic://dns.quad9.net:853
+sigildns providers show quad9/secure/doh3  # h3://dns.quad9.net/dns-query
 ```
+
+`doh3` is DoH over HTTP/3 only (`h3://` URL): it needs **UDP/443** and a provider
+that serves HTTP/3, and it has no TCP fallback (use `doh` if unsure).
 
 ### NextDNS (Ultralow; no bootstrap on purpose)
 

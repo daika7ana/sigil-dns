@@ -759,31 +759,11 @@ func applyCustomKeep(p *config.Profile, pp ProfilePatch) (err error) {
 	return nil
 }
 
-// protocolForScheme maps a custom upstream URL scheme to the transport it
-// implies.  ok is false for an unrecognized scheme (e.g. sdns://).
-func protocolForScheme(rawURL string) (proto providers.Protocol, ok bool) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
-		return "", false
-	}
-
-	switch strings.ToLower(u.Scheme) {
-	case "https":
-		return providers.DoH, true
-	case "tls":
-		return providers.DoT, true
-	case "quic":
-		return providers.DoQ, true
-	default:
-		return "", false
-	}
-}
-
 // customProtocolMatches reports whether an explicit protocol agrees with the
 // scheme of a custom upstream URL.  It is false when they disagree or the
 // scheme is unrecognized: both are static errors, never a silent drop.
 func customProtocolMatches(rawURL string, requested providers.Protocol) (ok bool) {
-	implied, known := protocolForScheme(rawURL)
+	implied, known := providers.ProtocolForURL(rawURL)
 
 	return known && implied == requested
 }

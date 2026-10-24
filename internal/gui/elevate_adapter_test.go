@@ -134,6 +134,24 @@ func TestSavePatchMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("custom URL derives its protocol", func(t *testing.T) {
+		for _, tc := range []struct{ url, want string }{
+			{"h3://dns.quad9.net/dns-query", "doh3"},
+			{"tls://dns.quad9.net:853", "dot"},
+		} {
+			// The stale picker value ("doh") must never reach the helper when
+			// the typed URL implies another transport.
+			req := saveRequest(t, profileDraft{
+				name: "c", provider: "custom", variant: "custom", protocol: "doh",
+				url: tc.url,
+			})
+			pp := req.Patch.Profiles["c"]
+			if pp.Protocol == nil || *pp.Protocol != tc.want {
+				t.Fatalf("%s: protocol = %v, want %s", tc.url, pp.Protocol, tc.want)
+			}
+		}
+	})
+
 	t.Run("filtering off drops block response, bad size omitted", func(t *testing.T) {
 		req := saveRequest(t, profileDraft{name: "w", provider: "quad9", variant: "secure", protocol: "doh", filtering: false, blockResp: "0.0.0.0", cacheSizeMB: "oops"})
 		pp := req.Patch.Profiles["w"]

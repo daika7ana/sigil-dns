@@ -32,7 +32,7 @@ profiles:
     # omit it).  Lets a GUI label the profile without parsing the upstream URL.
     provider: Quad9
     variant: secure
-    protocol: doh
+    protocol: doh         # doh | doh3 | dot | doq
 
     # Optional: if every upstream above fails, retry the query against another
     # profile's upstreams.  Must name an entry under profiles (no chains); see

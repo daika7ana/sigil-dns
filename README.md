@@ -12,7 +12,7 @@ Sigil DNS quietly points Windows at a DNS resolver you trust. It runs a small
 loopback DNS server on `127.0.0.1:53` and `[::1]:53`, then installs a catch-all
 NRPT rule, with more-specific no-nameserver exemptions for per-domain bypass
 rules. Your apps keep using the normal OS resolver — their queries just travel
-encrypted (DoH / DoT / DoQ) to the provider you picked, with per-domain routing
+encrypted (DoH / DoH3 / DoT / DoQ) to the provider you picked, with per-domain routing
 and local blocklists along the way.
 
 Turning it on is **one catch-all rule in**. Turning it off is **one clean restore
@@ -47,8 +47,9 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 ## Features
 
 - **Providers** — Quad9, Cloudflare, NextDNS, ControlD, or any custom
-  DoH/DoT/DoQ URL.
-- **Encrypted upstreams** — DoH, DoT, and DoQ (`quic://host:853`).
+  DoH/DoH3/DoT/DoQ URL.
+- **Encrypted upstreams** — DoH, DoH3 (HTTP/3, `h3://host/dns-query`), DoT, and
+  DoQ (`quic://host:853`).
 - **Per-domain routing** — dnsmasq-style rules, applied before the upstream:
   route a domain to an upstream, or bypass it to the system's normal DNS.
 - **Blocklists** — hosts-format and AdGuard/ABP lists, with `0.0.0.0`/`::` or
@@ -255,7 +256,8 @@ Run `sigildns providers list` for the live catalog.
 | `controld` | `custom` (default), `p0`–`p3`, `x-oisd`, `x-stevenblack`, `x-adguard`, `family`, `uncensored`, `x-hagezi`, `free` | `custom`, `x-hagezi`, and `free` require `--id`. Free presets share bootstrap IPs. |
 | `custom` | `custom` | Raw user-entered `--upstream` URL + optional `--bootstrap`. |
 
-All presets support **DoH, DoT, and DoQ**, and every preset that uses a
+Every preset offers **DoH, DoH3, DoT, and DoQ** (DoH3 is HTTP/3-only over
+UDP/443, and needs the provider to serve HTTP/3), and every preset that uses a
 bootstrap configures **both IPv4 and IPv6** addresses — including Cloudflare
 `security` and `family`. The one exception is NextDNS `ultralow`, which
 deliberately uses no bootstrap so it can pick the closest anycast node.

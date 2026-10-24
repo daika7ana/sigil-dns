@@ -1571,6 +1571,8 @@ func protocolLabel(p providers.Protocol) (label string) {
 	switch p {
 	case providers.DoH:
 		return "DoH (HTTPS)"
+	case providers.DoH3:
+		return "DoH3 (HTTP/3)"
 	case providers.DoT:
 		return "DoT (TLS)"
 	case providers.DoQ:
