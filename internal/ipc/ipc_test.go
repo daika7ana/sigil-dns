@@ -646,3 +646,19 @@ func TestServeGivesUpAfterRepeatedAcceptFailures(t *testing.T) {
 		t.Fatal("Serve should give up after repeated Accept failures")
 	}
 }
+
+// TestErrorResponseScrubsURLs: every IPC error crosses errorResponse, so a
+// resolver id embedded in an upstream URL must not survive the pipe.
+func TestErrorResponseScrubsURLs(t *testing.T) {
+	const id = "abc123secret"
+
+	resp := errorResponse(fmt.Errorf(
+		"creating upstream %q: dial failed", "https://dns.nextdns.io/"+id,
+	))
+	if strings.Contains(resp.Error, id) {
+		t.Fatalf("response leaks the resolver id: %q", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "https://dns.nextdns.io") {
+		t.Fatalf("response lost the host: %q", resp.Error)
+	}
+}

@@ -355,6 +355,29 @@ func parseRules(rules []Rule, opts *upstream.Options) (conf *proxy.UpstreamConfi
 	return conf, nil
 }
 
+// ValidateRuleUpstream reports whether u is a per-domain upstream the dnsproxy
+// parser accepts.  It parses one synthetic rule with zero options, the same
+// configuration parseRules gets for a bootstrap-free profile.  The error is
+// static, so no URL can leak into a caller-visible message.
+func ValidateRuleUpstream(u string) (err error) {
+	if strings.TrimSpace(u) == "" {
+		return errors.New("invalid per-domain upstream")
+	}
+
+	conf, parseErr := proxy.ParseUpstreamsConfig(
+		[]string{"[/sigildns-validate.invalid/]" + u},
+		&upstream.Options{},
+	)
+	if conf != nil {
+		_ = conf.Close()
+	}
+	if parseErr != nil {
+		return errors.New("invalid per-domain upstream")
+	}
+
+	return nil
+}
+
 // rulesToLines renders structured rules in dnsmasq syntax:
 // "[/domain1/domain2/]upstream".  An empty domain entry becomes the unqualified
 // (//) form; a "#" upstream is an exclusion.

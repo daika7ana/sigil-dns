@@ -466,3 +466,84 @@ func TestServiceConfigSanitizesErrors(t *testing.T) {
 		t.Fatalf("summary = %+v", sum)
 	}
 }
+
+// TestResolveConfigPath pins the fail-closed rule: an explicit path wins, and
+// otherwise the hardened SystemPath is used (or the error, never a
+// user-writable fallback).
+func TestResolveConfigPath(t *testing.T) {
+	if p, err := resolveConfigPath("explicit.yaml"); err != nil || p != "explicit.yaml" {
+		t.Fatalf("resolveConfigPath(explicit) = %q, %v", p, err)
+	}
+
+	p, err := resolveConfigPath("")
+	sys := config.SystemPath()
+
+	switch {
+	case sys != "":
+		if err != nil || p != sys {
+			t.Fatalf("resolveConfigPath(\"\") = %q, %v; want %q", p, err, sys)
+		}
+	default:
+		if err == nil || p != "" {
+			t.Fatalf("resolveConfigPath(\"\") = %q, %v; want a fail-closed error", p, err)
+		}
+	}
+}
+
+// TestReadIDFile covers the argv-free id path: one line, trimmed, length-capped.
+func TestReadIDFile(t *testing.T) {
+	dir := t.TempDir()
+
+	cases := []struct {
+		name    string
+		body    string
+		want    string
+		wantErr bool
+	}{
+		{"newline", "abc123\n", "abc123", false},
+		{"no trailing newline", "abc123", "abc123", false},
+		{"crlf", "abc123\r\n", "abc123", false},
+		{"surrounding space", "  abc123  \n", "abc123", false},
+		{"empty", "\n", "", true},
+		{"too large", strings.Repeat("a", 513) + "\n", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".txt")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			id, err := readIDFile(path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("readIDFile() err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if id != tc.want {
+				t.Fatalf("readIDFile() = %q, want %q", id, tc.want)
+			}
+		})
+	}
+}
+
+// TestProvidersShowRejectsIDValue: --id takes no value, and a value attached
+// to it (in either form) is refused without echoing it.
+func TestProvidersShowRejectsIDValue(t *testing.T) {
+	for _, args := range [][]string{
+		{"controld/free", "--id", "secret"},
+		{"controld/free", "--id=secret"},
+	} {
+		err := providersShow(args)
+		if err == nil || !strings.Contains(err.Error(), "--id-file") {
+			t.Fatalf("providersShow(%q) = %v, want the argv refusal", args, err)
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Fatalf("providersShow(%q) echoed the id: %v", args, err)
+		}
+	}
+
+	err := providersShow([]string{"controld/free", "--id", "--id-file", "id.txt"})
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("--id with --id-file = %v, want a conflict error", err)
+	}
+}

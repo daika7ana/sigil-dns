@@ -58,6 +58,28 @@ func Upstream(u string) (s string) {
 // bracket/quote, so embedded upstream/list URLs in a message are scrubbed.
 var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>()\[\]]+`)
 
+// Text reduces every URL embedded in s to its scheme and host, so an error
+// message that quotes an upstream can never carry a resolver id.  It is the
+// non-logging counterpart of Handler: it has no seed list, only the URL form.
+func Text(s string) (out string) {
+	return urlPattern.ReplaceAllStringFunc(s, func(raw string) string { return Upstream(raw) })
+}
+
+// Source labels a filter-list source without exposing it: a URL becomes scheme
+// plus host, and any local path (including a Windows drive or UNC path, which
+// Upstream would pass through intact) becomes "local file".
+func Source(s string) (out string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		return "local file"
+	}
+
+	return Upstream(s)
+}
+
 // Handler wraps next so every logged message and attribute value is scrubbed of
 // credentials before it is formatted: seeded resolver ids (bare and
 // hostname-label forms) and URL userinfo/query/sdns:// content.  DNS query

@@ -129,6 +129,11 @@ func TestValidationErrors(t *testing.T) {
 		{"blank upstream", func(c *Config) {
 			c.Profiles["default"] = Profile{Upstreams: []string{"  "}, Cache: &Cache{Enabled: true, SizeBytes: 1024}}
 		}},
+		{"bootstrap is not an IP", func(c *Config) {
+			p := c.Profiles["default"]
+			p.Bootstrap = []string{"example.com"}
+			c.Profiles["default"] = p
+		}},
 		{"negative cache", func(c *Config) {
 			c.Profiles["default"] = Profile{Upstreams: []string{"x"}, Cache: &Cache{Enabled: false, SizeBytes: -1}}
 		}},
@@ -138,6 +143,20 @@ func TestValidationErrors(t *testing.T) {
 				Upstreams: []string{"x"},
 				Cache:     &Cache{Enabled: true, SizeBytes: 1024},
 				PerDomain: []PerDomain{{Domains: nil, Upstream: ""}},
+			}
+		}},
+		{"bad per_domain domain", func(c *Config) {
+			c.Profiles["default"] = Profile{
+				Upstreams: []string{"x"},
+				Cache:     &Cache{Enabled: true, SizeBytes: 1024},
+				PerDomain: []PerDomain{{Domains: []string{"bad/domain"}, Upstream: "tls://10.0.0.1"}},
+			}
+		}},
+		{"bad per_domain upstream", func(c *Config) {
+			c.Profiles["default"] = Profile{
+				Upstreams: []string{"x"},
+				Cache:     &Cache{Enabled: true, SizeBytes: 1024},
+				PerDomain: []PerDomain{{Domains: []string{"corp.example"}, Upstream: "://bad"}},
 			}
 		}},
 		{"bad block_response", func(c *Config) {
@@ -193,20 +212,163 @@ func TestLoadMissingAndBadYAML(t *testing.T) {
 	if _, err := Load(bad); err == nil {
 		t.Fatal("Load bad YAML = nil, want error")
 	}
+
+	// An empty file is still an all-defaults config (decoder returns io.EOF).
+	empty := filepath.Join(t.TempDir(), "empty.yaml")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(empty)
+	if err != nil {
+		t.Fatalf("Load empty file: %v", err)
+	}
+	if c.SchemaVersion != SchemaVersion || len(c.Profiles) == 0 {
+		t.Fatalf("empty file did not default: %+v", c)
+	}
 }
 
-// TestLoadIgnoresRemovedMode: mode was removed from the config surface; an
-// old file that still carries it must load (yaml ignores unknown keys).
-func TestLoadIgnoresRemovedMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "schema_version: 1\nmode: on\nprofile: default\n" +
+// TestLoadRejectsUnknownFields: strict decoding surfaces a typo instead of
+// silently falling back to defaults.
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	base := "schema_version: 1\nprofile: default\n" +
 		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+
+	for _, extra := range []string{"unknown_key: 1\n", "bootstap: [9.9.9.9]\n"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(extra+base), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("Load with unknown field %q = nil, want error", extra)
+		}
+	}
+}
+
+// TestLoadLegacyModeKey pins 0.1.x compatibility: every config saved by 0.1.0/
+// 0.1.1 carries "mode: off".  It is accepted and ignored, and Save drops it.
+func TestLoadLegacyModeKey(t *testing.T) {
+	body := "schema_version: 1\nmode: off\nprofile: default\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err != nil {
-		t.Fatalf("Load with legacy mode: %v", err)
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with the legacy mode key: %v", err)
 	}
+	if c.Mode != "off" {
+		t.Fatalf("Mode = %q, want off", c.Mode)
+	}
+
+	if err := c.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "mode:") {
+		t.Errorf("Save wrote the retired mode key:\n%s", raw)
+	}
+}
+
+func TestLoadSchemaVersionPresence(t *testing.T) {
+	base := "profile: default\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+
+	cases := []struct {
+		name    string
+		prefix  string
+		wantErr bool
+	}{
+		{"absent defaults to 1", "", false},
+		{"explicit 1", "schema_version: 1\n", false},
+		{"explicit 0 rejected", "schema_version: 0\n", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.prefix+base), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load = nil, want error")
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.SchemaVersion != SchemaVersion {
+				t.Fatalf("SchemaVersion = %d, want %d", c.SchemaVersion, SchemaVersion)
+			}
+		})
+	}
+}
+
+// TestCacheSizeZero pins C5: an explicit 0 is valid (and round-trips) only
+// while the cache is disabled.
+func TestCacheSizeZero(t *testing.T) {
+	base := "schema_version: 1\nprofile: default\n" +
+		"profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"
+
+	t.Run("disabled zero round-trips", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		body := base + "    cache: {enabled: false, size_bytes: 0}\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cache := c.Profiles[DefaultProfileName].Cache; cache.Enabled || cache.SizeBytes != 0 {
+			t.Fatalf("cache = %+v, want disabled with size 0", cache)
+		}
+		if err = c.Save(path); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load after Save: %v", err)
+		}
+		if cache := got.Profiles[DefaultProfileName].Cache; cache.Enabled || cache.SizeBytes != 0 {
+			t.Fatalf("cache after round-trip = %+v, want disabled with size 0", cache)
+		}
+	})
+
+	t.Run("enabled zero rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		body := base + "    cache: {enabled: true, size_bytes: 0}\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("Load accepted size_bytes: 0 with the cache enabled")
+		}
+	})
+
+	t.Run("absent size defaults while enabled", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		body := base + "    cache: {enabled: true}\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := c.Profiles[DefaultProfileName].Cache.SizeBytes; got != DefaultCacheSizeBytes {
+			t.Fatalf("size_bytes = %d, want the default %d", got, DefaultCacheSizeBytes)
+		}
+	})
 }
 
 func TestResolvePrecedence(t *testing.T) {
@@ -652,6 +814,64 @@ func TestValidBootstrap(t *testing.T) {
 		if ValidBootstrap(s) {
 			t.Errorf("ValidBootstrap(%q) = true, want false", s)
 		}
+	}
+}
+
+// TestValidDomain covers the per-domain syntax: optional wildcard, one trailing
+// dot, non-empty labels of at most 63 bytes, and the empty unqualified form.
+func TestValidDomain(t *testing.T) {
+	valid := []string{
+		"example.com", "*.example.com", "localhost", "example.com.", "  example.com  ",
+		"a-b.example", strings.Repeat("a", 63) + ".com",
+		"", ".", // the documented unqualified / single-label form
+	}
+	for _, d := range valid {
+		if err := ValidDomain(d); err != nil {
+			t.Errorf("ValidDomain(%q) = %v, want nil", d, err)
+		}
+	}
+
+	invalid := []string{
+		"*", "*.", "/", "a/b", "a b", "a\x00b",
+		"example..com", ".example.com", "example.com..",
+		strings.Repeat("a", 64) + ".com",
+		strings.Repeat(strings.Repeat("a", 63)+".", 4),
+	}
+	for _, d := range invalid {
+		if err := ValidDomain(d); err == nil {
+			t.Errorf("ValidDomain(%q) = nil, want error", d)
+		}
+	}
+}
+
+// TestPerDomainRouteKinds checks the three valid rule shapes and that the
+// per-domain upstream goes through the resolver's own parser.
+func TestPerDomainRouteKinds(t *testing.T) {
+	cases := []struct {
+		name    string
+		pd      PerDomain
+		wantErr bool
+	}{
+		{"forward", PerDomain{Domains: []string{"corp.example"}, Upstream: "tls://10.0.0.1"}, false},
+		{"wildcard", PerDomain{Domains: []string{"*.corp.example"}, Upstream: "https://dns.example/dns-query"}, false},
+		{"exclusion", PerDomain{Domains: []string{"corp.example"}, Upstream: "#"}, false},
+		{"bypass", PerDomain{Domains: []string{"printer.lan"}, Bypass: true}, false},
+		{"unqualified", PerDomain{Domains: []string{""}, Upstream: "tls://10.0.0.1"}, false},
+		{"bad upstream", PerDomain{Domains: []string{"corp.example"}, Upstream: "://bad"}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default()
+			c.Profiles[DefaultProfileName] = Profile{
+				Upstreams: []string{"https://dns.quad9.net/dns-query"},
+				Cache:     &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes},
+				PerDomain: []PerDomain{tc.pd},
+			}
+			if err := c.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 

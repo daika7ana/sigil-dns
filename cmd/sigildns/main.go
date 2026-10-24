@@ -12,6 +12,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,7 +57,7 @@ const (
 //go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest sigildns.manifest -ico ../../assets/sigildns.ico -arch amd64 -o rsrc_windows_amd64.syso
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "sigildns:", err)
+		fmt.Fprintln(os.Stderr, "sigildns:", redact.Text(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -138,6 +139,8 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 
 	switch cmd {
 	case "enable", "run", "service":
+		// --upstream is the documented single argv exception for dev/CI; in
+		// production resolver ids come from config.yaml (SPEC §15.2/§15.3.6).
 		fs.StringVar(&o.upstream, "upstream", "", "upstream DNS URL (default "+defaultUpstream+")")
 		fs.StringVar(&o.bootstrap, "bootstrap", "", "bootstrap resolver address (default "+defaultBootstrap+")")
 		fs.StringVar(&o.profile, "profile", "", "config profile name (default the config's active profile)")
@@ -161,8 +164,13 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 	if o.statePath == "" {
 		o.statePath = defaultStatePath()
 	}
-	if o.configPath == "" {
-		o.configPath = defaultConfigPath()
+	// Fail closed when the machine-wide config directory is unavailable rather
+	// than reading a user-writable path (SPEC §4.7/§15.2).  disable/restore and
+	// status stay config-independent.
+	if o.configPath == "" && (cmd == "enable" || cmd == "run" || cmd == "service" || cmd == "config") {
+		if o.configPath, err = resolveConfigPath(o.configPath); err != nil {
+			return o, err
+		}
 	}
 
 	return o, nil
@@ -170,13 +178,13 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 
 // logger returns the CLI logger.
 func logger() (l *slog.Logger) {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return slog.New(redact.Handler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), nil))
 }
 
 // fallbackLogger is the fail-open logger used when the config cannot be
 // resolved.  It still scrubs URLs/stamps from the stderr stream.
 func fallbackLogger() *slog.Logger {
-	return slog.New(redact.Handler(logger().Handler(), nil))
+	return logger()
 }
 
 // loggerFor builds the service's durable, redacting file logger from an
@@ -329,7 +337,10 @@ func cmdEnable(args []string) (err error) {
 	ctx, stop := signalContext()
 	defer stop()
 
-	lc := o.lifecycleFor(resolved, logger())
+	l := logger()
+	logging.UpdateSecrets(l, resolverSecrets(resolved))
+
+	lc := o.lifecycleFor(resolved, l)
 	if err = lc.Enable(ctx); err != nil {
 		return err
 	}
@@ -406,6 +417,12 @@ func printConfigSummary(configPath string) (err error) {
 		return printSummary(sum)
 	}
 
+	// Only the local fallback reads the config, so status needs no path when
+	// the service answers on its status pipe.
+	if configPath, err = resolveConfigPath(configPath); err != nil {
+		return err
+	}
+
 	sum := ipc.LoadSummary(configPath)
 
 	return printSummary(&sum)
@@ -469,7 +486,10 @@ func cmdRun(args []string) (err error) {
 	ctx, stop := signalContext()
 	defer stop()
 
-	return o.lifecycleFor(resolved, logger()).Run(ctx)
+	l := logger()
+	logging.UpdateSecrets(l, resolverSecrets(resolved))
+
+	return o.lifecycleFor(resolved, l).Run(ctx)
 }
 
 func cmdConfig(args []string) (err error) {
@@ -574,6 +594,7 @@ func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 }
 
 // Reload re-reads the config and swaps in a freshly built lifecycle (SPEC §15.1).
+// Errors it returns cross the control pipe, where ipc.errorResponse scrubs URLs.
 func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, err error) {
 	if s.build == nil {
 		return ipc.ConfigSummary{}, errors.New("reload is not configured")
@@ -832,17 +853,45 @@ func providersList() {
 	}
 }
 
+// errIDOnArgv is returned whenever an id would end up in the process command
+// line.  It never repeats the value.
+var errIDOnArgv = errors.New("resolver ids must not be passed on the command line; use --id (prompt) or --id-file <path>")
+
+// idPrompt is a boolean-like flag: --id takes no value, so it can only ask for
+// the id instead of carrying it.  A value attached with "=" is remembered and
+// refused after parsing, without echoing it.
+type idPrompt struct {
+	set   bool
+	value bool
+}
+
+func (p *idPrompt) String() string { return "" }
+
+// IsBoolFlag makes -id a valueless flag.
+func (p *idPrompt) IsBoolFlag() bool { return true }
+
+func (p *idPrompt) Set(s string) error {
+	p.set = true
+	p.value = s != "true"
+
+	return nil
+}
+
 // providersShow expands a selection and prints the generated profile fragment.
 // Flags may appear before or after the positional selection.
 func providersShow(args []string) (err error) {
 	fs := flag.NewFlagSet("sigildns providers show", flag.ContinueOnError)
-	id := fs.String("id", "", "resolver id")
+	// --id prompts (like an ssh password); the id never reaches argv.
+	var idFlag idPrompt
+	fs.Var(&idFlag, "id", "prompt for the resolver id (input hidden)")
+	idFile := fs.String("id-file", "", "read the resolver id from this file (use - for stdin)")
 	upstream := fs.String("upstream", "", "custom upstream URL")
 	bootstrap := fs.String("bootstrap", "", "comma-separated bootstrap addresses")
 
 	// A FlagSet stops at the first positional, so parse in a loop to keep
 	// allowing flags on either side of the selection.
 	var spec string
+
 	for {
 		if err = fs.Parse(args); err != nil {
 			return err
@@ -853,6 +902,12 @@ func providersShow(args []string) (err error) {
 			break
 		}
 		if spec != "" {
+			// An extra argument after --id is the id itself; refuse it without
+			// quoting it.
+			if idFlag.set {
+				return errIDOnArgv
+			}
+
 			return fmt.Errorf("unexpected argument %q", rest[0])
 		}
 
@@ -860,8 +915,15 @@ func providersShow(args []string) (err error) {
 		args = rest[1:]
 	}
 
+	if idFlag.value {
+		return errIDOnArgv
+	}
+	if idFlag.set && *idFile != "" {
+		return errors.New("use either --id or --id-file, not both")
+	}
+
 	if spec == "" {
-		return errors.New("usage: providers show <provider>[/<variant>[/<protocol>]] [--id x]")
+		return errors.New("usage: providers show <provider>[/<variant>[/<protocol>]] [--id] [--id-file <path>]")
 	}
 
 	parts := strings.Split(spec, "/")
@@ -869,7 +931,19 @@ func providersShow(args []string) (err error) {
 		return fmt.Errorf("invalid selection %q", spec)
 	}
 
-	sel := providers.Selection{Provider: parts[0], ID: *id, URL: *upstream}
+	id := ""
+	switch {
+	case idFlag.set:
+		if id, err = promptHidden(); err != nil {
+			return fmt.Errorf("read resolver id: %w", err)
+		}
+	case *idFile != "":
+		if id, err = readIDFile(*idFile); err != nil {
+			return fmt.Errorf("read resolver id: %w", err)
+		}
+	}
+
+	sel := providers.Selection{Provider: parts[0], ID: id, URL: *upstream}
 	if len(parts) > 1 {
 		sel.Variant = parts[1]
 	}
@@ -913,6 +987,48 @@ func providersShow(args []string) (err error) {
 	return nil
 }
 
+// maxIDLen caps a resolver id read from a file, stdin, or the prompt.
+const maxIDLen = 512
+
+// readIDFile reads a resolver id from path ("-" for stdin) so it never appears
+// on argv.
+func readIDFile(path string) (id string, err error) {
+	var r io.Reader
+
+	if path == "-" {
+		r = os.Stdin
+	} else {
+		f, openErr := os.Open(path)
+		if openErr != nil {
+			return "", openErr
+		}
+		defer f.Close()
+
+		r = f
+	}
+
+	return readIDLine(r)
+}
+
+// readIDLine reads one line (a pipe without a trailing newline reads to EOF),
+// caps the length, trims whitespace, and rejects an empty result.  Reading one
+// line keeps an interactive stdin from waiting for EOF after Enter.
+func readIDLine(r io.Reader) (id string, err error) {
+	line, rErr := bufio.NewReader(io.LimitReader(r, maxIDLen+1)).ReadString('\n')
+	if rErr != nil && !errors.Is(rErr, io.EOF) {
+		return "", rErr
+	}
+	if len(line) > maxIDLen {
+		return "", errors.New("resolver id is too large")
+	}
+
+	if id = strings.TrimSpace(line); id == "" {
+		return "", errors.New("resolver id is empty")
+	}
+
+	return id, nil
+}
+
 // joinProtos renders protocols for display.
 func joinProtos(ps []providers.Protocol) (s string) {
 	strs := make([]string, len(ps))
@@ -928,16 +1044,28 @@ func signalContext() (ctx context.Context, stop context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-// defaultConfigPath returns the hardened, machine-wide config path when it can
-// be resolved, else the platform default.  On Windows this is the same
-// ProgramData-KnownFolder path the elevated helper uses, so the config the
-// service reads and the helper writes never diverge.
+// defaultConfigPath returns the hardened, machine-wide config path for help
+// text.  Resolution fails closed in resolveConfigPath; this is display only.
 func defaultConfigPath() (p string) {
 	if p = config.SystemPath(); p != "" {
 		return p
 	}
 
-	return config.DefaultPath()
+	return "unavailable"
+}
+
+// resolveConfigPath returns the explicit path or the hardened machine-wide
+// path, failing closed when the system directory is unavailable.  It never
+// falls back to a user-writable path (SPEC §4.7/§15.2).
+func resolveConfigPath(explicit string) (p string, err error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if p = config.SystemPath(); p != "" {
+		return p, nil
+	}
+
+	return "", errors.New("system config directory unavailable")
 }
 
 // defaultStatePath returns the platform-appropriate state file path.  On

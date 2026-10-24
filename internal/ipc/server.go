@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daika7ana/sigil-dns/internal/redact"
 	"github.com/daika7ana/sigil-dns/internal/state"
 	"github.com/daika7ana/sigil-dns/internal/version"
 )
@@ -347,9 +348,11 @@ func okResponse(data json.RawMessage) (resp Response) {
 	return Response{Version: ProtocolVersion, OK: true, Data: data}
 }
 
-// errorResponse builds a failure response.
+// errorResponse is the single boundary every error crosses on its way to a
+// client, so URLs (which can carry a resolver id) are scrubbed here rather than
+// in each method.
 func errorResponse(err error) Response {
-	return Response{Version: ProtocolVersion, Error: err.Error()}
+	return Response{Version: ProtocolVersion, Error: redact.Text(err.Error())}
 }
 
 // Serve accepts connections on ln and serves each until it closes.  auth must

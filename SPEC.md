@@ -687,9 +687,12 @@ every config write still goes through the one-shot `--apply` helper.
 - Resolver ids live only in the admin-only `%ProgramData%\SigilDNS\config.yaml`
   and, for status, the equally ACLed `state.json` (SYSTEM + Administrators).
   They are **never** on the status pipe, never logged, and never on
-  argv/environment (argv is cross-process readable). The GUI *code* never reads
-  `config.yaml` directly — full-fidelity reads happen only inside the elevated
-  helper, regardless of whether the GUI process itself is elevated.
+  argv/environment (argv is cross-process readable). The single documented
+  exception is the `run`/`enable --upstream` dev/CI flag; the normal paths
+  (`config.yaml`, the GUI helper, `providers show --id-file`) keep ids off argv.
+  The GUI *code* never reads `config.yaml` directly — full-fidelity reads happen
+  only inside the elevated helper, regardless of whether the GUI process itself
+  is elevated.
 - Editing is **replace-only** (empty id field, or an empty custom-upstream URL
   field, = keep); display is masked (`••••`); no reveal on the AU pipe.
 - `--apply` staging: `%LOCALAPPDATA%\SigilDNS\staging\<uuid>.bin`, **DPAPI**
@@ -719,7 +722,8 @@ every config write still goes through the one-shot `--apply` helper.
 5. Never send across any pipe: ids, credential-bearing URLs (upstream/user/list),
    or hashes of secret-bearing files. Only labels, flags, counts, hosts, and
    non-secret IP literals.
-6. Never secrets on argv/env; staging is DPAPI + user ACL + delete.
+6. Never secrets on argv/env (`run`/`enable --upstream` is the only documented
+   dev/CI exception, §15.2); staging is DPAPI + user ACL + delete.
 7. The elevated helper never trusts staged input: re-load, re-validate, allowlist
    fields, fixed config path, atomic + ACL write; ACL failure is a hard error.
 8. **No silent elevation** (no scheduled task / COM broker / "highest
@@ -800,7 +804,9 @@ staging file is rejected with no write; a non-admin process cannot read
 `config.yaml` (the manifest-elevated GUI still never reads it directly — writes
 go through the helper); a squatted `status` pipe is detected as unverified;
 `disable` works with a corrupt config. The `profiles` summary carries no ids or
-URLs (test); the helper rejects an out-of-registry provider/variant/protocol, a
-non-IP bootstrap, a bad id charset, and explicit-zero cache/TTL; uninstall never
+URLs (test); an unknown config key is rejected rather than ignored; the helper
+rejects an out-of-registry provider/variant/protocol, a non-IP bootstrap, a bad
+id charset, a malformed per-domain domain or upstream, an explicit-zero cache
+size while the cache is enabled, and a zero block TTL; uninstall never
 deletes while interception is unproven down (ordered restore → stop → verify →
 delete, unit-tested).

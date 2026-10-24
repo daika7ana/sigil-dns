@@ -5,6 +5,8 @@ package gui
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -501,7 +503,7 @@ func TestAboutDownloadFlow(t *testing.T) {
 	calls := 0
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
-	downloadUpdate = func(context.Context, releaseAsset) (string, error) {
+	downloadUpdate = func(context.Context, releaseAsset, releaseAsset) (string, error) {
 		calls++
 		entered <- struct{}{}
 		<-release
@@ -579,7 +581,7 @@ func TestAboutDownloadFailureRetry(t *testing.T) {
 	defer func() { downloadUpdate = origDownload }()
 
 	calls := 0
-	downloadUpdate = func(context.Context, releaseAsset) (string, error) {
+	downloadUpdate = func(context.Context, releaseAsset, releaseAsset) (string, error) {
 		calls++
 
 		return "", errors.New("network down")
@@ -627,6 +629,7 @@ func TestDownloadUpdateSavesUnderDownloads(t *testing.T) {
 	useTempDownloads(t, home)
 
 	payload := []byte("PK zip bytes")
+	name := "sigildns_v1.2.3_windows_amd64.zip"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "SigilDNS/") {
 			t.Errorf("User-Agent = %q, want SigilDNS/<version>", ua)
@@ -636,11 +639,11 @@ func TestDownloadUpdateSavesUnderDownloads(t *testing.T) {
 	defer srv.Close()
 
 	asset := releaseAsset{
-		Name: "sigildns_v1.2.3_windows_amd64.zip",
+		Name: name,
 		URL:  srv.URL + "/asset",
 		Size: int64(len(payload)),
 	}
-	path, err := downloadUpdateDefault(context.Background(), asset)
+	path, err := downloadUpdateDefault(context.Background(), asset, checksumServer(t, name, payload))
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -669,14 +672,16 @@ func TestDownloadUpdateSanitisesName(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	for _, name := range []string{"../../evil.zip", `..\evil.zip`, "notes.txt", ""} {
+	for _, name := range []string{"../../evil.zip", `..\evil.zip`, "notes.txt"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			useTempDownloads(t, home)
 
-			path, err := downloadUpdateDefault(context.Background(), releaseAsset{Name: name, URL: srv.URL})
+			payload := []byte("PK")
+			path, err := downloadUpdateDefault(context.Background(),
+				releaseAsset{Name: name, URL: srv.URL}, checksumServer(t, name, payload))
 			if err != nil {
 				t.Fatalf("download: %v", err)
 			}
@@ -711,10 +716,11 @@ func TestDownloadUpdateRejectsOversize(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	name := "sigildns_v1.2.3_windows_amd64.zip"
 	_, err := downloadUpdateDefault(context.Background(), releaseAsset{
-		Name: "sigildns_v1.2.3_windows_amd64.zip",
+		Name: name,
 		URL:  srv.URL,
-	})
+	}, checksumServer(t, name, bytes.Repeat([]byte("x"), 17)))
 	if !errors.Is(err, errUpdateTooLarge) {
 		t.Fatalf("err = %v, want errUpdateTooLarge", err)
 	}
@@ -733,10 +739,11 @@ func TestDownloadUpdateRejectsBadStatus(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
+	name := "sigildns_v1.2.3_windows_amd64.zip"
 	_, err := downloadUpdateDefault(context.Background(), releaseAsset{
-		Name: "sigildns_v1.2.3_windows_amd64.zip",
+		Name: name,
 		URL:  srv.URL,
-	})
+	}, checksumServer(t, name, []byte("PK")))
 	if err == nil {
 		t.Fatal("download succeeded on 404")
 	}
@@ -767,7 +774,7 @@ func TestDownloadUpdateFallsBackToTemp(t *testing.T) {
 	defer srv.Close()
 
 	asset := releaseAsset{Name: "sigildns_v1.2.3_windows_amd64.zip", URL: srv.URL}
-	path, err := downloadUpdateDefault(context.Background(), asset)
+	path, err := downloadUpdateDefault(context.Background(), asset, checksumServer(t, asset.Name, []byte("PK")))
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -848,13 +855,14 @@ func TestDownloadUpdateIgnoresPreparedPartName(t *testing.T) {
 		t.Skipf("hardlinks unsupported here: %v", err)
 	}
 
+	payload := []byte("PK zip bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "PK zip bytes")
+		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
 	asset.URL = srv.URL
 
-	path, err := downloadUpdateDefault(context.Background(), asset)
+	path, err := downloadUpdateDefault(context.Background(), asset, checksumServer(t, asset.Name, payload))
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -869,6 +877,87 @@ func TestDownloadUpdateIgnoresPreparedPartName(t *testing.T) {
 	if string(got) != "keep me" {
 		t.Errorf("planted link was written through: canary = %q", got)
 	}
+}
+
+// TestDownloadUpdateChecksum fails closed without a usable manifest entry.
+func TestDownloadUpdateChecksum(t *testing.T) {
+	payload := []byte("PK zip bytes")
+	name := "sigildns_v1.2.3_windows_amd64.zip"
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+
+	cases := []struct {
+		name     string
+		manifest string
+		withSums bool
+	}{
+		{"no manifest", "", false},
+		{"entry missing", digest + "  other.zip\n", true},
+		{"digest mismatch", strings.Repeat("0", 64) + "  " + name + "\n", true},
+		{"malformed", "not a checksum\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			useTempDownloads(t, home)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(payload)
+			}))
+			t.Cleanup(srv.Close)
+
+			sums := releaseAsset{}
+			if tc.withSums {
+				body := tc.manifest
+				sumsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.WriteString(w, body)
+				}))
+				t.Cleanup(sumsSrv.Close)
+				sums = releaseAsset{Name: checksumAssetName, URL: sumsSrv.URL}
+			}
+
+			_, err := downloadUpdateDefault(context.Background(),
+				releaseAsset{Name: name, URL: srv.URL}, sums)
+			if !errors.Is(err, errUpdateChecksum) {
+				t.Fatalf("err = %v, want errUpdateChecksum", err)
+			}
+			if files, _ := filepath.Glob(filepath.Join(home, "Downloads", "*")); len(files) != 0 {
+				t.Errorf("files left after failed download: %v", files)
+			}
+		})
+	}
+}
+
+// TestParseChecksums pins CRLF, the binary marker, and malformed-line skipping.
+func TestParseChecksums(t *testing.T) {
+	a, b := strings.Repeat("a", 64), strings.Repeat("B", 64)
+	sums := parseChecksums([]byte(a + "  good.zip\r\n" + b + " *binary.zip\n" +
+		"short  bad.zip\n" + strings.Repeat("z", 64) + "  nonhex.zip\n"))
+
+	if sums["good.zip"] != a || sums["binary.zip"] != strings.ToLower(b) {
+		t.Fatalf("sums = %v", sums)
+	}
+	for _, name := range []string{"bad.zip", "nonhex.zip"} {
+		if _, ok := sums[name]; ok {
+			t.Errorf("malformed line for %q parsed", name)
+		}
+	}
+}
+
+// checksumServer serves a SHA256SUMS.txt entry for one asset.
+func checksumServer(t *testing.T, name string, payload []byte) releaseAsset {
+	t.Helper()
+
+	sum := sha256.Sum256(payload)
+	body := hex.EncodeToString(sum[:]) + "  " + name + "\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	return releaseAsset{Name: checksumAssetName, URL: srv.URL}
 }
 
 // useTempDownloads points the download folder at a test temp home, so the

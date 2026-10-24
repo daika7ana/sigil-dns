@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/daika7ana/sigil-dns/internal/redact"
 )
 
 // maxListSize is the maximum size of a single filter list.
@@ -25,6 +29,12 @@ var (
 	ErrHTML   = errors.New("filter list looks like an HTML page")
 	ErrBinary = errors.New("filter list looks like binary data")
 )
+
+// statusError is an unexpected HTTP status.  It carries the code only, so the
+// message can reach a user without the URL.
+type statusError int
+
+func (e statusError) Error() string { return fmt.Sprintf("unexpected status %d", int(e)) }
 
 // List is one filter-list source to load.
 type List struct {
@@ -42,14 +52,14 @@ type List struct {
 func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	seen := map[[32]byte]struct{}{}
 
-	for _, l := range lists {
+	for i, l := range lists {
 		if strings.TrimSpace(l.Source) == "" {
 			continue
 		}
 
 		data, lErr := loadOne(ctx, l.Source)
 		if lErr != nil {
-			return nil, fmt.Errorf("list %q: %w", l.Source, lErr)
+			return nil, listError(i, l.Source, lErr)
 		}
 
 		c := sha256.Sum256(data)
@@ -62,6 +72,57 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	}
 
 	return raw, nil
+}
+
+// listFailure carries the static, source-free message while keeping the
+// loading sentinel visible to errors.Is.
+type listFailure struct {
+	msg   string
+	cause error
+}
+
+func (e listFailure) Error() string { return e.msg }
+func (e listFailure) Unwrap() error { return e.cause }
+
+// listError labels a failure without exposing the source URL or path.  The
+// reason is one of a few fixed strings; a loading sentinel stays wrapped so
+// errors.Is still classifies the failure.
+func listError(i int, source string, err error) error {
+	reason := "other failure"
+	var sentinel error
+
+	var netErr net.Error
+	var status statusError
+	switch {
+	case errors.Is(err, ErrHTML):
+		reason, sentinel = "looks like an HTML page", ErrHTML
+	case errors.Is(err, ErrBinary):
+		reason, sentinel = "looks like binary data", ErrBinary
+	case errors.Is(err, ErrTooBig):
+		reason, sentinel = "too large", ErrTooBig
+	case errors.As(err, &status):
+		switch status {
+		case http.StatusNotFound:
+			reason = "not found (404)"
+		case http.StatusForbidden:
+			reason = "permission denied (403)"
+		default:
+			reason = status.Error()
+		}
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		reason = "timed out"
+	case errors.Is(err, fs.ErrNotExist):
+		reason = "not found"
+	case errors.Is(err, fs.ErrPermission):
+		reason = "permission denied"
+	}
+
+	msg := fmt.Sprintf("filter list %d (%s): %s", i, redact.Source(source), reason)
+	if sentinel != nil {
+		return listFailure{msg: msg, cause: sentinel}
+	}
+
+	return errors.New(msg)
 }
 
 // loadOne loads and validates a single source.
@@ -99,7 +160,7 @@ func fetch(ctx context.Context, url string) (data []byte, err error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %s", resp.Status)
+		return nil, statusError(resp.StatusCode)
 	}
 
 	data, err = readCapped(resp.Body, maxListSize)

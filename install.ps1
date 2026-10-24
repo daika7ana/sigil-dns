@@ -47,14 +47,20 @@ param(
     [string] $Source,
     [string] $GuiSource,
 
-    [string] $InstallDir = (Join-Path $env:ProgramFiles 'SigilDNS'),
-    [string] $DataDir = (Join-Path $env:ProgramData 'SigilDNS')
+    [string] $InstallDir = [IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles), 'SigilDNS'),
+    [string] $DataDir = [IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData), 'SigilDNS')
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 # The 5.1 progress bar makes a 35 MB download several times slower.
 $ProgressPreference = 'SilentlyContinue'
+
+# Resolve via the KnownFolder API, not the env vars: 32-bit PowerShell would
+# otherwise pick the x86 Program Files tree.
+if (-not [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles) -or -not [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) {
+    throw 'Cannot resolve the system Program Files or ProgramData directory.'
+}
 
 $repo = 'daika7ana/sigil-dns'
 $serviceName = 'sigildns'
@@ -76,6 +82,13 @@ function Remove-Temp {
     param([string] $Path)
     if ($Path -and (Test-Path -LiteralPath $Path)) {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Assert-NotReparsePoint {
+    param([string] $Path, [string] $Purpose)
+    if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Refusing to use a reparse point as the $Purpose directory."
     }
 }
 
@@ -315,6 +328,8 @@ function Install-SigilDns {
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    Assert-NotReparsePoint -Path $InstallDir -Purpose 'install'
+    Assert-NotReparsePoint -Path $DataDir -Purpose 'data'
 
     Write-Host "Installing $exe -> $targetExe"
     Invoke-WithRetry { Copy-Item -LiteralPath $exe -Destination $targetExe -Force -ErrorAction Stop }

@@ -58,8 +58,12 @@ func TestLoadRejectsNonOKStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if _, err := LoadAll(context.Background(), []List{{Source: srv.URL}}); err == nil {
+	_, err := LoadAll(context.Background(), []List{{Source: srv.URL}})
+	if err == nil {
 		t.Fatal("expected error for HTTP 404")
+	}
+	if strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error leaked the source: %v", err)
 	}
 }
 
@@ -72,6 +76,8 @@ func TestLoadRejectsHTML(t *testing.T) {
 
 	if _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrHTML) {
 		t.Fatalf("err = %v, want ErrHTML", err)
+	} else if strings.Contains(err.Error(), path) {
+		t.Errorf("error leaked the source: %v", err)
 	}
 }
 
@@ -84,6 +90,8 @@ func TestLoadRejectsBinary(t *testing.T) {
 
 	if _, err := LoadAll(context.Background(), []List{{Source: path}}); !errors.Is(err, ErrBinary) {
 		t.Fatalf("err = %v, want ErrBinary", err)
+	} else if strings.Contains(err.Error(), path) {
+		t.Errorf("error leaked the source: %v", err)
 	}
 }
 
@@ -105,5 +113,28 @@ func TestValidate(t *testing.T) {
 	}
 	if err := validate([]byte("ab\x00cd")); !errors.Is(err, ErrBinary) {
 		t.Errorf("binary: err = %v, want ErrBinary", err)
+	}
+}
+
+// TestListErrorStatus: an HTTP failure names the status code so a moved list
+// (404) is distinguishable from a forbidden one (403), without the URL.
+func TestListErrorStatus(t *testing.T) {
+	cases := []struct {
+		code statusError
+		want string
+	}{
+		{http.StatusNotFound, "not found (404)"},
+		{http.StatusForbidden, "permission denied (403)"},
+		{http.StatusInternalServerError, "unexpected status 500"},
+	}
+
+	for _, tc := range cases {
+		err := listError(2, "https://lists.example.com/ads.txt", tc.code)
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("listError(%d) = %q, want %q", tc.code, err, tc.want)
+		}
+		if strings.Contains(err.Error(), "ads.txt") {
+			t.Errorf("listError(%d) leaked the path: %q", tc.code, err)
+		}
 	}
 }

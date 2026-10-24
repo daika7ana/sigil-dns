@@ -4,6 +4,8 @@ package gui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,8 @@ const (
 	// slow links room to finish instead of failing on every retry.
 	updateDownloadTimeout = 10 * time.Minute
 	fallbackUpdateName    = "sigildns_update.zip"
+	checksumAssetName     = "SHA256SUMS.txt"
+	maxSumsBytes          = 64 << 10
 )
 
 // updateAPIURL is a var only so a test can point it at a local server.
@@ -39,6 +43,10 @@ var maxUpdateBytes int64 = 128 << 20
 
 // errUpdateTooLarge rejects an asset before or during the stream.
 var errUpdateTooLarge = errors.New("update is larger than the size limit")
+
+// errUpdateChecksum rejects a download that cannot be verified against the
+// release's checksum manifest.  It never echoes a URL or a digest.
+var errUpdateChecksum = errors.New("update checksum verification failed")
 
 // releaseAsset is the part of a GitHub release asset the checker uses.
 type releaseAsset struct {
@@ -59,25 +67,45 @@ type releaseInfo struct {
 // network.
 var fetchLatestRelease = fetchLatestReleaseDefault
 
+// newUpdateRequest builds a GitHub GET and rejects a non-200 response.  accept
+// is optional; every request carries the versioned User-Agent.  The caller
+// closes the body.
+func newUpdateRequest(ctx context.Context, rawURL, accept string) (*http.Response, error) {
+	u, err := validateURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "SigilDNS/"+version.Version)
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+
+		return nil, fmt.Errorf("update request returned %s", resp.Status)
+	}
+
+	return resp, nil
+}
+
 // fetchLatestReleaseDefault asks GitHub for the latest release.  The caller's
 // context carries the timeout and window lifetime.
 func fetchLatestReleaseDefault(ctx context.Context) (releaseInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, updateAPIURL, nil)
-	if err != nil {
-		return releaseInfo{}, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "SigilDNS/"+version.Version)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newUpdateRequest(ctx, updateAPIURL, "application/vnd.github+json")
 	if err != nil {
 		return releaseInfo{}, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return releaseInfo{}, fmt.Errorf("update check returned %s", resp.Status)
-	}
 
 	var rel releaseInfo
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
@@ -113,6 +141,7 @@ type updateState struct {
 	tag   string
 	page  string
 	asset releaseAsset
+	sums  releaseAsset
 	path  string
 }
 
@@ -239,6 +268,12 @@ func updateFromRelease(current string, rel releaseInfo, plat updatePlatform, err
 	}
 
 	st := updateState{phase: updateLatest, tag: rel.Tag, page: rel.Page}
+	for _, a := range rel.Assets {
+		if strings.EqualFold(a.Name, checksumAssetName) {
+			st.sums = a
+			break
+		}
+	}
 	if _, ok := parseVersion(current); ok {
 		if _, ok := parseVersion(rel.Tag); ok {
 			// A current build needs no asset at all, even when the release has
@@ -293,38 +328,85 @@ func updateDir() string {
 	return os.TempDir()
 }
 
+// fetchChecksums fetches the release's SHA256SUMS.txt.  Package-level var so a
+// headless test can stub it.
+var fetchChecksums = fetchChecksumsDefault
+
+// fetchChecksumsDefault returns lowercase filename -> lowercase hex digest.
+func fetchChecksumsDefault(ctx context.Context, asset releaseAsset) (map[string]string, error) {
+	resp, err := newUpdateRequest(ctx, asset.URL, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSumsBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxSumsBytes {
+		return nil, errors.New("checksum manifest is too large")
+	}
+
+	return parseChecksums(body), nil
+}
+
+// parseChecksums reads "<sha256>  <name>" lines, tolerating CRLF and the
+// sha256sum binary marker.  Malformed lines are ignored.
+func parseChecksums(data []byte) map[string]string {
+	sums := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		digest := strings.ToLower(fields[0])
+		if len(digest) != 64 {
+			continue
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimPrefix(fields[1], "*"))
+		if name != "" {
+			sums[name] = digest
+		}
+	}
+
+	return sums
+}
+
 // downloadUpdate saves the asset and returns its path.  Package-level var so a
 // headless test can stub it (mirroring openURL).
 var downloadUpdate = downloadUpdateDefault
 
 // downloadUpdateDefault streams the asset to a .part file and renames it into
-// place.  It never extracts or executes anything, and removes the partial file
-// on every failure.
-func downloadUpdateDefault(ctx context.Context, asset releaseAsset) (string, error) {
+// place only after its SHA-256 matches the release manifest.  It never extracts
+// or executes anything, and removes the partial file on every failure.
+func downloadUpdateDefault(ctx context.Context, asset, sums releaseAsset) (string, error) {
 	if asset.Size > maxUpdateBytes {
 		return "", errUpdateTooLarge
 	}
 
-	u, err := validateURL(asset.URL)
+	// Fail closed: an unverifiable download is not saved.
+	if sums.URL == "" {
+		return "", errUpdateChecksum
+	}
+	want, err := fetchChecksums(ctx, sums)
 	if err != nil {
-		return "", err
+		return "", errUpdateChecksum
+	}
+	digest, ok := want[strings.ToLower(asset.Name)]
+	if !ok {
+		return "", errUpdateChecksum
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "SigilDNS/"+version.Version)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newUpdateRequest(ctx, asset.URL, "")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download returned %s", resp.Status)
-	}
 	if resp.ContentLength > maxUpdateBytes {
 		return "", errUpdateTooLarge
 	}
@@ -342,7 +424,8 @@ func downloadUpdateDefault(ctx context.Context, asset releaseAsset) (string, err
 	}
 	part := f.Name()
 
-	n, err := io.Copy(f, io.LimitReader(resp.Body, maxUpdateBytes+1))
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxUpdateBytes+1))
 	if err == nil && n > maxUpdateBytes {
 		err = errUpdateTooLarge
 	}
@@ -353,6 +436,11 @@ func downloadUpdateDefault(ctx context.Context, asset releaseAsset) (string, err
 		_ = os.Remove(part)
 
 		return "", err
+	}
+	if hex.EncodeToString(h.Sum(nil)) != digest {
+		_ = os.Remove(part)
+
+		return "", errUpdateChecksum
 	}
 
 	final := filepath.Join(dir, name)
@@ -405,7 +493,7 @@ func startUpdateDownload(w *gogui.Window) {
 	}
 
 	app.update.phase = updateDownloading
-	asset := app.update.asset
+	asset, sums := app.update.asset, app.update.sums
 	winCtx := w.Ctx()
 
 	w.InvalidateLayout()
@@ -414,7 +502,7 @@ func startUpdateDownload(w *gogui.Window) {
 		ctx, cancel := context.WithTimeout(winCtx, updateDownloadTimeout)
 		defer cancel()
 
-		path, err := downloadUpdate(ctx, asset)
+		path, err := downloadUpdate(ctx, asset, sums)
 
 		w.QueueCommand(func(win *gogui.Window) {
 			a := gogui.State[App](win)

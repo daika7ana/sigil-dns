@@ -212,8 +212,12 @@ sigildns config init
 # 2. Pick a provider and print its generated upstream block
 sigildns providers list
 sigildns providers show quad9/secure/doh
-sigildns providers show nextdns/ultralow/doh --id <profile-id>
+sigildns providers show nextdns/ultralow/doh --id          # prompts, input hidden
+sigildns providers show nextdns/ultralow/doh --id-file <path>
 sigildns providers show controld/p1/doh
+
+#    Resolver ids are secret: use --id (prompt) or --id-file <path> (or - for
+#    stdin); a value on the command line is refused.
 
 #    Paste the printed upstreams/bootstrap into your config.
 #    (The default config points at ControlD free p0.)
@@ -257,7 +261,9 @@ sigildns run --upstream https://dns.quad9.net/dns-query
 - **Rules** — the filtering toggle and block response, filter lists, and
   per-domain routing rules (Upstream or Bypass).
 - **Logging** — level, location, and a live log viewer.
-- **About** — client / service / interface versions, author, repository, license.
+- **About** — client / service / interface versions, author, repository, license,
+  and an update check whose download is verified against the release's
+  `SHA256SUMS.txt` before it is saved.
 
 Start runs the service and applies interception; Stop removes it. The binaries
 request admin via an embedded manifest, so Windows shows **one UAC prompt when
@@ -295,8 +301,8 @@ Run `sigildns providers list` for the live catalog.
 |---|---|---|
 | `quad9` | `secure` (default), `noblock`, `secure-ecs`, `noblock-ecs` | `*-ecs` variants send EDNS Client Subnet and leak a network prefix. |
 | `cloudflare` | `standard` (default), `security`, `family` | 1.1.1.1 / 1.1.1.2 (malware) / 1.1.1.3 (malware + adult). No id. |
-| `nextdns` | `ultralow` (default), `anycast` | Requires `--id`. `ultralow` uses no bootstrap (best routing); `anycast` pins anycast IPs. |
-| `controld` | `custom` (default), `p0`–`p3`, `x-oisd`, `x-stevenblack`, `x-adguard`, `family`, `uncensored`, `x-hagezi`, `free` | `custom`, `x-hagezi`, and `free` require `--id`. Free presets share bootstrap IPs. |
+| `nextdns` | `ultralow` (default), `anycast` | Requires an id (`--id-file`). `ultralow` uses no bootstrap (best routing); `anycast` pins anycast IPs. |
+| `controld` | `custom` (default), `p0`–`p3`, `x-oisd`, `x-stevenblack`, `x-adguard`, `family`, `uncensored`, `x-hagezi`, `free` | `custom`, `x-hagezi`, and `free` require an id (`--id-file`). Free presets share bootstrap IPs. |
 | `custom` | `custom` | Raw user-entered `--upstream` URL + optional `--bootstrap`. |
 
 Every preset offers **DoH, DoH3, DoT, and DoQ** (DoH3 is HTTP/3-only over
@@ -418,9 +424,13 @@ Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
 | `--listen <addr,...>` | Loopback listen addresses, comma-separated. | `127.0.0.1:53,[::1]:53` |
 | `--state <path>` | State file path. | platform default |
 
-> `providers show` uses its own parser and accepts `--id`, `--upstream`, and
-> `--bootstrap` (before or after the positional selection). Protocol is one of
-> `doh`, `dot`, `doq`; default `doh`.
+> `providers show` uses its own parser and accepts `--id` (prompts with input
+> hidden), `--id-file <path>` (or `-` for stdin), `--upstream`, and `--bootstrap`
+> (before or after the positional selection). A resolver id is never a flag
+> value. Protocol is one of `doh`, `dot`, `doq`; default `doh`.
+>
+> `enable`/`run --upstream` is the one documented argv exception (dev/CI); in
+> production, resolver ids live only in `config.yaml`.
 
 ---
 

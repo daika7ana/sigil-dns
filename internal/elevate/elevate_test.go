@@ -28,11 +28,30 @@ func TestValidate(t *testing.T) {
 		{"apply", Request{Action: ActionApply, UUID: "u"}, false},
 		{"unknown action", Request{Action: "frobnicate", UUID: "u"}, true},
 		{"missing uuid", Request{Action: ActionEnable}, true},
+		{"path traversal uuid", Request{Action: ActionEnable, UUID: `..\..\x`}, true},
+		{"quoted uuid", Request{Action: ActionEnable, UUID: `a"b`}, true},
+		{"full charset uuid", Request{Action: ActionApply, UUID: "aZ09_-"}, false},
 	}
 
 	for _, tc := range cases {
 		if err := tc.req.Validate(); (err != nil) != tc.wantErr {
 			t.Errorf("%s: Validate() err = %v, wantErr = %v", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+func TestValidateRequestID(t *testing.T) {
+	valid := []string{"u", "abc-DEF_123", strings.Repeat("a", 64)}
+	for _, id := range valid {
+		if err := validateRequestID(id); err != nil {
+			t.Errorf("validateRequestID(%q) = %v, want nil", id, err)
+		}
+	}
+
+	invalid := []string{"", "a/b", `..\x`, "../x", `a"b`, "a b", strings.Repeat("a", 65)}
+	for _, id := range invalid {
+		if err := validateRequestID(id); err == nil {
+			t.Errorf("validateRequestID(%q) = nil, want error", id)
 		}
 	}
 }
@@ -59,6 +78,8 @@ func TestValidatePatchShape(t *testing.T) {
 	empty := ""
 	sizeZero := 0
 	sizeOK := 4096
+	blockZero := uint32(0)
+	blockOK := uint32(300)
 
 	cases := []struct {
 		name    string
@@ -87,6 +108,47 @@ func TestValidatePatchShape(t *testing.T) {
 				"default": {Filtering: &FilteringPatch{BlockResponse: &empty}},
 			}}},
 			wantErr: true,
+		},
+		{
+			name: "block ttl zero rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Filtering: &FilteringPatch{BlockTTL: &blockZero}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "block ttl positive ok",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {Filtering: &FilteringPatch{BlockTTL: &blockOK}},
+			}}},
+			wantErr: false,
+		},
+		{
+			name: "invalid per-domain domain rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {PerDomain: &[]PerDomainPatch{
+					{Domains: []string{"bad/domain"}, Upstream: "tls://1.1.1.1:853"},
+				}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "invalid per-domain upstream rejected",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {PerDomain: &[]PerDomainPatch{
+					{Domains: []string{"x.example"}, Upstream: "://bad"},
+				}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "valid per-domain rule ok",
+			req: Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+				"default": {PerDomain: &[]PerDomainPatch{
+					{Domains: []string{"x.example"}, Upstream: "tls://1.1.1.1:853"},
+				}},
+			}}},
+			wantErr: false,
 		},
 		{
 			name: "cache size zero while enabled rejected",
@@ -989,6 +1051,26 @@ func TestReloadRelevant(t *testing.T) {
 	logAndProfile.Profiles[config.DefaultProfileName] = p
 	if !reloadRelevant(base, logAndProfile) {
 		t.Fatal("mixed log+non-log change must reload")
+	}
+}
+
+// TestApplyFilteringBlockTTL covers the newly allowlisted block_ttl field: it
+// survives JSON decoding and reaches the profile.
+func TestApplyFilteringBlockTTL(t *testing.T) {
+	var fp FilteringPatch
+	if err := json.Unmarshal([]byte(`{"block_ttl":60}`), &fp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if fp.BlockTTL == nil || *fp.BlockTTL != 60 {
+		t.Fatalf("BlockTTL = %v, want 60", fp.BlockTTL)
+	}
+
+	f := config.Filtering{BlockTTL: 3600}
+	if err := applyFilteringPatch(&f, &fp); err != nil {
+		t.Fatalf("applyFilteringPatch: %v", err)
+	}
+	if f.BlockTTL != 60 {
+		t.Fatalf("BlockTTL = %d, want 60", f.BlockTTL)
 	}
 }
 

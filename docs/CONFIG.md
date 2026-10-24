@@ -19,10 +19,14 @@ A running config file is optional: with no file, built-in defaults are used
 
 | Field | Type | Default | Rules |
 |---|---|---|---|
-| `schema_version` | integer | `1` | Must be `1`; any other value is rejected. |
+| `schema_version` | integer | `1` | Must be `1`; any other value (including an explicit `0`) is rejected. |
 | `profile` | string | `default` | Must name an entry in `profiles`. |
 | `profiles` | map | one `default` profile | Map of profile name → profile block. |
 | `log` | block | `off` | Optional service file logging. See below. |
+
+Unknown top-level or per-profile keys are rejected, so a typo is an error
+rather than a silent fallback to defaults. The retired 0.1.x `mode:` key is the
+one exception: it is still accepted and ignored, so an old config keeps loading.
 
 Precedence overrides: `--upstream`, `--bootstrap`, and `--profile` replace the
 resolved profile's values at runtime.
@@ -35,7 +39,7 @@ To turn protection off, stop the service (`sigildns service stop` or the GUI
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `upstreams` | list of strings | `["https://freedns.controld.com/p0"]` | Required, non-empty; each entry non-empty. |
-| `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry non-empty. May be empty for NextDNS ultralow. |
+| `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow); an omitted list gets the default. |
 | `fallback_profile` | string | empty | Optional name of another profile; see below. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
@@ -84,7 +88,7 @@ itself is not running, nothing listens on loopback and no fallback can help.
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `enabled` | bool | `true` | Enables the dnsproxy cache. |
-| `size_bytes` | integer | `67108864` (64 MiB) | Must be ≥ 0. If `enabled` is true, must be > 0. Missing value is normalized to 64 MiB. |
+| `size_bytes` | integer | `67108864` (64 MiB) | Must be ≥ 0. If `enabled` is true, must be > 0 (an explicit `0` with the cache enabled is an error); an explicit `0` is kept when the cache is disabled. A missing value is normalized to 64 MiB while the cache is enabled. |
 
 ### `per_domain` (dnsmasq-style routing)
 
@@ -107,7 +111,7 @@ per_domain:
 
 | Field | Type | Rules |
 |---|---|---|
-| `domains` | list of strings | Required, non-empty. A domain must not contain `/`. |
+| `domains` | list of strings | Required, non-empty. Each entry is a domain: optional `*.` prefix, optional trailing dot, no `/` or whitespace; `""` (or `"."`) is the unqualified-name form. |
 | `upstream` | string | Required non-empty on an upstream rule: any DoH/DoH3/DoT/DoQ URL, or `#`. Forbidden on a bypass rule. |
 | `bypass` | bool | Default `false`. Set `true` to resolve the domains via the system's normal DNS instead of Sigil DNS. Forbids `upstream`. |
 
@@ -146,7 +150,7 @@ filtering:
 | `lists[].url` | string | — | An HTTP(S) URL or a local file path. |
 | `lists[].enabled` | bool | `false` | Disabled lists are ignored. |
 | `block_response` | string | `0.0.0.0` | `0.0.0.0` or `nxdomain`. |
-| `block_ttl` | integer (uint32) | `3600` | TTL for hand-built blocked answers. |
+| `block_ttl` | integer (uint32) | `3600` | TTL for hand-built blocked answers. Must be > 0. |
 
 **`block_response` values:**
 
@@ -238,8 +242,8 @@ hostname. To avoid the system resolver, use `anycast`, which pins anycast IPs
 (worse routing):
 
 ```powershell
-sigildns providers show nextdns/ultralow/doh --id <id>
-sigildns providers show nextdns/anycast/doh  --id <id>
+sigildns providers show nextdns/ultralow/doh --id-file <path>
+sigildns providers show nextdns/anycast/doh  --id-file <path>
 ```
 
 ### ControlD
@@ -267,8 +271,8 @@ social, plus named lists (`x-oisd`, `x-stevenblack`, `x-adguard`, `family`,
 
 ```powershell
 sigildns providers show controld/p1/doh
-sigildns providers show controld/custom/doh --id <id>
-sigildns providers show controld/x-hagezi/doh --id x-hagezi-pro
+sigildns providers show controld/custom/doh --id-file <path>
+sigildns providers show controld/x-hagezi/doh --id-file <path>
 ```
 
 ### Per-domain routing + blocklist
