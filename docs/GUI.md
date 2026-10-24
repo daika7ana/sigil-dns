@@ -77,13 +77,19 @@ stacks and the cache card takes the full width.
   **0 s (off)** to **30 s**. Opening the Logging page jumps to the newest line.
   **Verbose** may record DNS query names, so treat the log as sensitive.
 
-**About** shows three settings-style cards:
+**About** shows four settings-style cards:
 
 - **Sigil DNS** — app identity and the encrypted-DNS summary.
 - **Version & license** — the client version (the `internal/version` `Version`
   value, `dev` unless stamped at build time), the running service version when
   one is reported, the interface version (`1`), the GPLv3 license, and the
   GPL-3.0 linkage note.
+- **Updates** — opening About runs one check against the latest GitHub release.
+  It shows whether a newer version exists and offers **Download** when one does.
+  The download is saved to your Downloads folder (or the temp folder as a
+  fallback) with **Open folder** to reveal it; nothing is extracted, installed,
+  or run automatically. A `dev` build never claims an update is available; it
+  shows the latest release with the same download button.
 - **Links** — author `daika7ana` and repository
   <https://github.com/daika7ana/sigil-dns>, each opening in the default browser.
 

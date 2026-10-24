@@ -407,6 +407,7 @@ func aboutPage(t gogui.Theme, app *App, mark int) gogui.View {
 	return pageColumn("gui:about", []gogui.View{
 		card(t, "gui:card:about", appName, identity),
 		card(t, "gui:card:aboutversion", "Version & license", versions),
+		updateCard(t, app),
 		card(t, "gui:card:aboutlinks", "Links", links),
 	})
 }

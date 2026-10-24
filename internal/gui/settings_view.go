@@ -1286,6 +1286,12 @@ func setPage(ctx gogui.EventCtx, p pageKind) {
 		requestRefresh(app.refresh) // a newly shown page should show fresh data
 		ctx.Window.InvalidateLayout()
 	}
+	// Opening About starts its single update check for this run.  Retry is the
+	// only later path.
+	if p == pageAbout && !app.updateStarted {
+		app.updateStarted = true
+		startUpdateCheck(ctx.Window)
+	}
 	// Opening the Logging page must land on the newest line.  A fresh layout
 	// would otherwise paint the tail from the top; the same click while already
 	// there re-pins, so the nav item always jumps to the live end.

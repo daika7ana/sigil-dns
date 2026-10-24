@@ -19,6 +19,11 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
 - `installer/setup.ps1` — one entry point; prompts for Install or Uninstall and
   relaunches itself through UAC when started non-elevated.
 
+The GUI update checker matches assets by the platform the running binary was
+built for: `sigildns_<version>_<goos>_<goarch>.zip`. An additional build (for
+example arm64) must keep that name so its own build is offered it; an amd64
+build is never offered the arm64 zip.
+
 The release page also carries `SHA256SUMS.txt` (not inside the zip) so a
 download can be verified:
 

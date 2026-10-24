@@ -195,6 +195,13 @@ type App struct {
 	toast    *noticeMessage
 	toastSeq uint64
 	toastTTL time.Duration
+
+	// update is the About page's update-check row.  updateStarted guards the
+	// one automatic check per app run; updateChecking keeps a double-clicked
+	// Retry from starting a second check.
+	update         updateState
+	updateStarted  bool
+	updateChecking bool
 }
 
 // Run opens the client window and blocks until it is closed.  The tray icon is
