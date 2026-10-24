@@ -218,7 +218,6 @@ jobs:
             'docs/LIMITATIONS.md'
             'docs/RELEASE.md'
             'docs/TROUBLESHOOTING.md'
-            'docs/icon.png'
             'installer/setup.ps1'
           )
           foreach ($rel in $expected) {

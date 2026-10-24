@@ -7,66 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-24
+
+### Added
+- A redesigned Status page that answers the important questions at a glance: whether protection is on, which resolver and protocol you are using, what is being blocked, and whether the cache is ready.
+- The About page now shows the version of the service that is actually running, and the author and repository are clickable links.
+
+### Changed
+- Filtering on/off and the block response now sit with the filter lists on the Rules page, so all blocking controls are in one place.
+- Alerts are shorter and calmer: one sentence of explanation, and routine successes no longer repeat the title.
+- When an action fails, the alert now tells you why. A cancelled administrator prompt is reported as cancelled instead of as a failed change.
+- The Auto / Light / Dark theme picker moved from the header to Settings → Appearance.
+- "Update blocklists" is now "Update filter lists", matching what the button actually downloads.
+- Providers that need a resolver ID (for example NextDNS) now say which value to enter, right under the field.
+- Icons are drawn at their native size for the title bar, taskbar, tray, header, and About page instead of being scaled down from one large image.
+
 ## [0.3.0] - 2026-10-22
 
 ### Changed
-- Repeated upstream-failure errors are now limited to one line per message and upstream every 30 seconds, with the suppressed count reported.
-- The tray icon now runs in a separate native host process (~25-30 MB, no window/OpenGL); the GUI exits when closed or minimized to the tray instead of keeping the window process (~230 MB) alive. Closing without close-to-tray still stops the icon.
-- Install/upgrade stops a running GUI or tray host and retries replacing the exe until Windows releases it.
-- Documentation: cleaned up SPEC.md and README.md, added badges, and started this changelog.
-- Release notes now use the matching `CHANGELOG.md` section, with `release-notes/<tag>.md` as an optional override.
+- When the upstream resolver keeps failing, the log now shows one line per message and upstream every 30 seconds, with a count of what was hidden.
+- The tray icon now runs on its own, so closing or minimizing to the tray no longer keeps the window's ~230 MB in memory. The tray itself uses about 25-30 MB.
+- Installing or upgrading now closes a running window or tray icon and retries until Windows releases the old executable, instead of failing with a file-in-use error.
 
 ## [0.2.0] - 2026-10-22
 
 ### Added
-- Opt-in system tray icon with live service status and Open, Open log file, Clear DNS cache and Exit actions.
-- Minimize-to-tray and close-to-tray options.
-- Start tray icon at sign-in via a per-user ONLOGON scheduled task.
-
-### Changed
-- Removed the dormant per-adapter fallback and deduplicated shared code paths.
+- An optional tray icon that shows whether protection is on and offers Open, Open log file, Clear DNS cache, and Exit.
+- Settings for minimizing or closing the window to the tray.
+- An option to start the tray icon when you sign in.
 
 ### Fixed
-- Restored input focus when the window opens from the tray.
-- Warn when shutdown restore fails.
-- Reclaim a state lock whose pid can no longer be read.
+- The window regains keyboard focus when you reopen it from the tray.
+- A failed restore during shutdown is now reported instead of passing silently.
+- A leftover lock file no longer stops the app from starting after a crash.
 
 ## [0.1.3] - 2026-10-21
 
-### Changed
-- Migrated to Go 1.27.3 and adopted goroutine leak checks.
+Maintenance release with no user-facing changes.
 
 ## [0.1.2] - 2026-10-21
 
 ### Fixed
-- Never run the service with interception off: startup always enables, and the SCM state stays StartPending until recovery and enable succeed.
-- Updated tests for startup enable and config-error status.
+- The service no longer reports itself as running when DNS protection did not start. Startup only succeeds once protection is actually in place.
 
 ## [0.1.1] - 2026-10-21
 
 ### Changed
-- Consolidated installer scripts into a single `setup.ps1` with an install/uninstall menu and UAC relaunch.
-- CI fails closed on red runs, verifies release packages and checksums, skips duplicated checks on tag builds, cancels superseded PR runs and serializes releases.
+- Installation and uninstallation now go through a single `setup.ps1` with an Install / Uninstall menu that requests administrator rights itself.
 
 ## [0.1.0] - 2026-10-21
 
 ### Added
-- Go module and walking-skeleton resolver (embedded dnsproxy on `127.0.0.1:53` / `[::1]:53`) with CLI `enable`/`disable`/`restore`.
-- YAML config (`schema_version` 1) with provider presets: Quad9, Cloudflare, NextDNS, ControlD and custom; DoH, DoT and DoQ.
-- Per-domain routing rules (dnsmasq semantics) and urlfilter blocklists (hosts/AdGuard/ABP, answered with `0.0.0.0`/`::` or NXDOMAIN).
-- Windows service host (LocalSystem) with SDDL-locked control pipe and sanitized status pipe.
-- Drift watcher with a 45 s reconcile loop, two-stage health check, atomic state and dirty-marker crash recovery.
-- Config and state ACLs (SYSTEM + Administrators) and a redacting log handler.
-- Opt-in service file logging with rotation.
-- go-gui GUI with Status, Settings, Rules, Logging and About pages; elevated `--apply` helper with DPAPI staging; full profile/rules/list editing and service install/start/stop.
-- `installer/setup.ps1`, Start Menu shortcut, release workflow with optional signtool signing, draft-first publishing and `SHA256SUMS`.
-- Fallback profiles and the DNSSEC DO bit on cached queries.
+- System-wide encrypted DNS for Windows: a local resolver on `127.0.0.1` and `[::1]`, with Quad9, Cloudflare, NextDNS, ControlD, and custom profiles over DoH, DoT, or DoQ.
+- Per-domain routing (send a domain to another resolver, or let it use the system's normal DNS) and blocklists in hosts, AdGuard, and ABP format, answered with `0.0.0.0`/`::` or NXDOMAIN.
+- A Windows service that keeps protection on, repairs DNS settings if another program or policy changes them, and restores a clean state after a crash.
+- A command line for the same engine: `enable`, `disable`, `restore`, and `status`.
+- Opt-in service logging with rotation.
+- A five-page desktop app (Status, Settings, Rules, Logging, About) for profiles, rules, filter lists, and service control.
+- An installer with a Start Menu shortcut, an optional signed build, and a SHA-256 checksum for every download.
+- Automatic fallback to a second resolver if the primary one stops responding, and DNSSEC record requests to upstream resolvers.
 
 ### Changed
-- Renamed the project from dns-client to Sigil DNS.
+- The project is now called Sigil DNS (formerly dns-client).
 
 ### Fixed
-- Audit-driven fixes: fail-closed uninstall (restore, stop, verify, delete) and `--apply` containment.
+- Uninstall now restores your DNS settings first, verifies they are really restored, and only then removes the service. It refuses to delete anything while protection may still be active.
+- Changes sent for administrator approval can no longer touch anything outside the supported settings.
 
 ### Security
-- Resolver ids kept out of IPC, logs and argv (admin-only config/state files); status DTOs sanitized; ACL failures are hard errors.
+- Resolver IDs stay in administrator-only files and never appear in the app window, logs, or command line. The status channel carries only sanitized information, and failing to lock down configuration files is treated as an error rather than a warning.

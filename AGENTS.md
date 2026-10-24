@@ -66,10 +66,15 @@ plus `logging`/`winacl`/`redact`/`version`/`health`.
   `trayhost_windows.go` (**separate no-window tray process**: `sni.Tray` icon/menu, 5 s status
   poll, Open / Open log file / Clear DNS cache / Exit, a message-only control window as its
   single-instance guard and exit channel; ~25-30 MB, so the GUI exits when closed/minimized to the
-  tray instead of keeping the OpenGL window process alive), `render_test.go` (headless
-  shape/colour assertions — no fonts in the container),
+  tray instead of keeping the OpenGL window process alive), `view.go` (page views: the Status dashboard
+  and the About cards), `status_graph.go` (the hero shield canvas), `copy.go` (**the alert-copy boundary**:
+  title plus one-sentence body, generic backend confirmations and title restatements dropped),
+  `render_test.go` (headless shape/colour assertions — no fonts in the container),
   `console_{windows,other}.go` (`detachConsole`).
   The GUI is the **full configuration surface**; the default/Linux build stays GUI-free behind the `gui` tag.
+- **Icon art** lives in the top-level `assets` package (`//go:embed appicon-*.png`: per-size frames plus the
+  256px master, because the GL backend cannot antialias a vector mark). The exe resource icon is
+  `assets/sigildns.ico`; its path is in the `go:generate` line in `cmd/sigildns/main.go`.
 - **Elevated-helper allowlist** (`internal/elevate`): `Patch` is the whole config surface —
   `ActiveProfile` / per-profile `Profiles` (provider/variant/protocol/id/url/bootstrap/
   filtering/cache) plus structural `AddProfile` / `RenameProfile` / `DeleteProfile`; actions also include

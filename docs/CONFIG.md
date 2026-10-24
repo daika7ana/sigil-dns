@@ -156,7 +156,7 @@ filtering:
 | `nxdomain` | Answers NXDOMAIN with no records. |
 
 Lists are hosts-format and AdGuard/ABP syntax, loaded manually (`sigildns
-refresh` or the GUI's Update blocklists); no scheduled updater. Changing rules
+refresh` or the GUI's Update filter lists); no scheduled updater. Changing rules
 or lists flushes the resolver cache.
 
 ## `log`

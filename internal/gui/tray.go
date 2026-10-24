@@ -92,7 +92,7 @@ func trayStatusText(s snapshot) string {
 func trayConfig(status string) gogui.SystemTrayCfg {
 	return gogui.SystemTrayCfg{
 		Tooltip: windowTitle,
-		IconPNG: appIconPNG,
+		IconPNG: appIconPNGAt(trayIconPixels()),
 		Menu:    trayMenu(status),
 	}
 }
@@ -205,8 +205,8 @@ func setTrayEnabled(ctx gogui.EventCtx, on bool) {
 			if err := setStartWithWindows(false); err != nil {
 				app.showToast(ctx.Window, noticeMessage{
 					kind:  noticeWarning,
-					title: "Startup task not removed",
-					body:  "The scheduled task could not be deleted.",
+					title: "Could not remove the startup task",
+					body:  "Sign-in still starts the tray in the background.",
 				})
 			} else {
 				app.settings.StartWithWindows = false
@@ -229,8 +229,7 @@ func toggleStartWithWindows(ctx gogui.EventCtx, on bool) {
 	if err := setStartWithWindows(on); err != nil {
 		app.showToast(ctx.Window, noticeMessage{
 			kind:  noticeWarning,
-			title: "Startup unavailable",
-			body:  "The startup task could not be changed.",
+			title: "Could not change the startup task",
 		})
 		ctx.Window.InvalidateLayout()
 		return

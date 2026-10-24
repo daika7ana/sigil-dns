@@ -1,12 +1,13 @@
 # GUI
 
 `sigildns-gui.exe` is the full configuration client for the service. It has a
-**Status** page (banner + profile / filtering / cache cards), a **Settings** page
+**Status** dashboard (state hero, connection info, filtering, filter lists,
+and cache cards), a **Settings** page
 (service Start / Stop and install / remove, profile management, and a
 per-profile editor), a **Rules** page (filter lists + per-domain routing with a
 per-rule Upstream / Bypass kind), a
 **Logging** page (level, location, and a live viewer), and an **About** page
-(version, IPC protocol, author, repository, license), without a console. The
+(version, interface version, author, repository, license), without a console. The
 binary embeds an application
 manifest that requests **administrator**, so Windows shows one UAC prompt at
 **launch** and the window runs elevated until you close it.
@@ -29,29 +30,37 @@ running.
 ## Pages
 
 The left nav rail switches between **Status**, **Settings**, **Rules**, **Logging**, and **About**.
-**Status** refreshes the live service state about every 1 second while the window is focused and shows:
-
-- A banner for the overall state.
-- A **Restore now** header action, shown only for a crash-leftover dirty state.
-  Service **Start** / **Stop** lives in the **Settings** service card.
-- Cards for the active profile, filtering, and cache. Provider, variant, and
-  protocol appear as **labels** (`cloudflare / security / doh`); the resolver id
-  is **masked** — `•••• (set)` or `Not set`, never the value.
+**Status** refreshes the live service state about every 1 second while the window is focused and shows a
+dashboard: an **Active status** hero with the state pill, one sentence, the
+provider / variant / protocol chips and a small shield illustration, a
+**Connection Info** card, then **Filtering**, **Filter lists**, and **Cache &
+bootstrap**. It is a read-only view of real data — provider, variant, and
+protocol are **labels** (`Cloudflare / Malware blocking / DoH`), and the resolver id is
+**masked** — `•••• (set)` or `Not set`, never the value. A **Restore now** header
+action appears only for a crash-leftover dirty state; service **Start** / **Stop**
+lives in the **Settings** service card. At the minimum window width the top row
+stacks and the cache card takes the full width.
 
 **Settings** shows:
 
 - A **Service** card: a **Start** / **Stop** control (Start runs the service and
   turns protection on; Stop stops it) plus install / remove; the installed state
   — `Running`, `Stopped`, or `Not installed` — shows as a badge in the header.
+- An **Appearance** card with the **Auto / Light / Dark** theme picker.
 - A **Profiles** list: select the active profile, and add / rename / delete.
 - A **profile editor**: provider / variant / protocol, the resolver id (masked;
-  leaving it blank keeps the existing one), a custom URL, bootstrap IPs,
-  filtering + block response, and cache + size.
+  leaving it blank keeps the existing one), a custom URL, bootstrap IPs, and
+  cache + size. The provider menu shows the provider's name only. When the
+  chosen provider or variant needs a Resolver ID, a small line under the select
+  says so and the field itself names the value to enter (for example the Hagezi
+  list name or the NextDNS configuration ID).
 
 **Rules** shows:
 
-- The filter-list editor and the per-domain routing rules in one scrollable
-  column.
+- The filter-list editor, the filtering toggle and **Block response**, and the
+  per-domain routing rules in one scrollable column.
+- A **Filter list updates** row re-downloads the active profile's lists while the
+  service is running.
 - Each per-domain rule row has a **Rule type** selector — **Upstream** or
   **Bypass**. An **Upstream** row takes the target resolver; a **Bypass** row
   resolves the domains via the system's normal DNS and replaces the input with
@@ -65,19 +74,21 @@ The left nav rail switches between **Status**, **Settings**, **Rules**, **Loggin
 - **Apply** writes the setting through the elevated helper and notes
   *"Takes effect on next service start."*
 - A **live viewer** that tails the log file, with a **refresh** slider from
-  **0 s (off)** to **30 s**. **Verbose** may record DNS query names, so treat
-  the log as sensitive.
+  **0 s (off)** to **30 s**. Opening the Logging page jumps to the newest line.
+  **Verbose** may record DNS query names, so treat the log as sensitive.
 
-**About** shows:
+**About** shows three settings-style cards:
 
-- App name `Sigil DNS`.
-- Version — the `internal/version` `Version` value (`dev` unless stamped at
-  build time).
-- IPC protocol version — currently `1`.
-- Author `daika7ana`.
-- Repository — <https://github.com/daika7ana/sigil-dns>.
-- License GPLv3 (the project statically links `AdguardTeam/urlfilter`, which is
-  GPL-3.0).
+- **Sigil DNS** — app identity and the encrypted-DNS summary.
+- **Version & license** — the client version (the `internal/version` `Version`
+  value, `dev` unless stamped at build time), the running service version when
+  one is reported, the interface version (`1`), the GPLv3 license, and the
+  GPL-3.0 linkage note.
+- **Links** — author `daika7ana` and repository
+  <https://github.com/daika7ana/sigil-dns>, each opening in the default browser.
+
+The GPLv3 license applies because the project statically links
+`AdguardTeam/urlfilter`, which is GPL-3.0.
 
 ## Tray
 
@@ -119,7 +130,7 @@ The system tray icon is **off by default**. Settings → **Window & tray** has:
 | **Add / Rename / Delete profile** | Settings | Manage profiles (delete is refused for the active profile). |
 | **Save** | Settings, draft dirty | Apply the profile editor via the elevated helper. |
 | **Apply** | Logging | Save the log level / location for the next service start. |
-| **Theme** | always | Toggle Auto / Light / Dark. |
+| **Theme** | Settings → Appearance | Toggle Auto / Light / Dark. |
 
 The Status page reads the live service state (SCM state + status DTO only) about
 every 1 second while the window is focused, and pauses polling while the window

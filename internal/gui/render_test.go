@@ -3,8 +3,11 @@
 package gui
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +17,8 @@ import (
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
+
+	"github.com/daika7ana/sigil-dns/internal/config"
 )
 
 // A wide window, distinct from the default, so the pages are also exercised
@@ -40,19 +45,439 @@ func statusApp() *App {
 	return app
 }
 
-// TestStatusLayout proves the Status page lays out: banner and cards present,
-// each sized to its content, all on one column, and no two overlapping.
+// TestStatusLayout proves the Status dashboard lays out: the hero and
+// connection panel share the top row at normal widths, the three secondary
+// cards share the bottom row, and at the minimum window the top row stacks and
+// the cache card takes the full width — with no collapse, overlap, or
+// horizontal overflow.
 func TestStatusLayout(t *testing.T) {
-	ids := []string{"gui:banner", "gui:card:profile", "gui:card:filtering", "gui:card:cache"}
-
 	for _, size := range []struct {
-		name string
-		w, h int
-	}{{"default", defaultWidth, defaultHeight}, {"large", wideWidth, wideHeight}} {
+		name    string
+		w, h    int
+		stacked bool
+	}{
+		{"default", defaultWidth, defaultHeight, false},
+		{"large", wideWidth, wideHeight, false},
+		{"minimum", minWidth, minHeight, true},
+	} {
 		t.Run(size.name, func(t *testing.T) {
-			assertPageLayout(t, statusApp(), size.w, size.h, ids)
+			assertStatusDashboard(t, statusApp(), size.w, size.h, size.stacked)
 		})
 	}
+}
+
+// TestStatusLongBootstrapFits proves an uncompressed IPv6 bootstrap address
+// stays inside the cache card instead of widening the dashboard and forcing a
+// horizontal scrollbar on the Status page.
+func TestStatusLongBootstrapFits(t *testing.T) {
+	app := statusApp()
+	app.snap.summary.Bootstrap = []string{
+		"2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+		"2606:4700:4700::1111",
+	}
+
+	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+	page := mustFindLayout(t, w, root, "gui:content")
+	if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+		t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+	}
+
+	// The long value may widen its own card within the row, but it must never
+	// push the card past the dashboard.
+	cache := mustFindLayout(t, w, root, "gui:card:cache")
+	grid := mustFindLayout(t, w, root, "gui:status:grid")
+	if cache.Shape.X+cache.Shape.Width > grid.Shape.X+grid.Shape.Width+0.5 {
+		t.Errorf("cache card (%.0f..%.0f) extends past the dashboard (right %.0f)",
+			cache.Shape.X, cache.Shape.X+cache.Shape.Width, grid.Shape.X+grid.Shape.Width)
+	}
+}
+
+// TestStatusTrustGatesCards proves the whole dashboard is hidden only for an
+// unverified source: a verified source whose summary has not arrived yet still
+// renders the cards, with their em-dash fallbacks.
+func TestStatusTrustGatesCards(t *testing.T) {
+	open := statusApp()
+	open.snap.summary = nil
+	open.cached = nil
+
+	w, _ := layoutFor(t, open, defaultWidth, defaultHeight)
+	for _, id := range []string{"gui:card:connection", "gui:card:filtering", "gui:card:cache"} {
+		if len(w.ResolveID(id)) == 0 {
+			t.Errorf("%s missing for a verified source with no summary", id)
+		}
+	}
+
+	unverified := statusApp()
+	unverified.snap.trust = trustUnverified
+	uw, _ := layoutFor(t, unverified, defaultWidth, defaultHeight)
+	for _, id := range []string{"gui:card:connection", "gui:card:filtering", "gui:card:cache"} {
+		if n := len(uw.ResolveID(id)); n != 0 {
+			t.Errorf("unverified Status page rendered %d %s; want none", n, id)
+		}
+	}
+	if len(uw.ResolveID("gui:banner")) == 0 {
+		t.Error("unverified Status page did not render the state hero")
+	}
+}
+
+// TestStatusGraphPaintsStateInk proves the hero illustration actually paints
+// ink — not an empty canvas — and that a stopped session never carries the
+// protected green.  It samples the graph's own bounds in the soft render, so
+// the assertion follows pixels rather than the layout tree.
+func TestStatusGraphPaintsStateInk(t *testing.T) {
+	themes := []struct {
+		name string
+		th   gogui.Theme
+	}{
+		{"light", windowsTheme("windows", gogui.ThemeLight)},
+		{"dark", windowsTheme("windows-dark", gogui.ThemeDark)},
+	}
+	cases := []struct {
+		name    string
+		snap    snapshot
+		painted bool
+	}{
+		{"protected", sampleSnapshot(), true},
+		{"stopped", stoppedInstalledSnapshot(), false},
+	}
+
+	for _, theme := range themes {
+		for _, tc := range cases {
+			t.Run(theme.name+"/"+tc.name, func(t *testing.T) {
+				app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+				app.snap = tc.snap
+
+				w := gogui.NewTestWindow(t, gogui.WindowCfg{
+					Width: defaultWidth, Height: defaultHeight, State: app,
+				})
+				w.SetView(view)
+				w.SetTheme(theme.th)
+				root := w.TestRender(nil)
+
+				graph := mustFindLayout(t, w, root, "gui:status:graph")
+				img, err := soft.RenderToImage(w, 1)
+				if err != nil {
+					t.Fatalf("RenderToImage: %v", err)
+				}
+
+				// Always probe the protected ink: a stopped shield must not
+				// carry it, whatever its own neutral stroke colour is.
+				ink := statusVisualFor(sampleSnapshot(), theme.th).accent
+				n := countInkPixels(img, graph, ink, 24)
+				if tc.painted && n < 25 {
+					t.Errorf("illustration paints %d protected-ink pixels, want a visible shield and check", n)
+				}
+				if !tc.painted && n != 0 {
+					t.Errorf("stopped illustration paints %d protected-ink pixels: it must not read as protected", n)
+				}
+			})
+		}
+	}
+}
+
+// TestStatusGraphPaintsStateMarks covers the non-routine state marks: the
+// exclamation (degraded/dirty) and the dash (unverified) must paint in their
+// state ink, not silently fall back to a plain shield.
+func TestStatusGraphPaintsStateMarks(t *testing.T) {
+	themes := []struct {
+		name string
+		th   gogui.Theme
+	}{
+		{"light", windowsTheme("windows", gogui.ThemeLight)},
+		{"dark", windowsTheme("windows-dark", gogui.ThemeDark)},
+	}
+	cases := []struct {
+		name string
+		snap snapshot
+	}{
+		{"degraded", func() snapshot {
+			s := sampleSnapshot()
+			s.summary.ConfigValid = false
+
+			return s
+		}()},
+		{"dirty", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Enabled = false
+			s.status.Mode = "off"
+
+			return s
+		}()},
+		{"unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()}},
+	}
+
+	for _, theme := range themes {
+		for _, tc := range cases {
+			t.Run(theme.name+"/"+tc.name, func(t *testing.T) {
+				app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+				app.snap = tc.snap
+
+				w := gogui.NewTestWindow(t, gogui.WindowCfg{
+					Width: defaultWidth, Height: defaultHeight, State: app,
+				})
+				w.SetView(view)
+				w.SetTheme(theme.th)
+				root := w.TestRender(nil)
+
+				graph := mustFindLayout(t, w, root, "gui:status:graph")
+				img, err := soft.RenderToImage(w, 1)
+				if err != nil {
+					t.Fatalf("RenderToImage: %v", err)
+				}
+
+				ink := statusVisualFor(tc.snap, theme.th).accent
+				n := countInkPixelsBox(img, graph, ink, 24,
+					graph.Shape.Width*0.35, graph.Shape.Height*0.35,
+					graph.Shape.Width*0.65, graph.Shape.Height*0.65)
+				if n < 10 {
+					t.Errorf("state mark paints %d centre ink pixels, want a visible mark", n)
+				}
+			})
+		}
+	}
+}
+
+// countInkPixels counts opaque pixels inside ly's bounds within tol of ink on
+// every channel.  Antialiased edges fall outside the tolerance; a real stroke
+// leaves a solid core inside it.
+func countInkPixels(img *image.RGBA, ly *gogui.Layout, ink gogui.Color, tol int) (n int) {
+	return countInkPixelsBox(img, ly, ink, tol, 0, 0, ly.Shape.Width, ly.Shape.Height)
+}
+
+// countInkPixelsBox is countInkPixels restricted to a box inside ly, measured
+// from ly's top-left.  It lets a test probe the shield's centre (the state
+// mark) without the outline dominating the count.
+func countInkPixelsBox(img *image.RGBA, ly *gogui.Layout, ink gogui.Color, tol int, bx0, by0, bx1, by1 float32) (n int) {
+	bounds := img.Bounds()
+	x0 := max(int(ly.Shape.X+bx0), bounds.Min.X)
+	y0 := max(int(ly.Shape.Y+by0), bounds.Min.Y)
+	x1 := min(int(ly.Shape.X+bx1+0.5), bounds.Max.X)
+	y1 := min(int(ly.Shape.Y+by1+0.5), bounds.Max.Y)
+
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			c := img.RGBAAt(x, y)
+			if c.A != 0xff {
+				continue
+			}
+			if absI(int(c.R)-int(ink.R)) <= tol &&
+				absI(int(c.G)-int(ink.G)) <= tol &&
+				absI(int(c.B)-int(ink.B)) <= tol {
+				n++
+			}
+		}
+	}
+
+	return n
+}
+
+// absI is an int absolute value.
+func absI(v int) int {
+	if v < 0 {
+		return -v
+	}
+
+	return v
+}
+
+// TestStatusLabelsUseDisplayNames proves the hero chips and the Connection Info
+// rows render the human provider, variant, and protocol labels, never the raw
+// backend values from the summary.
+func TestStatusLabelsUseDisplayNames(t *testing.T) {
+	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
+
+	for _, ly := range []*gogui.Layout{
+		mustFindLayout(t, w, root, "gui:banner:chips"),
+		mustFindLayout(t, w, root, "gui:card:connection"),
+	} {
+		texts := textSet(ly)
+		for _, want := range []string{"ControlD", "Ads and trackers blocked", "DoH"} {
+			if !texts[want] {
+				t.Errorf("%s missing display label %q; got %v", ly.Shape.ID, want, texts)
+			}
+		}
+		for _, raw := range []string{"controld", "p2", "doh"} {
+			if texts[raw] {
+				t.Errorf("%s still renders raw value %q", ly.Shape.ID, raw)
+			}
+		}
+	}
+}
+
+// assertStatusDashboard renders the Status page and asserts the dashboard
+// geometry for the chosen layout.
+func assertStatusDashboard(t *testing.T, app *App, width, height int, stacked bool) {
+	t.Helper()
+
+	w, root := layoutFor(t, app, width, height)
+
+	img, err := soft.RenderToImage(w, 1)
+	if err != nil {
+		t.Fatalf("RenderToImage: %v", err)
+	}
+	if img == nil || img.Bounds().Empty() {
+		t.Fatal("render produced an empty image")
+	}
+	if n := distinctColors(img); n < 4 {
+		t.Fatalf("render looks blank: %d distinct colors", n)
+	}
+
+	hero := mustFindLayout(t, w, root, "gui:banner")
+	conn := mustFindLayout(t, w, root, "gui:card:connection")
+	filtering := mustFindLayout(t, w, root, "gui:card:filtering")
+	lists := mustFindLayout(t, w, root, "gui:card:filterlists")
+	cache := mustFindLayout(t, w, root, "gui:card:cache")
+
+	for _, ly := range []*gogui.Layout{hero, conn, filtering, lists, cache} {
+		if ly.Shape.Width <= 1 || ly.Shape.Height <= 1 {
+			t.Errorf("%s collapsed to %.0fx%.0f", ly.Shape.ID, ly.Shape.Width, ly.Shape.Height)
+		}
+	}
+
+	// The duplicated list count is gone: the Filter lists card owns that data.
+	if n := countText(filtering, "Filter lists"); n != 0 {
+		t.Errorf("Filtering card still renders a duplicated %q row (%d)", "Filter lists", n)
+	}
+
+	// Bootstrap is stacked (an IPv6 literal needs the full card width) but its
+	// label and values share the Cache card's left label column and rhythm.
+	cacheLabel := findTextLayout(cache, "Cache")
+	bootstrapLabel := mustFindLayout(t, w, root, "gui:status:bootstrap:label")
+	bootstrapValue := mustFindLayout(t, w, root, "gui:status:bootstrap:value")
+	if cacheLabel == nil {
+		t.Fatal("Cache card has no Cache label")
+	}
+	if absF(bootstrapLabel.Shape.X-cacheLabel.Shape.X) > 0.5 {
+		t.Errorf("Bootstrap label x=%.1f != Cache label x=%.1f",
+			bootstrapLabel.Shape.X, cacheLabel.Shape.X)
+	}
+	if absF(bootstrapValue.Shape.X-bootstrapLabel.Shape.X) > 0.5 {
+		t.Errorf("Bootstrap values x=%.1f do not share the label column x=%.1f",
+			bootstrapValue.Shape.X, bootstrapLabel.Shape.X)
+	}
+	if n := countText(cache, "Bootstrap"); n != 1 {
+		t.Errorf("Bootstrap label rendered %d times, want 1", n)
+	}
+
+	// The hero carries the geometric illustration.
+	graph := mustFindLayout(t, w, root, "gui:status:graph")
+	if graph.Shape.Width < 100 || graph.Shape.Height < 100 {
+		t.Errorf("hero illustration is %.0fx%.0f, want a real shape",
+			graph.Shape.Width, graph.Shape.Height)
+	}
+	if !layoutContains(hero, graph) {
+		t.Error("hero illustration is outside the hero card")
+	}
+
+	// The illustration is centred in the hero's inner height: equal breathing
+	// room above and below, even when the paired card stretches the hero.
+	innerTop := hero.Shape.Y + hero.Shape.SizeBorder + hero.Shape.Padding.Top
+	innerBottom := hero.Shape.Y + hero.Shape.Height - hero.Shape.SizeBorder - hero.Shape.Padding.Bottom
+	graphTopGap := graph.Shape.Y - innerTop
+	graphBottomGap := innerBottom - (graph.Shape.Y + graph.Shape.Height)
+	if absF(graphTopGap-graphBottomGap) > 1 {
+		t.Errorf("illustration is %.1f px from the hero top and %.1f px from the bottom: not centred",
+			graphTopGap, graphBottomGap)
+	}
+
+	grid := mustFindLayout(t, w, root, "gui:status:grid")
+	page := mustFindLayout(t, w, root, "gui:content")
+	if want := page.Shape.Width - page.Shape.Padding.Width(); absF(grid.Shape.Width-want) > 0.5 {
+		t.Errorf("dashboard width %.1f != page content width %.1f", grid.Shape.Width, want)
+	}
+	if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+		t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+	}
+
+	if stacked {
+		if conn.Shape.Y <= hero.Shape.Y+hero.Shape.Height-0.5 {
+			t.Errorf("connection panel y=%.0f does not sit below the hero (bottom %.0f)",
+				conn.Shape.Y, hero.Shape.Y+hero.Shape.Height)
+		}
+		if absF(conn.Shape.X-hero.Shape.X) > 0.5 || absF(conn.Shape.Width-hero.Shape.Width) > 0.5 {
+			t.Errorf("stacked connection panel is not hero-width: %.0f..%.0f vs %.0f..%.0f",
+				conn.Shape.X, conn.Shape.X+conn.Shape.Width, hero.Shape.X, hero.Shape.X+hero.Shape.Width)
+		}
+
+		if absF(filtering.Shape.Y-lists.Shape.Y) > 1 {
+			t.Errorf("filtering and filter lists are not on one row: y=%.0f/%.0f",
+				filtering.Shape.Y, lists.Shape.Y)
+		}
+		if absF(filtering.Shape.Width-lists.Shape.Width) > 1 {
+			t.Errorf("filtering width %.0f != filter lists width %.0f",
+				filtering.Shape.Width, lists.Shape.Width)
+		}
+		if absF(filtering.Shape.Height-lists.Shape.Height) > 1 {
+			t.Errorf("filtering height %.0f != filter lists height %.0f",
+				filtering.Shape.Height, lists.Shape.Height)
+		}
+		if gap := lists.Shape.X - (filtering.Shape.X + filtering.Shape.Width); gap <= 0.5 {
+			t.Errorf("filtering and filter lists have no gutter (%.1f)", gap)
+		}
+		if cache.Shape.Y <= filtering.Shape.Y+filtering.Shape.Height-0.5 {
+			t.Errorf("cache card y=%.0f does not sit below the first bottom row", cache.Shape.Y)
+		}
+		if absF(cache.Shape.Width-grid.Shape.Width) > 0.5 {
+			t.Errorf("stacked cache width %.0f is not the dashboard width %.0f",
+				cache.Shape.Width, grid.Shape.Width)
+		}
+
+		return
+	}
+
+	// Wide layout: hero and connection share the top row, hero wider, and the
+	// pair ends on one baseline.
+	if absF(conn.Shape.Y-hero.Shape.Y) > 1 {
+		t.Errorf("top-row cards do not share a baseline: y=%.0f/%.0f", hero.Shape.Y, conn.Shape.Y)
+	}
+	if absF(conn.Shape.Height-hero.Shape.Height) > 1 {
+		t.Errorf("connection height %.0f != hero height %.0f",
+			conn.Shape.Height, hero.Shape.Height)
+	}
+	if conn.Shape.X <= hero.Shape.X {
+		t.Errorf("connection panel x=%.0f is not right of the hero x=%.0f", conn.Shape.X, hero.Shape.X)
+	}
+	if conn.Shape.Width >= hero.Shape.Width {
+		t.Errorf("connection panel width %.0f is not narrower than the hero %.0f",
+			conn.Shape.Width, hero.Shape.Width)
+	}
+	topGap := conn.Shape.X - (hero.Shape.X + hero.Shape.Width)
+	if topGap <= 0.5 {
+		t.Errorf("top-row cards have no gutter (%.1f)", topGap)
+	}
+
+	bottomY := filtering.Shape.Y
+	for _, ly := range []*gogui.Layout{lists, cache} {
+		if absF(ly.Shape.Y-bottomY) > 1 {
+			t.Errorf("%s y=%.0f is not on the bottom row y=%.0f", ly.Shape.ID, ly.Shape.Y, bottomY)
+		}
+		if absF(ly.Shape.Width-filtering.Shape.Width) > 1 {
+			t.Errorf("%s width %.0f != filtering width %.0f",
+				ly.Shape.ID, ly.Shape.Width, filtering.Shape.Width)
+		}
+		if absF(ly.Shape.Height-filtering.Shape.Height) > 1 {
+			t.Errorf("%s height %.0f != filtering height %.0f",
+				ly.Shape.ID, ly.Shape.Height, filtering.Shape.Height)
+		}
+	}
+	if filtering.Shape.Y <= hero.Shape.Y+hero.Shape.Height-0.5 {
+		t.Errorf("bottom row y=%.0f does not sit below the top row", filtering.Shape.Y)
+	}
+
+	// One gutter across the whole dashboard.
+	gap1 := lists.Shape.X - (filtering.Shape.X + filtering.Shape.Width)
+	gap2 := cache.Shape.X - (lists.Shape.X + lists.Shape.Width)
+	if gap1 <= 0.5 || gap2 <= 0.5 {
+		t.Errorf("bottom-row gutter is missing: %.1f/%.1f", gap1, gap2)
+	}
+	if absF(gap1-gap2) > 0.5 {
+		t.Errorf("bottom-row gutters differ: %.1f/%.1f", gap1, gap2)
+	}
+	if absF(topGap-gap1) > 0.5 {
+		t.Errorf("top-row gutter %.1f != bottom-row gutter %.1f", topGap, gap1)
+	}
+
+	assertNoFindings(t, w)
 }
 
 // TestSettingsLayout proves the Settings page lays out the same way.
@@ -188,7 +613,7 @@ func TestRulesPageScrolls(t *testing.T) {
 
 // TestRulesListSection proves the filter-list editor renders on the Rules page
 // (one row per seeded list showing the redacted host, the add-by-URL field, and
-// the "Update blocklists" action) — and is absent from Settings — with no
+// the "Update filter lists" action) — and is absent from Settings — with no
 // widget findings.
 func TestRulesListSection(t *testing.T) {
 	app := rulesApp()
@@ -197,6 +622,7 @@ func TestRulesListSection(t *testing.T) {
 
 	for _, id := range []string{
 		"gui:edit:lists",
+		"gui:edit:filtering", "gui:edit:block",
 		"gui:list:0", "gui:list:1",
 		"gui:list:0:enable", "gui:list:0:remove",
 		"gui:list:1:enable", "gui:list:1:remove",
@@ -205,6 +631,14 @@ func TestRulesListSection(t *testing.T) {
 	} {
 		if n := len(w.ResolveID(id)); n != 1 {
 			t.Errorf("%s rendered %d times, want 1", id, n)
+		}
+	}
+
+	// Filtering is part of the list card, directly above the rows.
+	listsCard := mustFindLayout(t, w, root, "gui:card:lists")
+	for _, id := range []string{"gui:edit:filtering", "gui:edit:block"} {
+		if ly := mustFindLayout(t, w, root, id); !layoutContains(listsCard, ly) {
+			t.Errorf("%s is not inside the Filter lists card", id)
 		}
 	}
 
@@ -223,15 +657,38 @@ func TestRulesListSection(t *testing.T) {
 	// Running service: the refresh action is offered.
 	assertDisabled(t, root, w, "gui:lists:refresh", false)
 	assertNoFindings(t, w)
+
+	// The moved controls follow the Rules page's own gates.
+	off := rulesApp()
+	off.ensureDraft()
+	off.draft.filtering = false
+	off.seeded = true
+	ow := newSettingsWindow(t, off)
+	oroot := ow.TestRender(nil)
+	assertDisabled(t, oroot, ow, "gui:edit:block", true)
+
+	busy := rulesApp()
+	busy.ensureDraft()
+	busy.draft.name = "default"
+	busy.busy = true
+	busy.seeded = true
+	bw := newSettingsWindow(t, busy)
+	broot := bw.TestRender(nil)
+	assertDisabled(t, broot, bw, "gui:edit:filtering", true)
+	assertDisabled(t, broot, bw, "gui:edit:block", true)
 }
 
-// TestSettingsDropsMovedSections proves the filter-list and per-domain editors
-// no longer render on the Settings page (they moved to the Rules page).
+// TestSettingsDropsMovedSections proves the filter-list, filtering, and
+// per-domain editors no longer render on the Settings page (they moved to the
+// Rules page).
 func TestSettingsDropsMovedSections(t *testing.T) {
 	w := newSettingsWindow(t, settingsApp())
 	w.TestRender(nil)
 
-	for _, id := range []string{"gui:edit:lists", "gui:edit:rules", "gui:rule:add", "gui:list:add"} {
+	for _, id := range []string{
+		"gui:edit:lists", "gui:edit:rules", "gui:edit:filtering", "gui:edit:block",
+		"gui:rule:add", "gui:list:add",
+	} {
 		if n := len(w.ResolveID(id)); n != 0 {
 			t.Errorf("%s still renders on Settings (%d), want moved to Rules", id, n)
 		}
@@ -276,7 +733,7 @@ func TestListAddRemoveRows(t *testing.T) {
 	assertNoFindings(t, w)
 }
 
-// TestRefreshDisabledWhenStopped proves "Update blocklists" is inert while the
+// TestRefreshDisabledWhenStopped proves "Update filter lists" is inert while the
 // service is not running (the action would have nothing to drive).
 func TestRefreshDisabledWhenStopped(t *testing.T) {
 	app := rulesApp()
@@ -484,7 +941,7 @@ func TestRulesWildcardHint(t *testing.T) {
 	w := newSettingsWindow(t, app)
 	root := w.TestRender(nil)
 
-	const want = "*.example.com matches subdomains only; example.com matches the domain and its subdomains"
+	const want = "*.example.com matches subdomains only; example.com matches the domain and its subdomains."
 	if !textSet(root)[want] {
 		t.Errorf("wildcard hint not found; want %q", want)
 	}
@@ -1154,47 +1611,49 @@ func findTextLayout(ly *gogui.Layout, label string) *gogui.Layout {
 }
 
 // TestBannerIndicatorCentred proves the status indicator is vertically centred
-// on the headline line, not parked at the banner's top corner.
+// on the headline line inside the state pill.
 func TestBannerIndicatorCentred(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
 	dot := mustFindLayout(t, w, root, "gui:banner:dot")
-	title := mustFindLayout(t, w, root, "gui:banner:title")
+	headline := mustFindLayout(t, w, root, "gui:banner:headline")
 
 	dotCY := dot.Shape.Y + dot.Shape.Height/2
-	titleCY := title.Shape.Y + title.Shape.Height/2
-	if absF(dotCY-titleCY) > 2 {
-		t.Errorf("indicator centre %.1f is not on the title centre %.1f", dotCY, titleCY)
+	headlineCY := headline.Shape.Y + headline.Shape.Height/2
+	if absF(dotCY-headlineCY) > 2 {
+		t.Errorf("indicator centre %.1f is not on the headline centre %.1f", dotCY, headlineCY)
 	}
 }
 
-// TestBannerAligned proves the banner's dot and the detail body share one left
-// edge (the dot was indented by the title row's default padding).
-func TestBannerAligned(t *testing.T) {
+// TestHeroAligned proves the hero's caption, headline pill, and detail body
+// share one left edge inside the card.
+func TestHeroAligned(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
-	dot := mustFindLayout(t, w, root, "gui:banner:dot")
-	banner := mustFindLayout(t, w, root, "gui:banner")
-	detail := childLayout(banner, 1)
-	if detail == nil || detail.Shape == nil {
-		t.Fatal("banner detail row missing")
+	body := mustFindLayout(t, w, root, "gui:banner:body")
+	pill := mustFindLayout(t, w, root, "gui:banner:title")
+	detail := mustFindLayout(t, w, root, "gui:banner:detail")
+
+	left := body.Shape.X + body.Shape.Padding.Left + body.Shape.SizeBorder
+	if absF(pill.Shape.X-left) > 1 {
+		t.Errorf("pill x=%.0f, want hero content x=%.0f", pill.Shape.X, left)
 	}
-	if absF(dot.Shape.X-detail.Shape.X) > 1 {
-		t.Errorf("banner dot x=%.0f vs detail x=%.0f: not on one left edge", dot.Shape.X, detail.Shape.X)
+	if absF(detail.Shape.X-left) > 1 {
+		t.Errorf("detail x=%.0f, want hero content x=%.0f", detail.Shape.X, left)
 	}
 }
 
 // TestToastAligned proves the toast's title and body share the same left inset.
 func TestToastAligned(t *testing.T) {
 	app := statusApp()
-	app.toast = &noticeMessage{kind: noticeSuccess, title: "Enabled", body: "Done."}
+	app.toast = &noticeMessage{kind: noticeError, title: "Could not enable protection", body: "Access denied while binding."}
 
 	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
 
 	toast := mustFindLayout(t, w, root, "gui:toast")
 	titleRow := childLayout(toast, 0)
-	body := childLayout(toast, 1)
-	if titleRow == nil || body == nil || body.Shape == nil {
+	body := mustFindLayout(t, w, root, "gui:toast:body")
+	if titleRow == nil || body.Shape == nil {
 		t.Fatal("toast title/body missing")
 	}
 	titleText := childLayout(titleRow, 0)
@@ -1203,6 +1662,34 @@ func TestToastAligned(t *testing.T) {
 	}
 	if absF(titleText.Shape.X-body.Shape.X) > 1 {
 		t.Errorf("toast title x=%.0f vs body x=%.0f: not on one left inset", titleText.Shape.X, body.Shape.X)
+	}
+}
+
+// TestToastTitleOnly proves a body-less toast renders no body node and no
+// stranded gap: it is just the title row, shorter than a toast with a body.
+func TestToastTitleOnly(t *testing.T) {
+	withBody := statusApp()
+	withBody.toast = &noticeMessage{kind: noticeSuccess, title: "Enabled", body: "Protection is on for every adapter."}
+	wb, rootb := layoutFor(t, withBody, defaultWidth, defaultHeight)
+	bodyToast := mustFindLayout(t, wb, rootb, "gui:toast")
+	if n := len(wb.ResolveID("gui:toast:body")); n != 1 {
+		t.Fatalf("setup toast body widgets = %d, want 1", n)
+	}
+
+	titleOnly := statusApp()
+	titleOnly.toast = &noticeMessage{kind: noticeSuccess, title: "Enabled"}
+	w, root := layoutFor(t, titleOnly, defaultWidth, defaultHeight)
+	toast := mustFindLayout(t, w, root, "gui:toast")
+
+	if n := len(w.ResolveID("gui:toast:body")); n != 0 {
+		t.Fatalf("title-only toast renders %d body widgets", n)
+	}
+	if len(toast.Children) != 1 {
+		t.Fatalf("title-only toast children = %d, want 1", len(toast.Children))
+	}
+	if toast.Shape.Height >= bodyToast.Shape.Height {
+		t.Errorf("title-only toast height %.1f >= with-body height %.1f: stranded gap",
+			toast.Shape.Height, bodyToast.Shape.Height)
 	}
 }
 
@@ -1267,16 +1754,67 @@ func TestServiceStartStopButton(t *testing.T) {
 	}
 }
 
-// TestHeaderControlsRightOfTitle proves the header actions sit right of the
-// identity block, and that Restore (when offered for a crash leftover) is the
-// right-most action.
+// TestTrayIconIsPrescaled proves the tray host receives an embedded frame at
+// the requested notification-area size, so the shell does not scale a larger
+// icon itself.  Sizes without a frame take the next one up.
+func TestTrayIconIsPrescaled(t *testing.T) {
+	for _, tt := range []struct {
+		px   int
+		want int
+	}{
+		{16, 16},
+		{20, 20},
+		{24, 24},
+		{32, 32},
+		{40, 40},
+		{48, 48},
+		{96, 96},
+		{100, 128},
+		{200, 256},
+	} {
+		img, err := png.Decode(bytes.NewReader(appIconPNGAt(tt.px)))
+		if err != nil {
+			t.Fatalf("appIconPNGAt(%d): %v", tt.px, err)
+		}
+		if got := img.Bounds().Dx(); got != tt.want {
+			t.Errorf("appIconPNGAt(%d) is %dpx wide, want %dpx", tt.px, got, tt.want)
+		}
+	}
+}
+
+// TestBrandMarksUseAppIcon proves the header and About marks draw the embedded
+// window icon, not a second hand-drawn logo that can drift from it.
+func TestBrandMarksUseAppIcon(t *testing.T) {
+	w, root := layoutFor(t, aboutArtifactApp(), defaultWidth, defaultHeight)
+
+	header := mustFindLayout(t, w, root, "gui:brand")
+	about := mustFindLayout(t, w, root, "gui:about:mark")
+
+	if !strings.HasPrefix(header.Shape.Resource, "mem:") {
+		t.Fatal("header mark is not the embedded app icon")
+	}
+	if header.Shape.Resource != about.Shape.Resource {
+		t.Error("header and About marks draw different icon art")
+	}
+	if header.Shape.Width != brandSize || header.Shape.Height != brandSize {
+		t.Errorf("header mark is %.0fx%.0f, want %.0fx%.0f",
+			header.Shape.Width, header.Shape.Height, brandSize, brandSize)
+	}
+	if header.Shape.Width != about.Shape.Width || header.Shape.Height != about.Shape.Height {
+		t.Errorf("header mark %.0fx%.0f != About mark %.0fx%.0f",
+			header.Shape.Width, header.Shape.Height, about.Shape.Width, about.Shape.Height)
+	}
+}
+
+// TestHeaderControlsRightOfTitle proves the header has no theme control any
+// more, and that Restore (when offered for a crash leftover) is the only and
+// therefore right-most action.
 func TestHeaderControlsRightOfTitle(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
 	title := mustFindLayout(t, w, root, "gui:brand:title")
-	theme := mustFindLayout(t, w, root, "gui:theme")
-	if theme.Shape.X <= title.Shape.X {
-		t.Errorf("theme control x=%.1f is not right of the title x=%.1f", theme.Shape.X, title.Shape.X)
+	if n := len(w.ResolveID("gui:theme")); n != 0 {
+		t.Errorf("header still renders the theme control (%d)", n)
 	}
 
 	dirty := statusApp()
@@ -1284,10 +1822,12 @@ func TestHeaderControlsRightOfTitle(t *testing.T) {
 	dirty.snap.status.Mode = "off"
 	dw, droot := layoutFor(t, dirty, defaultWidth, defaultHeight)
 
-	dtheme := mustFindLayout(t, dw, droot, "gui:theme")
 	restore := mustFindLayout(t, dw, droot, "gui:action:restore")
-	if restore.Shape.X <= dtheme.Shape.X {
-		t.Errorf("Restore x=%.1f is not right of the theme control x=%.1f", restore.Shape.X, dtheme.Shape.X)
+	if restore.Shape.X <= title.Shape.X {
+		t.Errorf("Restore x=%.1f is not right of the title x=%.1f", restore.Shape.X, title.Shape.X)
+	}
+	if n := len(dw.ResolveID("gui:theme")); n != 0 {
+		t.Errorf("dirty header renders the theme control (%d)", n)
 	}
 }
 
@@ -1404,11 +1944,12 @@ func TestProfileButtonsAlign(t *testing.T) {
 }
 
 // TestDropdownPopupsWide proves the Settings dropdown popups share one width
-// at the default window — a short list (Profile, Block response) no longer
-// collapses to a tiny box — and that the shared floor does not push the closed
-// field past its card at the minimum window.
+// at the default window — a short list (Profile) no longer collapses to a tiny
+// box — and that the shared floor does not push the closed field past its card
+// at the minimum window.  The Block response select moved to the Rules page, so
+// it is measured there against the same floor.
 func TestDropdownPopupsWide(t *testing.T) {
-	ids := []string{"gui:profile:select", "gui:edit:provider", "gui:edit:variant", "gui:edit:block"}
+	ids := []string{"gui:profile:select", "gui:edit:provider", "gui:edit:variant"}
 
 	w := gogui.NewTestWindow(t, gogui.WindowCfg{
 		Width: defaultWidth, Height: defaultHeight, State: settingsApp(),
@@ -1436,6 +1977,26 @@ func TestDropdownPopupsWide(t *testing.T) {
 			t.Errorf("%s popup width %.0f differs from %s popup %.0f",
 				id, ly.Shape.Width, ids[0], first)
 		}
+	}
+
+	// The Block response select lives on the Rules page now, but it uses the
+	// same floor: its popup is the same wide menu.
+	rw := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: 2400, State: rulesApp(),
+	})
+	rw.SetView(view)
+	rw.TestRender(nil)
+	if err := rw.TestKey("gui:edit:block", gogui.KeyEnter, 0); err != nil {
+		t.Fatalf("open gui:edit:block: %v", err)
+	}
+	rroot := rw.TestRender(nil)
+	block := mustFindLayout(t, rw, rroot, "gui:edit:block:dropdown")
+	if block.Shape.Width <= 200 {
+		t.Errorf("gui:edit:block popup width %.0f is still a tiny box", block.Shape.Width)
+	}
+	if absF(block.Shape.Width-first) > 0.5 {
+		t.Errorf("gui:edit:block popup width %.0f differs from the Settings popup %.0f",
+			block.Shape.Width, first)
 	}
 
 	// The floor is below the field width, so at the smallest window the field
@@ -1506,6 +2067,7 @@ func TestRulesRightEdgesAlign(t *testing.T) {
 			innerRight := card.Shape.X + card.Shape.Width - card.Shape.Padding.Right - card.Shape.SizeBorder
 
 			for _, id := range []string{
+				"gui:edit:filtering",
 				"gui:list:0:remove", "gui:list:1:remove",
 				"gui:list:add:row", "gui:lists:refresh",
 			} {
@@ -1513,6 +2075,10 @@ func TestRulesRightEdgesAlign(t *testing.T) {
 				if r := ly.Shape.X + ly.Shape.Width; absF(r-innerRight) > 0.5 {
 					t.Errorf("%s right %.1f != card inner right %.1f", id, r, innerRight)
 				}
+			}
+
+			if !textSet(card)["Blocks domains on the enabled filter lists below."] {
+				t.Error("filtering switch is missing its descriptor")
 			}
 
 			field := mustFindLayout(t, w, root, "gui:list:add:url")
@@ -1526,18 +2092,41 @@ func TestRulesRightEdgesAlign(t *testing.T) {
 	}
 }
 
-// TestHeaderAligned proves the header controls are vertically centred in the
+// TestCacheSwitchUsesSettingRow proves the cache switch uses the same settings
+// row as Window & tray: its descriptor sits on the left and the switch lands on
+// the editor card's inner right edge.
+func TestCacheSwitchUsesSettingRow(t *testing.T) {
+	w, root := layoutFor(t, settingsApp(), defaultWidth, 2400)
+
+	card := mustFindLayout(t, w, root, "gui:card:editor")
+	innerRight := card.Shape.X + card.Shape.Width - card.Shape.Padding.Right - card.Shape.SizeBorder
+
+	sw := mustFindLayout(t, w, root, "gui:edit:cache")
+	if r := sw.Shape.X + sw.Shape.Width; absF(r-innerRight) > 0.5 {
+		t.Errorf("cache switch right %.1f != card inner right %.1f", r, innerRight)
+	}
+	if !textSet(card)["Keeps recent answers so repeat lookups are faster."] {
+		t.Error("cache switch is missing its descriptor")
+	}
+	assertNoFindings(t, w)
+}
+
+// TestHeaderAligned proves the header action is vertically centred in the
 // header row.
 func TestHeaderAligned(t *testing.T) {
-	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
+	app := statusApp()
+	app.snap.status.Enabled = false
+	app.snap.status.Mode = "off"
+
+	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
 
 	hdr := mustFindLayout(t, w, root, "gui:header")
-	theme := mustFindLayout(t, w, root, "gui:theme")
+	restore := mustFindLayout(t, w, root, "gui:action:restore")
 
-	themeCY := theme.Shape.Y + theme.Shape.Height/2
+	restoreCY := restore.Shape.Y + restore.Shape.Height/2
 	hdrCY := hdr.Shape.Y + hdr.Shape.Height/2
-	if absF(themeCY-hdrCY) > 2 {
-		t.Errorf("theme control centre %.1f is not on the header centre %.1f", themeCY, hdrCY)
+	if absF(restoreCY-hdrCY) > 2 {
+		t.Errorf("Restore centre %.1f is not on the header centre %.1f", restoreCY, hdrCY)
 	}
 }
 
@@ -1593,7 +2182,7 @@ func TestToastLayout(t *testing.T) {
 // TestToastDismissClears proves the close button clears the toast.
 func TestToastDismissClears(t *testing.T) {
 	app := statusApp()
-	app.toast = &noticeMessage{kind: noticeSuccess, title: "Enabled", body: "Done."}
+	app.toast = &noticeMessage{kind: noticeSuccess, title: "Enabled"}
 
 	w := gogui.NewTestWindow(t, gogui.WindowCfg{
 		Width: defaultWidth, Height: defaultHeight, State: app,
@@ -1627,7 +2216,7 @@ func TestToastAutoDismiss(t *testing.T) {
 	w.SetView(view)
 	w.TestRender(nil)
 
-	app.showToast(w, noticeMessage{kind: noticeSuccess, title: "Enabled", body: "Done."})
+	app.showToast(w, noticeMessage{kind: noticeSuccess, title: "Enabled"})
 	w.TestRender(nil)
 	if n := len(w.ResolveID("gui:toast")); n == 0 {
 		t.Fatal("toast not shown")
@@ -1698,7 +2287,7 @@ func assertPageLayout(t *testing.T, app *App, width, height int, cardIDs []strin
 	}
 
 	// Every listed block must share one column: same left edge and same width.
-	// This is what keeps the banner exactly as wide as the cards below it.
+	// This is what keeps a page's blocks on one column.
 	for i := 1; i < len(rects); i++ {
 		if absF(rects[i].x-rects[0].x) > 0.5 || absF(rects[i].w-rects[0].w) > 0.5 {
 			t.Errorf("blocks not on one column: %s (x=%.0f w=%.0f) vs %s (x=%.0f w=%.0f)",
@@ -1718,10 +2307,12 @@ func assertPageLayout(t *testing.T, app *App, width, height int, cardIDs []strin
 	assertNoFindings(t, w)
 }
 
-// TestContentColumnCapped proves the reading column is capped at
-// contentMaxWidth and centered, that the cards fill it (minus the page inset),
-// and that the page keeps the scrollbar gutter (right = left + scrollbarGutter).
+// TestContentColumnCapped proves the Status column is capped at
+// contentMaxWidth, that the dashboard fills it (minus the page inset), and that
+// the page keeps the scrollbar gutter (right = left + scrollbarGutter).
 func TestContentColumnCapped(t *testing.T) {
+	navDivider := float32(1)
+
 	for _, size := range []struct {
 		name string
 		w, h int
@@ -1730,17 +2321,19 @@ func TestContentColumnCapped(t *testing.T) {
 			w, root := layoutFor(t, statusApp(), size.w, size.h)
 
 			page := mustFindLayout(t, w, root, "gui:content")
-			if absF(page.Shape.Width-contentMaxWidth) > 0.5 {
-				t.Errorf("page width %.1f != contentMaxWidth %.0f", page.Shape.Width, contentMaxWidth)
+			avail := float32(size.w) - (navRailWidth + 2*navRailPad) - navDivider - 2*contentPad
+			wantWidth := min(avail, contentMaxWidth)
+			if absF(page.Shape.Width-wantWidth) > 0.5 {
+				t.Errorf("page width %.1f != min(available, cap) %.1f", page.Shape.Width, wantWidth)
 			}
 			if got := page.Shape.Padding.Right - page.Shape.Padding.Left; absF(got-scrollbarGutter) > 0.5 {
 				t.Errorf("page right-left padding = %.1f, want scrollbar gutter %.0f", got, scrollbarGutter)
 			}
 
-			// Cards fill the column's content box.
-			card := mustFindLayout(t, w, root, "gui:card:profile")
-			if want := page.Shape.Width - page.Shape.Padding.Width(); absF(card.Shape.Width-want) > 0.5 {
-				t.Errorf("card width %.1f != page content width %.1f", card.Shape.Width, want)
+			// The dashboard fills the column's content box.
+			grid := mustFindLayout(t, w, root, "gui:status:grid")
+			if want := page.Shape.Width - page.Shape.Padding.Width(); absF(grid.Shape.Width-want) > 0.5 {
+				t.Errorf("dashboard width %.1f != page content width %.1f", grid.Shape.Width, want)
 			}
 
 			// Centered within the content area.
@@ -1751,6 +2344,35 @@ func TestContentColumnCapped(t *testing.T) {
 				t.Errorf("column not centered: left gap %.1f, right gap %.1f", leftGap, rightGap)
 			}
 		})
+	}
+}
+
+// TestPagesSharePageColumn proves every page sits in the same capped, centred
+// column, so switching pages never shifts the content edges.
+func TestPagesSharePageColumn(t *testing.T) {
+	sw, statusRoot := layoutFor(t, statusApp(), wideWidth, wideHeight)
+	status := mustFindLayout(t, sw, statusRoot, "gui:content")
+
+	pages := []struct {
+		name string
+		id   string
+		app  *App
+	}{
+		{"settings", "gui:settings", settingsApp()},
+		{"rules", "gui:rules", rulesApp()},
+		{"logging", "gui:logging", loggingApp()},
+		{"about", "gui:about", aboutArtifactApp()},
+	}
+
+	for _, p := range pages {
+		w, root := layoutFor(t, p.app, wideWidth, wideHeight)
+		col := mustFindLayout(t, w, root, p.id)
+		if absF(col.Shape.Width-status.Shape.Width) > 0.5 {
+			t.Errorf("%s width %.0f != Status width %.0f", p.name, col.Shape.Width, status.Shape.Width)
+		}
+		if absF(col.Shape.X-status.Shape.X) > 0.5 {
+			t.Errorf("%s x=%.0f != Status x=%.0f", p.name, col.Shape.X, status.Shape.X)
+		}
 	}
 }
 
@@ -1825,7 +2447,50 @@ func mustFindLayout(t *testing.T, w *gogui.Window, root *gogui.Layout, id string
 	return ly
 }
 
-// TestRenderArtifacts writes PNGs of both pages at two sizes in light and dark,
+// rulesArtifactApp is rulesApp with a couple of rule rows, so the artifact PNGs
+// show the rule-panel design rather than only the empty-state card.
+func rulesArtifactApp() *App {
+	app := rulesApp()
+	app.ensureDraft()
+	app.draft.perDomain = []ruleDraft{
+		{domains: "example.com, www.example.com", upstream: "1.1.1.1", enabled: true},
+		{domains: "ads.example", bypass: true, enabled: false},
+	}
+	app.draft.rulesKnown = true
+	app.seeded = true
+
+	return app
+}
+
+// loggingArtifactApp shows a full tail so the artifact PNGs exercise the
+// viewer's monospace role and the Verbose level that produces DBG lines.
+func loggingArtifactApp() *App {
+	app := loggingApp()
+	app.snap.summary.LogLevel = config.LogLevelDebug
+	app.logText = "2026-10-12T14:03:22 INF resolver started\n" +
+		"2026-10-12T14:03:22 INF profile default (controld/p2)\n" +
+		"2026-10-12T14:03:23 INF filtering enabled (2 lists)\n" +
+		"2026-10-12T14:03:24 INF listening on 127.0.0.1:53 and [::1]:53\n" +
+		"2026-10-12T14:03:24 DBG query example.com A\n" +
+		"2026-10-12T14:03:24 DBG cached example.com A 0.0.0.0\n" +
+		"2026-10-12T14:03:25 DBG query ads.example.net A\n" +
+		"2026-10-12T14:03:25 DBG blocked ads.example.net (list 0)\n" +
+		"2026-10-12T14:03:26 DBG query github.com AAAA\n" +
+		"2026-10-12T14:03:26 INF upstream response github.com AAAA 59s\n"
+
+	return app
+}
+
+// aboutArtifactApp is the About page with the sample service info resolved, so
+// the version card renders real values in the artifact PNGs.
+func aboutArtifactApp() *App {
+	app := settingsApp()
+	app.page = pageAbout
+
+	return app
+}
+
+// TestRenderArtifacts writes PNGs of every page at three sizes in light and dark,
 // gated so it stays out of the normal test path.  It runs when
 // GUI_RENDER_ARTIFACTS=1 is set — or when the -run selector names it, which is
 // how the documented `./dev/go test -run Render` invocation reaches it (the
@@ -1850,8 +2515,9 @@ func TestRenderArtifacts(t *testing.T) {
 	}{
 		{"status", statusApp},
 		{"settings", settingsApp},
-		{"rules", rulesApp},
-		{"logging", loggingApp},
+		{"rules", rulesArtifactApp},
+		{"logging", loggingArtifactApp},
+		{"about", aboutArtifactApp},
 	}
 	sizes := []struct {
 		name string
@@ -1859,6 +2525,7 @@ func TestRenderArtifacts(t *testing.T) {
 	}{
 		{"default", defaultWidth, defaultHeight},
 		{"large", wideWidth, wideHeight},
+		{"minimum", minWidth, minHeight},
 	}
 	themes := []struct {
 		name string

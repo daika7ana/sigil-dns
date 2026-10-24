@@ -602,25 +602,31 @@ not a status viewer.
   only path that touches staged input.
 - **Surface** — five pages (left nav rail: Status, Settings, Rules, Logging,
   About).
-  - **Status**: a banner plus profile / filtering / cache cards; the header keeps
-    only the **Restore now** action for a crash-leftover dirty state.
+  - **Status**: a dashboard — a state hero with an illustration, then
+    Connection Info, Filtering, Filter lists, and Cache & bootstrap cards
+    (stacking at narrow widths); the header keeps only the **Restore now**
+    action for a crash-leftover dirty state.
   - **Settings**: a service card — a **Start / Stop** control (Start runs the
     service and applies interception, Stop removes it; the installed/running
-    state is the header badge) plus install / remove — a profile list with add /
+    state is the header badge) plus install / remove — an **Appearance** card
+    with the Auto / Light / Dark theme picker, a profile list with add /
     rename / delete / set-active, and a per-profile editor (provider / variant /
-    protocol, masked id, custom URL, bootstrap, fallback profile, filtering +
-    block response, cache + size).
-  - **Rules**: the filter-list editor and the per-domain routing rules in one
-    **scrollable** column — per-list and per-rule enable toggles, add / remove, a
-    `*.` wildcard hint, and an "Update blocklists" action that drives the admin
-    `refresh_lists` method (offered only while the service is running).
+    protocol, masked id, custom URL, bootstrap, fallback profile, cache + size).
+  - **Rules**: the filtering toggle and block response beside the filter-list
+    editor, and the per-domain routing rules, in one **scrollable** column —
+    per-list and per-rule enable toggles, add / remove, a `*.` wildcard hint, and
+    an "Update filter lists" action that drives the admin `refresh_lists` method
+    (offered only while the service is running).
   - **Logging**: opt-in service file logging — a level selector (off / errors
     only / normal / verbose) and a file path (blank = default beside
     `config.yaml`) with a **Browse** picker and an **Apply** that takes effect at
     the **next service start**, plus a live read-only tail of the log file with a
     0–30 s refresh slider (0 = off) and **Open log file** / **Clear log file**
     actions.
-  - **About**: version, IPC protocol, author, repository, license.
+  - **About**: three cards — identity, **Version & license** (client version,
+    live service version, interface version, license and its GPL-3.0 linkage
+    note), and **Links** (author and repository, both opened in the default
+    browser).
   A `gui.lock` beside `gui.json` enforces a single GUI instance.
 - **Tray (opt-in)** — Settings → **Window & tray**: a **System tray icon**
   switch (off by default) plus, while it is on, independent **Minimize to tray**
@@ -753,10 +759,10 @@ Status: **phases 0–8 are implemented.**
    by index so list URLs never round-trip) and per-domain routing rules
    (domains, kind upstream or bypass, replace-only upstream by `Keep` index,
    per-rule `enabled`, `*.` wildcard hint); `refresh_lists` re-downloads lists
-   live (GUI "Update blocklists", CLI `refresh`).
+   live (GUI "Update filter lists", CLI `refresh`).
 6. **Enable/disable/degrade UX** — **Start / Stop** in the Settings service
-   card, service management via the helper, the dirty/"Restore now" banner, and
-   the five-page surface.
+   card, service management via the helper, the dirty **Restore now** header
+   action, and the five-page surface.
 7. **Packaging** — go-gui binary (no cgo), installer ships the GUI + Start-Menu
    shortcut, and a protocol-version mismatch is surfaced from `info`.
    Code signing stays optional, gated on repository secrets.

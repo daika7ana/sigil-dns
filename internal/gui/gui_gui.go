@@ -3,23 +3,112 @@
 package gui
 
 import (
+	"bytes"
 	"context"
-	_ "embed"
+	"image"
+	"image/draw"
+	"image/png"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend"
 
+	"github.com/daika7ana/sigil-dns/assets"
 	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
-// appIconPNG is the window icon (title bar + taskbar), embedded so the run
-// time has it without a file beside the exe.  The toolkit otherwise paints its
-// own default icon on the window even though the exe resource carries ours.
-//
-//go:embed appicon.png
-var appIconPNG []byte
+// appIconSizes lists the pre-rendered frame sizes, ascending.  The 256 frame
+// is the fallback above the largest.
+var appIconSizes = []int{16, 20, 24, 32, 40, 48, 56, 64, 96, 128}
+
+// appIconFrames reads the embedded frames once.
+var appIconFrames = sync.OnceValue(func() map[int][]byte {
+	frames := make(map[int][]byte, len(appIconSizes)+1)
+	for _, size := range appIconSizes {
+		data, err := assets.Frames.ReadFile("appicon-" + strconv.Itoa(size) + ".png")
+		if err == nil {
+			frames[size] = data
+		}
+	}
+	if data, err := assets.Frames.ReadFile("appicon-256.png"); err == nil {
+		frames[256] = data
+	}
+
+	return frames
+})
+
+// appIconFrame picks the smallest frame that covers px.  Drawing it 1:1 (or
+// with a mild downscale) avoids the GPU's linear minification, which aliases
+// the shield edge when a 256px source is squeezed into a 32px mark.
+func appIconFrame(px int) (size int, data []byte) {
+	frames := appIconFrames()
+	for _, size := range appIconSizes {
+		if size >= px {
+			if data = frames[size]; data != nil {
+				return size, data
+			}
+		}
+	}
+
+	return 256, frames[256]
+}
+
+// appIconSources caches the registered mem: source per frame size.
+var appIconSources sync.Map // size int -> src string
+
+// appIconSource returns the frame for px as a mem: image source.  The header
+// and About marks draw it, so they cannot drift from the title-bar and tray
+// icon.
+func appIconSource(px int) string {
+	size, data := appIconFrame(px)
+	if src, ok := appIconSources.Load(size); ok {
+		return src.(string)
+	}
+	if src := registerIconSource(size, data); src != "" {
+		return src
+	}
+	if size == 256 {
+		return ""
+	}
+
+	// A damaged requested frame must not blank the header mark: fall back to
+	// the 256px master (or its cache entry, if a caller already decoded it).
+	size, data = 256, appIconFrames()[256]
+	if src, ok := appIconSources.Load(size); ok {
+		return src.(string)
+	}
+
+	return registerIconSource(size, data)
+}
+
+// registerIconSource decodes and caches one frame.  It returns "" on failure
+// and does not cache it, so a later call can retry or use the master.
+func registerIconSource(size int, data []byte) string {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return ""
+	}
+
+	b := img.Bounds()
+	nrgba := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(nrgba, nrgba.Bounds(), img, b.Min, draw.Src)
+
+	src := gogui.UseImage("appicon/"+strconv.Itoa(size), b.Dx(), b.Dy(), nrgba.Pix)
+	appIconSources.Store(size, src)
+
+	return src
+}
+
+// appIconPNGAt returns the icon frame for px as PNG data, for the tray, whose
+// single image the shell draws at the notification-area size.
+func appIconPNGAt(px int) []byte {
+	_, data := appIconFrame(px)
+
+	return data
+}
 
 // Window defaults.  A saved geometry in gui.json wins.  The window opens at
 // 1280x720 out of the box; the taller Settings page scrolls when its content
@@ -172,7 +261,7 @@ func run() (err error) {
 
 	w := gogui.NewWindow(gogui.WindowCfg{
 		Title:     windowTitle,
-		IconPNG:   appIconPNG,
+		IconPNG:   appIconFrames()[256],
 		Width:     s.Width,
 		Height:    s.Height,
 		MinWidth:  minWidth,
@@ -200,6 +289,10 @@ func run() (err error) {
 		OnInit: func(w *gogui.Window) {
 			applyTheme(w, app.themePref)
 			w.SetView(view)
+			// Replace the toolkit's one 256px HICON with the exe's
+			// multi-size icon, so the title bar, menu, and taskbar each
+			// get a native-size frame instead of a scaled-down one.
+			installWindowIcons()
 			if app.settings.Tray {
 				if err := hostStart(); err != nil {
 					// The setting survived from a previous session but the
@@ -469,7 +562,7 @@ func tuneTheme(base gogui.Theme) gogui.Theme {
 	return t
 }
 
-// setThemePref applies a theme choice from the header control and remembers it.
+// setThemePref applies a theme choice from Settings → Appearance and remembers it.
 func setThemePref(ctx gogui.EventCtx, pref string) {
 	app := gogui.State[App](ctx.Window)
 	app.themePref = pref
@@ -479,7 +572,7 @@ func setThemePref(ctx gogui.EventCtx, pref string) {
 	ctx.Window.InvalidateLayout()
 }
 
-// themeOptions lists the theme choices for the header segmented control.
+// themeOptions lists the theme choices for the Settings Appearance control.
 func themeOptions() (opts []gogui.SegmentOption) {
 	return []gogui.SegmentOption{
 		gogui.NewSegmentOption("Auto", themeSystem),

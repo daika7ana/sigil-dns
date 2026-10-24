@@ -172,6 +172,10 @@ func logConfigCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			}, floor),
 			caption(t, "Verbose records DNS query names and is only for troubleshooting."),
 		),
+		gogui.Separator(gogui.SeparatorCfg{
+			ID:    "gui:log:divider:1",
+			Color: t.ColorBorder,
+		}),
 		fieldGroup(t, "gui:log:group:file", "File",
 			gogui.InputGroup(gogui.InputGroupCfg{
 				ID:     "gui:log:pathrow",
@@ -242,7 +246,8 @@ func logViewCard(t gogui.Theme, app *App) gogui.View {
 			// Height, so the box grew with the log.
 			ID: logViewID, Sizing: gogui.FillFixed, Height: logViewerHeight,
 			Mode: gogui.InputMultiline, Scrollable: true, ReadOnly: true,
-			Text: app.logText, Placeholder: "No log output yet.",
+			TextStyle: t.TextStyleCodeSmall,
+			Text:      app.logText, Placeholder: "No log output yet.",
 		}),
 		logActionsRow(t, app),
 	})
@@ -472,8 +477,7 @@ func runOpenLog(ctx gogui.EventCtx) {
 		return
 	}
 	if err := openPath(path); err != nil {
-		showLogNotice(ctx, noticeError, "Could not open the log file",
-			bodyOr(err.Error(), "The file could not be opened."))
+		showLogNotice(ctx, noticeError, "Could not open the log file", err.Error())
 	}
 }
 
@@ -508,8 +512,7 @@ func clearLogFile(w *gogui.Window, path string) {
 		return
 	}
 	if err := os.Truncate(path, 0); err != nil {
-		showLogNotice(gogui.EventCtx{Window: w}, noticeError, "Could not clear the log file",
-			bodyOr(err.Error(), "The file could not be cleared."))
+		showLogNotice(gogui.EventCtx{Window: w}, noticeError, "Could not clear the log file", err.Error())
 
 		return
 	}
@@ -522,7 +525,7 @@ func clearLogFile(w *gogui.Window, path string) {
 	if app.page == pageLogging {
 		pinLogToBottom(w)
 	}
-	showLogNotice(gogui.EventCtx{Window: w}, noticeSuccess, "Log file cleared", "The log file is now empty.")
+	showLogNotice(gogui.EventCtx{Window: w}, noticeSuccess, "Log file cleared", "")
 }
 
 // showLogNotice shows a file-action toast and repaints it.

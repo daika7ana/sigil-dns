@@ -6,6 +6,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,7 +194,7 @@ func TestSettingsPageRenders(t *testing.T) {
 		"gui:service:stop", "gui:service:uninstall", "gui:tray:enabled",
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",
-		"gui:edit:bootstrap", "gui:edit:filtering", "gui:edit:block", "gui:edit:cache",
+		"gui:edit:bootstrap", "gui:edit:cache",
 		"gui:edit:cachesize", "gui:profile:save",
 	} {
 		if len(w.ResolveID(id)) == 0 {
@@ -404,7 +405,7 @@ func TestNavSwitchesPage(t *testing.T) {
 	w.TestRender(nil)
 
 	if len(w.ResolveID("gui:banner")) == 0 {
-		t.Fatal("Status page did not render the status banner")
+		t.Fatal("Status page did not render the state hero")
 	}
 	if len(w.ResolveID("gui:profile:save")) != 0 {
 		t.Fatal("Settings content must not render on the Status page")
@@ -438,6 +439,30 @@ func TestNavSwitchesPage(t *testing.T) {
 	}
 	if len(w.ResolveID("gui:edit:provider")) != 0 {
 		t.Fatal("Settings editor must not render on the Rules page")
+	}
+}
+
+// TestThemePickerInSettings proves the Auto/Light/Dark picker now lives in the
+// Settings Appearance card and still persists the choice.
+func TestThemePickerInSettings(t *testing.T) {
+	app := settingsApp()
+	w := newSettingsWindow(t, app)
+	root := w.TestRender(nil)
+
+	card := mustFindLayout(t, w, root, "gui:card:appearance")
+	theme := mustFindLayout(t, w, root, "gui:theme")
+	if !layoutContains(card, theme) {
+		t.Fatal("theme picker is not inside the Appearance card")
+	}
+
+	if err := w.TestClick("gui:theme:opt:2"); err != nil {
+		t.Fatalf("click Dark: %v", err)
+	}
+	if app.themePref != themeDark {
+		t.Errorf("themePref = %q, want %q", app.themePref, themeDark)
+	}
+	if app.settings.Theme != themeDark {
+		t.Errorf("saved theme = %q, want %q", app.settings.Theme, themeDark)
 	}
 }
 
@@ -816,22 +841,22 @@ func TestNeedsResolverID(t *testing.T) {
 }
 
 // TestResolverIDFieldEnablement proves the Resolver ID input is disabled for a
-// no-id provider (with an explaining hint) and enabled for one that needs an
-// id, derived per frame from the current provider+variant.
+// no-id provider and enabled for one that needs an id, derived per frame from
+// the current provider+variant.  Its hint line is always present and sits under
+// the field.
 func TestResolverIDFieldEnablement(t *testing.T) {
 	tests := []struct {
 		name              string
 		provider, variant string
 		wantDisabled      bool
-		wantHint          bool
 	}{
-		{"quad9", "quad9", "secure", true, true},
-		{"cloudflare", "cloudflare", "standard", true, true},
-		{"controld free preset", "controld", "p1", true, true},
-		{"custom", providers.Custom, "custom", true, true},
-		{"nextdns", "nextdns", "ultralow", false, false},
-		{"controld custom", "controld", "custom", false, false},
-		{"unknown provider fails open", "mystery", "whatever", false, false},
+		{"quad9", "quad9", "secure", true},
+		{"cloudflare", "cloudflare", "standard", true},
+		{"controld free preset", "controld", "p1", true},
+		{"custom", providers.Custom, "custom", true},
+		{"nextdns", "nextdns", "ultralow", false},
+		{"controld custom", "controld", "custom", false},
+		{"unknown provider fails open", "mystery", "whatever", false},
 	}
 
 	for _, tt := range tests {
@@ -847,58 +872,41 @@ func TestResolverIDFieldEnablement(t *testing.T) {
 
 			assertDisabled(t, root, w, "gui:edit:id", tt.wantDisabled)
 
-			if got := len(w.ResolveID("gui:edit:id:hint")) > 0; got != tt.wantHint {
-				t.Errorf("id hint present = %v, want %v", got, tt.wantHint)
+			hint := mustFindLayout(t, w, root, "gui:edit:id:hint")
+			field := mustFindLayout(t, w, root, "gui:edit:id")
+			if hint.Shape.Y < field.Shape.Y {
+				t.Errorf("hint y=%.0f is above the id field y=%.0f", hint.Shape.Y, field.Shape.Y)
 			}
 		})
 	}
 }
 
-// TestResolverIDCaptions proves the two Resolver ID lines are mutually
-// exclusive and sit under the field: a live field carries "Blank resolver ID
-// keeps the current one."; an inert one carries "This provider does not use a
-// resolver ID."
-func TestResolverIDCaptions(t *testing.T) {
-	const (
-		keepID = "gui:edit:id:keep"
-		noID   = "gui:edit:id:hint"
-	)
-
+// TestResolverIDHint proves the line under the Resolver ID field names the
+// value to enter for the selected provider and variant, in plain language, and
+// never carries the CLI's --id syntax.
+func TestResolverIDHint(t *testing.T) {
 	tests := []struct {
 		name              string
 		provider, variant string
-		wantKeep, wantNo  bool
+		want              string
 	}{
-		{"needs id", "nextdns", "ultralow", true, false},
-		{"no id", "quad9", "secure", false, true},
+		{"quad9", "quad9", "secure", "This provider does not use a Resolver ID."},
+		{"nextdns", "nextdns", "ultralow", "Enter your NextDNS configuration ID."},
+		{"controld custom", "controld", "custom", "Enter the profile ID from your ControlD dashboard."},
+		{"controld hagezi", "controld", "x-hagezi", "Enter the Hagezi list name, for example x-hagezi-pro or x-hagezi-pro-plus."},
+		{"controld free", "controld", "free", "Enter the ControlD free preset name."},
+		{"unknown fails neutral", "mystery", "whatever", "Leave blank to keep the current Resolver ID."},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := settingsApp()
-			app.draft.name = "work"
-			app.draft.provider = tt.provider
-			app.draft.variant = tt.variant
-			app.seeded = true // keep the hand-built draft; do not reseed
-
-			w := newSettingsWindow(t, app)
-			root := w.TestRender(nil)
-
-			if got := len(w.ResolveID(keepID)) > 0; got != tt.wantKeep {
-				t.Errorf("%s present = %v, want %v", keepID, got, tt.wantKeep)
+			got := resolverIDHint(tt.provider, tt.variant)
+			if got != tt.want {
+				t.Errorf("resolverIDHint(%q, %q) = %q, want %q", tt.provider, tt.variant, got, tt.want)
 			}
-			if got := len(w.ResolveID(noID)) > 0; got != tt.wantNo {
-				t.Errorf("%s present = %v, want %v", noID, got, tt.wantNo)
+			if strings.Contains(got, "--") {
+				t.Errorf("hint still carries CLI syntax: %q", got)
 			}
-			if tt.wantKeep {
-				// The line sits directly under the Resolver ID input.
-				keep := mustFindLayout(t, w, root, keepID)
-				field := mustFindLayout(t, w, root, "gui:edit:id")
-				if keep.Shape.Y < field.Shape.Y {
-					t.Errorf("keep caption y=%.0f is above the id field y=%.0f", keep.Shape.Y, field.Shape.Y)
-				}
-			}
-			assertNoFindings(t, w)
 		})
 	}
 }
@@ -913,6 +921,96 @@ func TestEditorProviderLabelNotDuplicated(t *testing.T) {
 		t.Fatalf(`"Provider" rendered %d times, want 1`, n)
 	}
 	assertNoFindings(t, w)
+}
+
+// TestProviderOptionsUseHumanNames proves the provider menu carries only the
+// display name: no raw backend id, no em-dashed description, no parenthetical.
+func TestProviderOptionsUseHumanNames(t *testing.T) {
+	want := map[string]string{
+		providers.Quad9:      "Quad9",
+		providers.Cloudflare: "Cloudflare",
+		providers.NextDNS:    "NextDNS",
+		providers.ControlD:   "ControlD",
+		providers.Custom:     "Custom",
+	}
+
+	for _, opt := range providerOptions() {
+		label, ok := want[opt.Value]
+		if !ok {
+			t.Errorf("unexpected provider option %q", opt.Value)
+
+			continue
+		}
+		if opt.Label != label {
+			t.Errorf("%s label = %q, want %q", opt.Value, opt.Label, label)
+		}
+		if strings.Contains(opt.Label, "—") || strings.Contains(opt.Label, "(") {
+			t.Errorf("%s label %q still carries detail", opt.Value, opt.Label)
+		}
+	}
+}
+
+// TestVariantOptionsUseHumanLabels proves every variant menu label is human
+// copy: no raw variant name prefix, no parenthetical, and none of the CLI
+// instructions the catalog carries for --id.
+func TestVariantOptionsUseHumanLabels(t *testing.T) {
+	for _, p := range providers.Registry() {
+		for _, opt := range variantOptions(p.Name) {
+			if opt.Label == "" {
+				t.Errorf("%s/%s has an empty label", p.Name, opt.Value)
+			}
+			for _, banned := range []string{"—", "(", "--id", "pass the", "requires --id"} {
+				if strings.Contains(opt.Label, banned) {
+					t.Errorf("%s/%s label %q contains %q", p.Name, opt.Value, opt.Label, banned)
+				}
+			}
+			if strings.HasPrefix(opt.Label, opt.Value) {
+				t.Errorf("%s/%s label %q repeats the backend name", p.Name, opt.Value, opt.Label)
+			}
+		}
+	}
+}
+
+// TestProviderDetailStatesTheRequirement proves the small line under the
+// provider select states only what the current choice needs: a Resolver ID when
+// one is required, and nothing otherwise.
+func TestProviderDetailStatesTheRequirement(t *testing.T) {
+	app := settingsApp()
+	app.ensureDraft()
+	app.draft.provider = providers.ControlD
+	app.draft.variant = "custom"
+	app.seeded = true
+
+	w := newSettingsWindow(t, app)
+	detail := func() (texts map[string]bool) {
+		t.Helper()
+		root := w.TestRender(nil)
+
+		if len(w.ResolveID("gui:edit:provider:detail")) == 0 {
+			return nil
+		}
+
+		return textSet(mustFindLayout(t, w, root, "gui:edit:provider:detail"))
+	}
+
+	if texts := detail(); !texts["Requires a Resolver ID to be set."] {
+		t.Errorf("ControlD detail = %v", texts)
+	}
+
+	setDraftProvider([]string{providers.NextDNS}, gogui.EventCtx{Window: w})
+	if texts := detail(); !texts["Requires a Resolver ID to be set."] {
+		t.Errorf("NextDNS detail = %v", texts)
+	}
+
+	setDraftProvider([]string{providers.Quad9}, gogui.EventCtx{Window: w})
+	if texts := detail(); texts != nil {
+		t.Errorf("Quad9 should not state a requirement, got %v", texts)
+	}
+
+	setDraftProvider([]string{providers.Custom}, gogui.EventCtx{Window: w})
+	if texts := detail(); texts != nil {
+		t.Errorf("Custom should not state a requirement, got %v", texts)
+	}
 }
 
 // TestSettingsPositionRoundTrip proves the remembered window position survives

@@ -249,7 +249,7 @@ func TestStatusVisualPrecedence(t *testing.T) {
 			s.status.Dirty = false
 
 			return s
-		}(), kindStopped, "Interception off"},
+		}(), kindStopped, "Protection off"},
 		{"enabled-invalid", func() snapshot {
 			s := sampleSnapshot()
 			s.summary.ConfigValid = false
@@ -272,6 +272,64 @@ func TestStatusVisualPrecedence(t *testing.T) {
 			}
 			if got.headline != tt.headline {
 				t.Errorf("headline = %q, want %q", got.headline, tt.headline)
+			}
+		})
+	}
+}
+
+// TestHeroStateStyles pins each hero state to its semantic theme tint and ink,
+// so the five states stay distinguishable without inventing colors.
+func TestHeroStateStyles(t *testing.T) {
+	th := windowsTheme("windows", gogui.ThemeLight)
+	panel := th.ColorPanel
+
+	cases := []struct {
+		name string
+		snap snapshot
+		pill gogui.Color
+		ink  gogui.Color
+	}{
+		{"running", sampleSnapshot(), th.ColorSuccessSubtle.Over(panel), th.TextStyleSuccess.Color},
+		{"degraded", func() snapshot {
+			s := sampleSnapshot()
+			s.summary.ConfigValid = false
+
+			return s
+		}(), th.ColorWarningSubtle.Over(panel), th.TextStyleWarning.Color},
+		{"dirty", func() snapshot {
+			s := sampleSnapshot()
+			s.status.Enabled = false
+			s.status.Mode = "off"
+
+			return s
+		}(), th.ColorWarningSubtle.Over(panel), th.TextStyleWarning.Color},
+		{"stopped", stoppedInstalledSnapshot(), th.ColorActive, th.TextStyleTitleSmall.Color},
+		{"unverified", snapshot{trust: trustUnverified, running: true, updated: time.Now()},
+			th.ColorErrorSubtle.Over(panel), th.TextStyleError.Color},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+			app.snap = tc.snap
+
+			w := gogui.NewTestWindow(t, gogui.WindowCfg{
+				Width: defaultWidth, Height: defaultHeight, State: app,
+			})
+			w.SetView(view)
+			w.SetTheme(th)
+			root := w.TestRender(nil)
+			pill := mustFindLayout(t, w, root, "gui:banner:title")
+			if pill.Shape.Color != tc.pill {
+				t.Errorf("pill fill = %v, want %v", pill.Shape.Color, tc.pill)
+			}
+
+			headline := mustFindLayout(t, w, root, "gui:banner:headline")
+			if headline.Shape.TC == nil || headline.Shape.TC.TextStyle == nil {
+				t.Fatal("headline carries no text style")
+			}
+			if got := headline.Shape.TC.TextStyle.Color; got != tc.ink {
+				t.Errorf("headline colour = %v, want %v", got, tc.ink)
 			}
 		})
 	}
@@ -321,53 +379,58 @@ func TestPlanPower(t *testing.T) {
 // returned error and as a helper result), and unsupported.
 func TestNoticeForOutcome(t *testing.T) {
 	tests := []struct {
-		name    string
-		action  guiAction
-		res     applyResult
-		err     error
-		kind    noticeKind
-		title   string
-		bodyHas string
+		name   string
+		action guiAction
+		res    applyResult
+		err    error
+		kind   noticeKind
+		title  string
+		body   string
 	}{
 		{
 			name: "success", action: actionEnable,
-			res:  applyResult{ok: true, message: "Resolver enabled."},
-			kind: noticeSuccess, title: "Enabled", bodyHas: "Resolver enabled.",
+			res:  applyResult{ok: true, message: "config applied"},
+			kind: noticeSuccess, title: "Enabled",
 		},
 		{
 			name: "failure", action: actionEnable,
 			res:  applyResult{ok: false, errText: "bind 127.0.0.1:53: access denied"},
-			kind: noticeError, title: "Could not enable", bodyHas: "access denied",
+			kind: noticeError, title: "Could not enable protection", body: "Bind 127.0.0.1:53: access denied.",
 		},
 		{
 			name: "stop-service-success", action: actionServiceStop,
-			res:  applyResult{ok: true, message: "Service stopped."},
-			kind: noticeSuccess, title: "Service stopped", bodyHas: "Service stopped.",
+			res:  applyResult{ok: true, message: "service stopped"},
+			kind: noticeSuccess, title: "Service stopped",
 		},
 		{
 			name: "stop-service-failure", action: actionServiceStop,
 			res:  applyResult{ok: false, errText: "the service did not stop"},
-			kind: noticeError, title: "Could not stop the service", bodyHas: "did not stop",
+			kind: noticeError, title: "Could not stop the service", body: "The service did not stop.",
 		},
 		{
-			name: "cancel-as-error", action: actionServiceStop,
-			err:  errors.New("UAC declined"),
-			kind: noticeWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
+			name: "launch error", action: actionEnable,
+			err:  errors.New("creating staging dir: access denied"),
+			kind: noticeError, title: "Could not enable protection", body: "Creating staging dir: access denied.",
+		},
+		{
+			name: "helper context canceled", action: actionEnable,
+			res:  applyResult{errText: "context canceled"},
+			kind: noticeError, title: "Could not enable protection", body: "Context canceled.",
 		},
 		{
 			name: "cancel-as-result", action: actionRestore,
-			res:  applyResult{ok: false, errText: "user cancelled"},
-			kind: noticeWarning, title: "Elevation cancelled", bodyHas: "Nothing changed",
+			res:  applyResult{ok: false, errText: "elevation cancelled"},
+			kind: noticeWarning, title: "Administrator approval cancelled", body: "No changes were made.",
 		},
 		{
 			name: "unsupported", action: actionEnable,
 			err:  errUnsupported,
-			kind: noticeWarning, title: "Not supported", bodyHas: "not available on this platform",
+			kind: noticeWarning, title: "Not supported", body: "Managing the service is not available on this platform.",
 		},
 		{
 			name: "revision-conflict", action: actionEnable,
 			err:  errRevision,
-			kind: noticeWarning, title: "Configuration changed", bodyHas: "Try again",
+			kind: noticeWarning, title: "Configuration changed", body: "The configuration changed since this window loaded it. Try again.",
 		},
 	}
 
@@ -380,10 +443,109 @@ func TestNoticeForOutcome(t *testing.T) {
 			if got.title != tt.title {
 				t.Errorf("title = %q, want %q", got.title, tt.title)
 			}
-			if !strings.Contains(got.body, tt.bodyHas) {
-				t.Errorf("body = %q, want substring %q", got.body, tt.bodyHas)
+			if got.body != tt.body {
+				t.Errorf("body = %q, want %q", got.body, tt.body)
 			}
 		})
+	}
+}
+
+// TestNoticeForCopy proves the toast copy rules: generic backend messages and
+// title restatements are suppressed, while a real cause survives sentence-cased.
+func TestNoticeForCopy(t *testing.T) {
+	tests := []struct {
+		name   string
+		action guiAction
+		res    applyResult
+		title  string
+		body   string
+	}{
+		{"generic success", actionSaveProfile, applyResult{ok: true, message: "config saved"}, "Profile saved", ""},
+		{"generic cache jargon", actionClearCache, applyResult{ok: true, message: "Windows DNS cache cleared"}, "DNS cache cleared", ""},
+		{"generic uninstall jargon", actionUninstall, applyResult{ok: true, message: "service uninstalled (no active interception)"}, "Service removed", ""},
+		{"duplicate title", actionServiceStop, applyResult{errText: "could not stop the service"}, "Could not stop the service", ""},
+		{"generic failure", actionInstall, applyResult{errText: "service could not be installed"}, "Could not install the service", ""},
+		{"punctuation only", actionEnable, applyResult{errText: "..."}, "Could not enable protection", ""},
+		{"real cause", actionEnable, applyResult{errText: "bind 127.0.0.1:53: access denied"}, "Could not enable protection", "Bind 127.0.0.1:53: access denied."},
+		{"cause already a sentence", actionEnable, applyResult{errText: "Access denied while binding."}, "Could not enable protection", "Access denied while binding."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := noticeFor(tt.action, tt.res, nil)
+			if got.title != tt.title {
+				t.Errorf("title = %q, want %q", got.title, tt.title)
+			}
+			if got.body != tt.body {
+				t.Errorf("body = %q, want %q", got.body, tt.body)
+			}
+		})
+	}
+}
+
+// TestActionMetaCopy proves every action's copy follows the alert grammar: a
+// capitalised, unpunctuated outcome title, a distinct failure title, and an
+// in-flight line closed with an ellipsis.
+func TestActionMetaCopy(t *testing.T) {
+	for action, m := range actionMetas {
+		t.Run(string(action), func(t *testing.T) {
+			if m.label == "" {
+				t.Error("button label is empty")
+			}
+			if m.done == "" || m.fail == "" || m.waiting == "" {
+				t.Fatalf("empty copy: done=%q fail=%q waiting=%q", m.done, m.fail, m.waiting)
+			}
+			for what, title := range map[string]string{"done": m.done, "fail": m.fail} {
+				if title[0] < 'A' || title[0] > 'Z' {
+					t.Errorf("%s title %q is not sentence-cased", what, title)
+				}
+				if strings.HasSuffix(title, ".") {
+					t.Errorf("%s title %q ends with a period", what, title)
+				}
+			}
+			if !strings.HasSuffix(m.waiting, "\u2026") {
+				t.Errorf("waiting note %q does not end with an ellipsis", m.waiting)
+			}
+			if m.done == m.waiting {
+				t.Errorf("done copy %q repeats the waiting note", m.done)
+			}
+			if m.fail == m.done || m.fail == m.waiting {
+				t.Errorf("fail copy %q is not distinct", m.fail)
+			}
+		})
+	}
+}
+
+// TestSentenceNormalisation proves the body grammar keeps a leading URL intact,
+// capitalises inside a leading quote, and marks a truncated body with an
+// ellipsis rather than leaving a sentence open.
+func TestSentenceNormalisation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "  access denied  ", "Access denied."},
+		{"already punctuated", "Access denied.", "Access denied."},
+		{"leading quote", `"quoted" body`, `"Quoted" body.`},
+		{"leading URL", "https://example.com/failed: access denied", "https://example.com/failed: access denied."},
+		{"sdns URL", "sdns://AQcAAAAAAAA", "sdns://AQcAAAAAAAA."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sentence(tt.in); got != tt.want {
+				t.Errorf("sentence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	long := capBody(strings.Repeat("a", 250))
+	if len([]rune(long)) != 201 {
+		t.Errorf("capBody rune length = %d, want 201", len([]rune(long)))
+	}
+	if !strings.HasSuffix(long, "\u2026") {
+		t.Errorf("capBody %q does not end with an ellipsis", long)
 	}
 }
 
@@ -433,7 +595,7 @@ func TestServiceActionClickInvokesApply(t *testing.T) {
 			app.apply = func(_ context.Context, req applyRequest) (applyResult, error) {
 				got <- req.action
 
-				return applyResult{ok: true, message: "Done."}, nil
+				return applyResult{ok: true, message: "config applied"}, nil
 			}
 
 			w := gogui.NewTestWindow(t, gogui.WindowCfg{

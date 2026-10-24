@@ -227,26 +227,26 @@ func TestLoggingNextStartNoteAboveApply(t *testing.T) {
 	assertNoFindings(t, w)
 }
 
-// TestRulesPageOmitsResolverIDHint proves the resolver-ID lines live on the
+// TestRulesPageOmitsResolverIDHint proves the resolver-ID line lives on the
 // profile editor's Resolver ID field, not on the Rules page (which has no such
-// field): a live field explains that a blank keeps the current id, and an inert
-// field says the provider uses none.
+// field): a live field names the value to enter, and an inert field says the
+// provider uses none.
 func TestRulesPageOmitsResolverIDHint(t *testing.T) {
 	const (
-		keepHint = "Blank resolver ID keeps the current one."
-		noIDHint = "This provider does not use a resolver ID."
+		liveHint = "Enter your NextDNS configuration ID."
+		noIDHint = "This provider does not use a Resolver ID."
 	)
 
 	t.Run("rules page omits both", func(t *testing.T) {
 		w, root := layoutFor(t, rulesApp(), defaultWidth, defaultHeight)
 		text := textSet(mustFindLayout(t, w, root, "gui:rules"))
-		if text[keepHint] || text[noIDHint] {
+		if text[liveHint] || text[noIDHint] {
 			t.Fatalf("Rules page shows a profile-editor resolver-ID hint")
 		}
 		assertNoFindings(t, w)
 	})
 
-	t.Run("live id field keeps the hint", func(t *testing.T) {
+	t.Run("live id field names the value", func(t *testing.T) {
 		app := settingsApp()
 		app.draft.provider = "nextdns" // a provider that uses a resolver id
 		app.draft.variant = "ultralow"
@@ -254,14 +254,14 @@ func TestRulesPageOmitsResolverIDHint(t *testing.T) {
 
 		w, root := layoutFor(t, app, defaultWidth, defaultHeight)
 		editor := textSet(mustFindLayout(t, w, root, "gui:card:editor"))
-		if !editor[keepHint] {
-			t.Fatalf("profile editor is missing the hint %q", keepHint)
+		if !editor[liveHint] {
+			t.Fatalf("profile editor is missing the hint %q", liveHint)
 		}
 		if editor[noIDHint] {
 			t.Errorf("editor shows %q beside a live Resolver ID field", noIDHint)
 		}
-		if n := len(w.ResolveID("gui:edit:id:keep")); n != 1 {
-			t.Errorf("gui:edit:id:keep rendered %d times, want 1", n)
+		if n := len(w.ResolveID("gui:edit:id:hint")); n != 1 {
+			t.Errorf("gui:edit:id:hint rendered %d times, want 1", n)
 		}
 		assertNoFindings(t, w)
 	})
@@ -271,9 +271,6 @@ func TestRulesPageOmitsResolverIDHint(t *testing.T) {
 		editor := textSet(mustFindLayout(t, w, root, "gui:card:editor"))
 		if !editor[noIDHint] {
 			t.Fatalf("profile editor is missing %q", noIDHint)
-		}
-		if editor[keepHint] {
-			t.Errorf("editor shows %q beside an inert Resolver ID field", keepHint)
 		}
 		assertNoFindings(t, w)
 	})
@@ -537,6 +534,41 @@ func TestNavLoggingPage(t *testing.T) {
 	if len(w.ResolveID("gui:log:view")) == 0 {
 		t.Fatal("Logging page did not render the viewer")
 	}
+}
+
+// TestNavLoggingPagePinsToNewestLine proves the nav click lands the viewer on
+// its newest line: the page is switched from Status with a tall tail already
+// read, and the first layout after the click must show the bottom.
+func TestNavLoggingPagePinsToNewestLine(t *testing.T) {
+	app := loggingApp()
+	app.page = pageStatus
+
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "line %03d\n", i)
+	}
+	app.logText = b.String()
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	if err := w.TestClick("gui:nav:logging"); err != nil {
+		t.Fatalf("click logging nav: %v", err)
+	}
+	w.TestRender(nil)
+
+	ids := w.ResolveID(logViewID)
+	if len(ids) == 0 {
+		t.Fatalf("viewer %q not rendered", logViewID)
+	}
+	overflow, ok := w.ScrollOverflowY(ids[0])
+	if !ok || overflow <= 0 {
+		t.Fatalf("viewer does not overflow: overflow=%v ok=%v", overflow, ok)
+	}
+	if got := w.ScrollVerticalOffset(ids[0]); absF(got+overflow) > 1 {
+		t.Fatalf("scroll offset %.1f, want bottom %.1f", got, -overflow)
+	}
+	assertNoFindings(t, w)
 }
 
 // TestLoggingSeedsFromSummary proves the buffer takes the configured level but

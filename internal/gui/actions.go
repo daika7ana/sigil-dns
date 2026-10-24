@@ -74,7 +74,7 @@ func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powe
 	case busy:
 		// The in-flight note replaces the guidance while an action runs.
 	case kind == kindDirty:
-		ps.note = "Interception is still applied from a previous session."
+		ps.note = "Your DNS settings are still redirected from a previous session."
 	case !installed:
 		ps.note = "Install the Sigil DNS service in Settings to turn on protection."
 	case kind == kindStopped && running:
@@ -106,31 +106,31 @@ type actionMeta struct {
 // destructive actions.
 var actionMetas = map[guiAction]actionMeta{
 	actionEnable: {"Enable", gogui.ButtonPrimary,
-		"Waiting for elevation to enable...", "Enabled", "Could not enable"},
+		"Waiting for administrator approval to enable protection\u2026", "Enabled", "Could not enable protection"},
 	actionRestore: {"Restore now", gogui.ButtonPrimary,
-		"Waiting for elevation to restore...", "Restored", "Could not restore"},
+		"Waiting for administrator approval to restore DNS settings\u2026", "DNS settings restored", "Could not restore DNS settings"},
 	actionInstall: {"Install", gogui.ButtonSecondary,
-		"Waiting for elevation to install the service...", "Service installed", "Could not install the service"},
+		"Waiting for administrator approval to install the service\u2026", "Service installed", "Could not install the service"},
 	actionUninstall: {"Uninstall", gogui.ButtonDanger,
-		"Waiting for elevation to uninstall the service...", "Service removed", "Could not remove the service"},
+		"Waiting for administrator approval to uninstall the service\u2026", "Service removed", "Could not remove the service"},
 	actionServiceStop: {"Stop", gogui.ButtonSecondary,
-		"Waiting to stop the service...", "Service stopped", "Could not stop the service"},
+		"Waiting to stop the service\u2026", "Service stopped", "Could not stop the service"},
 	actionSaveProfile: {"Save", gogui.ButtonPrimary,
-		"Waiting for elevation to save the profile...", "Profile saved", "Could not save the profile"},
+		"Waiting for administrator approval to save the profile\u2026", "Profile saved", "Could not save the profile"},
 	actionAddProfile: {"Add", gogui.ButtonPrimary,
-		"Waiting for elevation to add the profile...", "Profile added", "Could not add the profile"},
+		"Waiting for administrator approval to add the profile\u2026", "Profile added", "Could not add the profile"},
 	actionRenameProfile: {"Rename", gogui.ButtonSecondary,
-		"Waiting for elevation to rename the profile...", "Profile renamed", "Could not rename the profile"},
+		"Waiting for administrator approval to rename the profile\u2026", "Profile renamed", "Could not rename the profile"},
 	actionDeleteProfile: {"Delete", gogui.ButtonDanger,
-		"Waiting for elevation to delete the profile...", "Profile deleted", "Could not delete the profile"},
+		"Waiting for administrator approval to delete the profile\u2026", "Profile deleted", "Could not delete the profile"},
 	actionSetActive: {"Set active", gogui.ButtonPrimary,
-		"Waiting for elevation to set the active profile...", "Active profile set", "Could not set the active profile"},
-	actionRefreshLists: {"Update blocklists", gogui.ButtonSecondary,
-		"Waiting for the service to update blocklists...", "Blocklists updated", "Could not update blocklists"},
+		"Waiting for administrator approval to change the active profile\u2026", "Active profile changed", "Could not change the active profile"},
+	actionRefreshLists: {"Update filter lists", gogui.ButtonSecondary,
+		"Waiting for the service to update filter lists\u2026", "Filter lists updated", "Could not update filter lists"},
 	actionClearCache: {"Clear DNS cache", gogui.ButtonSecondary,
-		"Waiting for the service to clear the DNS cache...", "DNS cache cleared", "Could not clear the DNS cache"},
+		"Waiting for the service to clear the DNS cache\u2026", "DNS cache cleared", "Could not clear the DNS cache"},
 	actionSaveLog: {"Apply", gogui.ButtonPrimary,
-		"Waiting for elevation to save logging...", "Logging saved", "Could not save logging"},
+		"Waiting for administrator approval to save logging settings\u2026", "Logging settings saved", "Could not save logging settings"},
 }
 
 // metaFor returns an action's presentation, or the unknown-action defaults.
@@ -140,7 +140,7 @@ func metaFor(a guiAction) actionMeta {
 	}
 
 	return actionMeta{variant: gogui.ButtonPrimary,
-		waiting: "Waiting for elevation...", done: "Done", fail: "Action failed"}
+		waiting: "Waiting for administrator approval\u2026", done: "Action completed", fail: "The action could not be completed"}
 }
 
 func actionLabel(a guiAction) string                { return metaFor(a).label }

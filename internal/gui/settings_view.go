@@ -10,7 +10,6 @@ import (
 	gogui "github.com/go-gui-org/go-gui/gui"
 
 	"github.com/daika7ana/sigil-dns/internal/providers"
-	"github.com/daika7ana/sigil-dns/internal/version"
 )
 
 // settingsPage is the configuration screen: the service lifecycle, the profile
@@ -28,10 +27,10 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 
 	content = append(content,
 		serviceCard(t, app),
+		appearanceCard(t, app),
 		trayCard(t, app),
 		profilesCard(t, app, floor),
 		editorCard(t, app, floor),
-		versionCaption(t, app),
 	)
 
 	return pageColumn("gui:settings", content)
@@ -43,16 +42,43 @@ func settingsPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 // with their own headings; one Save row sits below both, outside the cards,
 // because it applies the whole shared profile draft rather than either card
 // alone.
-func rulesPage(t gogui.Theme, app *App) gogui.View {
+func rulesPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	app.ensureDraft()
 	disabled := app.busy || !canEdit(app.snap) || app.draft.name == ""
+	floor := selectFloor(windowWidth)
+
+	// Filtering belongs with the lists it drives: the switch and its block
+	// response sit above the rows, not in Settings.
+	listsContent := filteringFields(t, app.draft, disabled, floor)
+	listsContent = append(listsContent,
+		gogui.Separator(gogui.SeparatorCfg{
+			ID:    "gui:lists:filtering:divider",
+			Color: t.ColorBorder,
+		}),
+		listSection(t, app, app.draft, disabled),
+	)
 
 	content := withEditNotice(t, app, nil)
 	content = append(content,
-		caption(t, "Editing profile: "+fallback(app.draft.name, "—")),
-		card(t, "gui:card:lists", "Filter lists", []gogui.View{
-			listSection(t, app, app.draft, disabled),
+		// The page has no separate title bar, so this quiet context line names
+		// the profile the two editors below are writing to.
+		gogui.Row(gogui.ContainerCfg{
+			ID:         "gui:rules:intro",
+			Sizing:     gogui.FillFit,
+			Spacing:    gogui.SpacingSmall,
+			Padding:    gogui.PaddingNone,
+			SizeBorder: gogui.NoBorder,
+			VAlign:     gogui.VAlignMiddle,
+			Content: []gogui.View{
+				gogui.Text(gogui.TextCfg{
+					Text:      "Editing profile",
+					TextStyle: t.TextStyleCaption,
+					Sizing:    gogui.FitFit,
+				}),
+				chip(t, fallback(app.draft.name, "—")),
+			},
 		}),
+		card(t, "gui:card:lists", "Filter lists", listsContent),
 		card(t, "gui:card:rules", "Per-domain routing", []gogui.View{
 			ruleSection(t, app.draft, disabled),
 		}),
@@ -208,22 +234,22 @@ func serviceCard(t gogui.Theme, app *App) gogui.View {
 		controls = append(controls, gogui.Button(startCfg))
 	}
 
-	lifecycle := actionInstall
 	if app.snap.installed {
-		lifecycle = actionUninstall
-	}
-	btn := gogui.ButtonCfg{
-		ID:       "gui:" + string(lifecycle),
-		Variant:  actionVariant(lifecycle),
-		Label:    actionLabel(lifecycle) + " service",
-		Disabled: disabled,
-	}
-	if lifecycle == actionUninstall {
-		btn.OnClick = confirmUninstall
+		// Uninstall is consequential but it is not this card's primary action,
+		// so it wears the shared subordinate danger outline rather than a
+		// filled red block beside the calm Stop control.
+		controls = append(controls, dangerOutlineButton(t,
+			"gui:service:uninstall", actionLabel(actionUninstall)+" service",
+			disabled, confirmUninstall))
 	} else {
-		btn.OnClick = func(ctx gogui.EventCtx) { runAction(ctx, actionInstall) }
+		controls = append(controls, gogui.Button(gogui.ButtonCfg{
+			ID:       "gui:service:install",
+			Variant:  actionVariant(actionInstall),
+			Label:    actionLabel(actionInstall) + " service",
+			Disabled: disabled,
+			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionInstall) },
+		}))
 	}
-	controls = append(controls, gogui.Button(btn))
 
 	// The header badge carries the installed/not-installed state, so there is no
 	// separate "Installed" row: one source of truth for the service state.
@@ -237,6 +263,25 @@ func serviceCard(t gogui.Theme, app *App) gogui.View {
 				SizeBorder: gogui.NoBorder,
 				VAlign:     gogui.VAlignMiddle,
 				Content:    controls,
+			})),
+	})
+}
+
+// appearanceCard holds the app-level look: the Auto/Light/Dark picker that
+// used to sit in the header.  It writes through setThemePref, so the choice
+// still persists to gui.json.
+func appearanceCard(t gogui.Theme, app *App) gogui.View {
+	return card(t, "gui:card:appearance", "Appearance", []gogui.View{
+		settingRow(t, "Theme",
+			"Follow Windows, or keep the window light or dark.",
+			gogui.SegmentedControl(gogui.SegmentedControlCfg{
+				ID:      "gui:theme",
+				Value:   app.themePref,
+				Sizing:  gogui.FitFit,
+				Options: themeOptions(),
+				OnSelect: func(v string, ctx gogui.EventCtx) {
+					setThemePref(ctx, v)
+				},
 			})),
 	})
 }
@@ -267,22 +312,6 @@ func serviceBadge(s snapshot) gogui.View {
 	return gogui.Badge(gogui.BadgeCfg{
 		Label:   displayState(s.scmState),
 		Variant: variant,
-	})
-}
-
-// versionCaption is the small, low-value build line moved off the Status page.
-func versionCaption(t gogui.Theme, app *App) gogui.View {
-	service := "—"
-	proto := "—"
-	if app.snap.info != nil {
-		service = fallback(app.snap.info.AppVersion, version.Version)
-		proto = fmt.Sprintf("%d", app.snap.info.ProtocolVersion)
-	}
-
-	return gogui.Text(gogui.TextCfg{
-		Text:      fmt.Sprintf("Client %s · Service %s · Protocol %s", version.Version, service, proto),
-		TextStyle: t.TextStyleCaption,
-		Sizing:    gogui.FillFit,
 	})
 }
 
@@ -352,6 +381,7 @@ func profilesCard(t gogui.Theme, app *App, floor float32) gogui.View {
 			Disabled: disabled || len(names) == 0,
 			OnSelect: func(vals []string, ctx gogui.EventCtx) { setSelectedProfile(ctx, vals) },
 		}, floor),
+		caption(t, "The active profile handles every query. Select a profile here, then edit it in the Profile editor."),
 		gogui.Row(gogui.ContainerCfg{
 			Sizing:     gogui.FillFit,
 			Spacing:    gogui.SpacingSmall,
@@ -415,12 +445,11 @@ func dangerOutlineDisabledColors(t gogui.Theme) gogui.ColorSet {
 	}
 }
 
-// dangerOutlineButton is the one treatment for a repeated, per-row destructive
-// action (profile Delete, list/rule Remove): a danger-styled outline that stays
-// subordinate on an otherwise-neutral form.  Enabled it is an error outline
-// with an error label; disabled it keeps the same button shape but goes fully
-// neutral and inert.  A card-level consequential action (Uninstall) uses the
-// filled ButtonDanger instead, because it is that surface's single primary.
+// dangerOutlineButton is the one treatment for a destructive action that sits
+// inside a card (profile Delete, list/rule Remove, service Uninstall): a
+// danger-styled outline that stays subordinate on an otherwise-neutral form.
+// Enabled it is an error outline with an error label; disabled it keeps the
+// same button shape but goes fully neutral and inert.
 func dangerOutlineButton(t gogui.Theme, id, label string, disabled bool, onClick func(gogui.EventCtx)) gogui.View {
 	style := t.TextStyleError
 	colors := dangerOutlineColors(t)
@@ -443,21 +472,21 @@ func dangerOutlineButton(t gogui.Theme, id, label string, disabled bool, onClick
 // editable whenever there is a profile to edit — including the built-in default
 // seeded on a fresh install — and the identity check passes.  The fields are
 // grouped into headed sections so the dense form reads as a setting page rather
-// than one long block.
+// than one long block; the cache switch is a settings row, like Window & tray.
 func editorCard(t gogui.Theme, app *App, floor float32) gogui.View {
 	d := app.draft
 	disabled := app.busy || !canEdit(app.snap) || d.name == ""
 
-	return card(t, "gui:card:editor", "Profile editor", []gogui.View{
+	rows := []gogui.View{
 		fieldGroup(t, "gui:edit:group:provider", "Provider", providerFields(t, d, disabled, floor)...),
 		groupDivider(t, 1),
 		fieldGroup(t, "gui:edit:group:failover", "Failover", fallbackFields(t, app, d, disabled, floor)...),
 		groupDivider(t, 2),
-		fieldGroup(t, "gui:edit:group:filtering", "Filtering", filteringFields(t, d, disabled, floor)...),
-		groupDivider(t, 3),
-		fieldGroup(t, "gui:edit:group:cache", "Cache", cacheFields(t, d, disabled)...),
-		saveRow(d, disabled),
-	})
+	}
+	rows = append(rows, cacheFields(t, d, disabled)...)
+	rows = append(rows, saveRow(d, disabled))
+
+	return card(t, "gui:card:editor", "Profile editor", rows)
 }
 
 // providerFields is the provider/variant/transport/identity block of the editor.
@@ -472,36 +501,42 @@ func providerFields(t gogui.Theme, d profileDraft, disabled bool, floor float32)
 			Options: providerOptions(), Selected: one(d.provider),
 			Disabled: disabled, OnSelect: setDraftProvider,
 		}, floor),
-		formSelect(gogui.SelectCfg{
-			ID: "gui:edit:variant", Label: "Variant",
-			Options: variantOptions(d.provider), Selected: one(d.variant),
-			Disabled: disabled,
-			OnSelect: func(vals []string, ctx gogui.EventCtx) {
-				updateDraft(ctx, func(d *profileDraft) {
-					d.variant = first(vals)
-					syncBootstrap(d)
-				})
-			},
-		}, floor),
 	}
+	// The provider's qualification belongs under the choice, not inside its
+	// label: the option itself stays the provider's human name.
+	if detail := providerDetail(d.provider, d.variant); detail != "" {
+		fields = append(fields, captionID(t, "gui:edit:provider:detail", detail))
+	}
+	fields = append(fields, formSelect(gogui.SelectCfg{
+		ID: "gui:edit:variant", Label: "Variant",
+		Options: variantOptions(d.provider), Selected: one(d.variant),
+		Disabled: disabled,
+		OnSelect: func(vals []string, ctx gogui.EventCtx) {
+			updateDraft(ctx, func(d *profileDraft) {
+				d.variant = first(vals)
+				syncBootstrap(d)
+			})
+		},
+	}, floor))
 
 	// The custom provider's transport is dictated by its URL, so there is no
 	// protocol choice to make; show a one-line hint instead of the control.
 	if d.provider == providers.Custom {
-		fields = append(fields, caption(t, "Transport is taken from the custom URL."))
+		fields = append(fields, caption(t, "Uses the protocol in the custom URL."))
 	} else {
 		fields = append(fields, protocolSelect(d, disabled, floor))
 	}
 
 	// The resolver id is only meaningful for providers that use one; the
-	// field stays visible but inert otherwise, with a line explaining why.
-	// The state is derived per frame from the current provider+variant, so
-	// switching provider updates it on the next repaint.
+	// field stays visible but inert otherwise, with a line explaining why and,
+	// when it is live, what to enter.  The state is derived per frame from the
+	// current provider+variant, so switching either updates it on the next
+	// repaint.
 	idNeeded := needsResolverID(d.provider, d.variant)
 
 	fields = append(fields, gogui.Input(gogui.InputCfg{
 		ID: "gui:edit:id", Label: "Resolver ID", Sizing: gogui.FillFit,
-		Text: d.id, IsPassword: true, Placeholder: "•••• leave blank to keep",
+		Text: d.id, IsPassword: true, Placeholder: "Leave blank to keep",
 		Disabled: disabled || !idNeeded,
 		OnTextChanged: func(text string, ctx gogui.EventCtx) {
 			updateDraft(ctx, func(d *profileDraft) {
@@ -511,26 +546,10 @@ func providerFields(t gogui.Theme, d profileDraft, disabled bool, floor float32)
 		},
 	}))
 
-	// The line under the Resolver ID field: a live field explains that a blank
-	// value keeps the stored id; an inert one says why it cannot be used.  The
-	// two are mutually exclusive, so only one ever shows.
-	if idNeeded {
-		fields = append(fields, gogui.Text(gogui.TextCfg{
-			ID:        "gui:edit:id:keep",
-			Text:      "Blank resolver ID keeps the current one.",
-			TextStyle: t.TextStyleCaption,
-			Sizing:    gogui.FillFit,
-			Mode:      gogui.TextModeWrap,
-		}))
-	} else {
-		fields = append(fields, gogui.Text(gogui.TextCfg{
-			ID:        "gui:edit:id:hint",
-			Text:      "This provider does not use a resolver ID.",
-			TextStyle: t.TextStyleCaption,
-			Sizing:    gogui.FillFit,
-			Mode:      gogui.TextModeWrap,
-		}))
-	}
+	// One line under the field, scoped to the provider and variant: the
+	// instruction the user needs for this choice, or the reason the field is
+	// inert.  It replaces the CLI-style "--id" examples the catalog carries.
+	fields = append(fields, captionID(t, "gui:edit:id:hint", resolverIDHint(d.provider, d.variant)))
 
 	if d.provider == providers.Custom {
 		fields = append(fields, gogui.Input(gogui.InputCfg{
@@ -565,20 +584,26 @@ func fallbackFields(t gogui.Theme, app *App, d profileDraft, disabled bool, floo
 				updateDraft(ctx, func(d *profileDraft) { d.fallback = first(vals) })
 			},
 		}, floor),
-		caption(t, "Answers when this profile's upstreams time out or fail. Uses the fallback profile's upstreams and bootstrap."),
+		caption(t, "Used when this profile's DNS servers time out or fail. It uses the fallback profile's servers and bootstrap addresses."),
 	}
 }
 
-// filteringFields is the filtering toggle and its block-response selector.
+// filteringFields is the filtering toggle and its block-response selector.  The
+// toggle is a settings row — its title and descriptor on the left, the switch on
+// the right — matching the Window & tray switches.
 func filteringFields(t gogui.Theme, d profileDraft, disabled bool, floor float32) []gogui.View {
 	return []gogui.View{
-		gogui.Toggle(gogui.ToggleCfg{
-			ID: "gui:edit:filtering", Label: "Filtering", Selected: d.filtering,
-			Disabled: disabled,
-			OnClick: func(ctx gogui.EventCtx) {
-				updateDraft(ctx, func(d *profileDraft) { d.filtering = !d.filtering })
-			},
-		}),
+		settingRow(t, "Filtering",
+			"Blocks domains on the enabled filter lists below.",
+			gogui.Switch(gogui.SwitchCfg{
+				ID:       "gui:edit:filtering",
+				A11YCfg:  gogui.A11YCfg{A11YLabel: "Filtering"},
+				Selected: d.filtering,
+				Disabled: disabled,
+				OnClick: func(ctx gogui.EventCtx) {
+					updateDraft(ctx, func(d *profileDraft) { d.filtering = !d.filtering })
+				},
+			})),
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:block", Label: "Block response",
 			Options: blockResponseOptions(), Selected: one(d.blockResp),
@@ -587,21 +612,28 @@ func filteringFields(t gogui.Theme, d profileDraft, disabled bool, floor float32
 				updateDraft(ctx, func(d *profileDraft) { d.blockResp = first(vals) })
 			},
 		}, floor),
+		caption(t, "The answer sent for blocked domains."),
 	}
 }
 
-// cacheFields is the cache toggle, size input, and bootstrap input.
+// cacheFields is the cache toggle, size input, and bootstrap input.  The toggle
+// is a settings row — its title and descriptor on the left, the switch on the
+// right — matching the Window & tray switches.
 func cacheFields(t gogui.Theme, d profileDraft, disabled bool) []gogui.View {
 	return []gogui.View{
-		gogui.Toggle(gogui.ToggleCfg{
-			ID: "gui:edit:cache", Label: "Cache", Selected: d.cache,
-			Disabled: disabled,
-			OnClick: func(ctx gogui.EventCtx) {
-				updateDraft(ctx, func(d *profileDraft) { d.cache = !d.cache })
-			},
-		}),
+		settingRow(t, "Cache",
+			"Keeps recent answers so repeat lookups are faster.",
+			gogui.Switch(gogui.SwitchCfg{
+				ID:       "gui:edit:cache",
+				A11YCfg:  gogui.A11YCfg{A11YLabel: "Cache"},
+				Selected: d.cache,
+				Disabled: disabled,
+				OnClick: func(ctx gogui.EventCtx) {
+					updateDraft(ctx, func(d *profileDraft) { d.cache = !d.cache })
+				},
+			})),
 		gogui.Input(gogui.InputCfg{
-			ID: "gui:edit:cachesize", Label: "Cache size (MiB)",
+			ID: "gui:edit:cachesize", Label: "Cache size, MiB",
 			Sizing: gogui.FillFit,
 			Text:   d.cacheSizeMB, Disabled: disabled || !d.cache,
 			OnTextChanged: func(text string, ctx gogui.EventCtx) {
@@ -624,9 +656,10 @@ func groupDivider(t gogui.Theme, i int) gogui.View {
 // bootstrapField is the bootstrap server list input.
 func bootstrapField(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	return gogui.Input(gogui.InputCfg{
-		ID: "gui:edit:bootstrap", Label: "Bootstrap (comma-separated)",
+		ID: "gui:edit:bootstrap", Label: "Bootstrap servers",
 		Sizing: gogui.FillFit,
 		Text:   d.bootstrap, Disabled: disabled,
+		Placeholder: "1.1.1.1, 8.8.8.8",
 		OnTextChanged: func(text string, ctx gogui.EventCtx) {
 			updateDraft(ctx, func(d *profileDraft) { d.bootstrap = text })
 		},
@@ -733,6 +766,10 @@ func listSection(t gogui.Theme, app *App, d profileDraft, disabled bool) gogui.V
 				}),
 			},
 		}),
+		gogui.Separator(gogui.SeparatorCfg{
+			ID:    "gui:lists:divider",
+			Color: t.ColorBorder,
+		}),
 		refreshRow(t, app, disabled),
 	)
 
@@ -789,22 +826,24 @@ func rowControlCluster(t gogui.Theme, toggle, remove gogui.View) gogui.View {
 	})
 }
 
-// refreshRow is the "Update blocklists" service action: it re-downloads the
+// refreshRow is the "Update filter lists" service action: it re-downloads the
 // active profile's lists over the running service.  It carries no config patch,
-// so it is offered only while the service is up.
+// so it is offered only while the service is up.  It is a settings row rather
+// than a full-width bar, so its button shares the page's right control edge.
 func refreshRow(t gogui.Theme, app *App, disabled bool) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID: "gui:lists:refresh:row", Sizing: gogui.FillFit,
-		Spacing: gogui.SpacingTight, Padding: gogui.PaddingNone,
+		Spacing: gogui.NoSpacing, Padding: gogui.PaddingNone,
 		SizeBorder: gogui.NoBorder,
 		Content: []gogui.View{
-			gogui.Button(gogui.ButtonCfg{
-				ID: "gui:lists:refresh", Variant: gogui.ButtonSecondary,
-				Label: "Update blocklists", Sizing: gogui.FillFit,
-				Disabled: disabled || !app.snap.running,
-				OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionRefreshLists) },
-			}),
-			caption(t, "Downloads the active profile's lists again. The service must be running."),
+			settingRow(t, "Filter list updates",
+				"Downloads the active profile's lists again. The service must be running.",
+				gogui.Button(gogui.ButtonCfg{
+					ID: "gui:lists:refresh", Variant: gogui.ButtonSecondary,
+					Label: "Update filter lists", Sizing: gogui.FitFit,
+					Disabled: disabled || !app.snap.running,
+					OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionRefreshLists) },
+				})),
 		},
 	})
 }
@@ -823,7 +862,7 @@ const (
 // routing" card, so the card title carries the heading.
 func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	children := []gogui.View{
-		caption(t, "*.example.com matches subdomains only; example.com matches the domain and its subdomains"),
+		caption(t, "*.example.com matches subdomains only; example.com matches the domain and its subdomains."),
 	}
 	if len(d.perDomain) == 0 {
 		children = append(children, caption(t, "No per-domain rules."))
@@ -831,9 +870,17 @@ func ruleSection(t gogui.Theme, d profileDraft, disabled bool) gogui.View {
 	for i := range d.perDomain {
 		children = append(children, ruleRow(t, d, i, disabled))
 	}
-	children = append(children, gogui.Button(gogui.ButtonCfg{
-		ID: "gui:rule:add", Variant: gogui.ButtonSecondary, Label: "Add rule",
-		Sizing: gogui.FillFit, Disabled: disabled || addRuleDisabled(d), OnClick: addRule,
+	children = append(children, gogui.Row(gogui.ContainerCfg{
+		Sizing:     gogui.FillFit,
+		HAlign:     gogui.HAlignEnd,
+		Padding:    gogui.PaddingNone,
+		SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Button(gogui.ButtonCfg{
+				ID: "gui:rule:add", Variant: gogui.ButtonSecondary, Label: "Add rule",
+				Sizing: gogui.FitFit, Disabled: disabled || addRuleDisabled(d), OnClick: addRule,
+			}),
+		},
 	}))
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -931,7 +978,7 @@ func ruleRow(t gogui.Theme, d profileDraft, i int, disabled bool) gogui.View {
 				Color: t.ColorBorder,
 			}),
 			gogui.Input(gogui.InputCfg{
-				ID: fmt.Sprintf("gui:rule:%d:domains", i), Label: "Domains (comma-separated)",
+				ID: fmt.Sprintf("gui:rule:%d:domains", i), Label: "Domains",
 				Sizing: gogui.FillFit, Text: r.domains,
 				Placeholder: "example.com, *.example.com", Disabled: disabled,
 				OnTextChanged: func(text string, ctx gogui.EventCtx) { setRuleDomains(i, text, ctx) },
@@ -980,6 +1027,23 @@ func ruleControls(t gogui.Theme, i int, enabled, disabled bool) gogui.View {
 // secondary.  The stripe's hue is the only difference between the two
 // severities (a warning caution vs an informational note).
 func notice(t gogui.Theme, kind noticeKind, title, detail string) gogui.View {
+	lines := []gogui.View{
+		gogui.Text(gogui.TextCfg{
+			Text:      title,
+			TextStyle: t.TextStyleTitleSmall,
+			Sizing:    gogui.FillFit,
+		}),
+	}
+	// A detail that only repeats the title is dropped, not rendered as filler.
+	if detail := alertBody(title, detail); detail != "" {
+		lines = append(lines, gogui.Text(gogui.TextCfg{
+			Text:      detail,
+			TextStyle: t.TextStyleSecondary,
+			Mode:      gogui.TextModeWrap,
+			Sizing:    gogui.FillFit,
+		}))
+	}
+
 	return gogui.Row(gogui.ContainerCfg{
 		ID:          "gui:notice",
 		Sizing:      gogui.FillFit,
@@ -998,19 +1062,7 @@ func notice(t gogui.Theme, kind noticeKind, title, detail string) gogui.View {
 				Spacing:    gogui.SpacingTight,
 				Padding:    gogui.PaddingNone,
 				SizeBorder: gogui.NoBorder,
-				Content: []gogui.View{
-					gogui.Text(gogui.TextCfg{
-						Text:      title,
-						TextStyle: t.TextStyleTitleSmall,
-						Sizing:    gogui.FillFit,
-					}),
-					gogui.Text(gogui.TextCfg{
-						Text:      detail,
-						TextStyle: t.TextStyleSecondary,
-						Mode:      gogui.TextModeWrap,
-						Sizing:    gogui.FillFit,
-					}),
-				},
+				Content:    lines,
 			}),
 		},
 	})
@@ -1040,11 +1092,28 @@ func severityStripe(t gogui.Theme, id string, kind noticeKind) gogui.View {
 	})
 }
 
+// captionStyle is the caption rung in the muted secondary colour.  The toolkit's
+// caption token is darker than its secondary one, which made helper text louder
+// than the labels it explains.
+func captionStyle(t gogui.Theme) gogui.TextStyle {
+	style := t.TextStyleCaption
+	style.Color = t.TextStyleSecondary.Color
+
+	return style
+}
+
 // caption is a small, wrapped secondary line under a field.
 func caption(t gogui.Theme, s string) gogui.View {
+	return captionID(t, "", s)
+}
+
+// captionID is caption with a widget ID, for a line that changes with the form
+// state and needs to be found in the layout tree.
+func captionID(t gogui.Theme, id, s string) gogui.View {
 	return gogui.Text(gogui.TextCfg{
+		ID:        id,
 		Text:      s,
-		TextStyle: t.TextStyleCaption,
+		TextStyle: captionStyle(t),
 		Mode:      gogui.TextModeWrap,
 		Sizing:    gogui.FillFit,
 	})
@@ -1124,7 +1193,7 @@ func listToggle(i int) func(gogui.EventCtx) {
 // row is only removed once the confirm dialog is accepted.
 func removeList(i int) func(gogui.EventCtx) {
 	return func(ctx gogui.EventCtx) {
-		confirmRemove(ctx, "Remove list", "Remove this list?",
+		confirmRemove(ctx, "Remove list", "This list will be removed when you save the profile.",
 			fmt.Sprintf("gui:list:%d:remove:confirm", i), func(d *profileDraft) {
 				if i >= 0 && i < len(d.lists) {
 					d.lists = append(d.lists[:i], d.lists[i+1:]...)
@@ -1186,7 +1255,7 @@ func ruleToggle(i int) func(gogui.EventCtx) {
 // removed once the confirm dialog is accepted.
 func removeRule(i int) func(gogui.EventCtx) {
 	return func(ctx gogui.EventCtx) {
-		confirmRemove(ctx, "Remove rule", "Remove this rule?",
+		confirmRemove(ctx, "Remove rule", "This rule will be removed when you save the profile.",
 			fmt.Sprintf("gui:rule:%d:remove:confirm", i), func(d *profileDraft) {
 				if i >= 0 && i < len(d.perDomain) {
 					d.perDomain = append(d.perDomain[:i], d.perDomain[i+1:]...)
@@ -1212,12 +1281,17 @@ func confirmRemove(ctx gogui.EventCtx, title, body, focusID string, apply func(*
 // setPage switches the visible screen.
 func setPage(ctx gogui.EventCtx, p pageKind) {
 	app := gogui.State[App](ctx.Window)
-	if app.page == p {
-		return
+	if app.page != p {
+		app.page = p
+		requestRefresh(app.refresh) // a newly shown page should show fresh data
+		ctx.Window.InvalidateLayout()
 	}
-	app.page = p
-	requestRefresh(app.refresh) // a newly shown page should show fresh data
-	ctx.Window.InvalidateLayout()
+	// Opening the Logging page must land on the newest line.  A fresh layout
+	// would otherwise paint the tail from the top; the same click while already
+	// there re-pins, so the nav item always jumps to the live end.
+	if p == pageLogging {
+		pinLogToBottom(ctx.Window)
+	}
 }
 
 // --- profile management dialogs ---
@@ -1242,7 +1316,7 @@ func promptRenameProfile(ctx gogui.EventCtx) {
 	ctx.Window.Dialog(gogui.DialogCfg{
 		DialogType: gogui.DialogPrompt,
 		Title:      "Rename profile",
-		Body:       "Rename \"" + current + "\".",
+		Body:       "Enter a new name for \"" + current + "\".",
 		Reply:      current,
 		FocusID:    "gui:profile:rename:name",
 		OnReply:    func(reply string, w *gogui.Window) { renameProfile(w, current, reply) },
@@ -1326,13 +1400,113 @@ func selectedProfile(app *App) (name string) {
 }
 
 // providerOptions lists the provider catalog as label/value options.  The
-// catalog is local and secret-free (SPEC §15.1).
+// catalog is local and secret-free (SPEC §15.1).  The label is only the human
+// name: the backend id and the parenthetical detail live on the value and in
+// the caption under the select, so the menu does not read "controld — ControlD".
 func providerOptions() (opts []gogui.SelectOption) {
 	for _, p := range providers.Registry() {
-		opts = append(opts, gogui.NewSelectOption(p.Name+" — "+p.Description, p.Name))
+		opts = append(opts, gogui.NewSelectOption(providerLabel(p.Name), p.Name))
 	}
 
 	return opts
+}
+
+// providerLabel is a provider's human display name.
+func providerLabel(name string) (label string) {
+	switch name {
+	case providers.Quad9:
+		return "Quad9"
+	case providers.Cloudflare:
+		return "Cloudflare"
+	case providers.NextDNS:
+		return "NextDNS"
+	case providers.ControlD:
+		return "ControlD"
+	case providers.Custom:
+		return "Custom"
+	default:
+		return name
+	}
+}
+
+// providerDetail is the small line under the provider select: the one action
+// the chosen provider needs, in plain language.  A provider that needs nothing
+// gets no line, so the form stays quiet.  The provider name is already in the
+// select, so it is never repeated here.
+func providerDetail(provider, variant string) (detail string) {
+	if needsResolverID(provider, variant) {
+		return "Requires a Resolver ID to be set."
+	}
+
+	return ""
+}
+
+// resolverIDHint is the line under the Resolver ID field.  It names the value
+// to enter for the current provider and variant; the provider and variant
+// options stay free of that instruction.  Unknown selections fall back to a
+// neutral keep note, never to CLI syntax.
+func resolverIDHint(provider, variant string) (hint string) {
+	if !needsResolverID(provider, variant) {
+		return "This provider does not use a Resolver ID."
+	}
+
+	switch {
+	case provider == providers.NextDNS:
+		return "Enter your NextDNS configuration ID."
+	case provider == providers.ControlD && variant == "custom":
+		return "Enter the profile ID from your ControlD dashboard."
+	case provider == providers.ControlD && variant == "x-hagezi":
+		return "Enter the Hagezi list name, for example x-hagezi-pro or x-hagezi-pro-plus."
+	case provider == providers.ControlD && variant == "free":
+		return "Enter the ControlD free preset name."
+	}
+
+	return "Leave blank to keep the current Resolver ID."
+}
+
+// variantLabels is the GUI's display copy for the catalog's variants.  It is
+// deliberately separate from providers.Variant.Description, which the CLI
+// prints verbatim (backend names and --id examples included).  Keys are
+// "provider/variant".
+var variantLabels = map[string]string{
+	"quad9/secure":           "Malware blocking, recommended",
+	"quad9/noblock":          "No threat blocking",
+	"quad9/secure-ecs":       "Malware blocking, shares a network prefix",
+	"quad9/noblock-ecs":      "No blocking, shares a network prefix",
+	"cloudflare/standard":    "Unfiltered",
+	"cloudflare/security":    "Malware blocking",
+	"cloudflare/family":      "Malware and adult-content blocking",
+	"nextdns/ultralow":       "Fastest routing, uses system DNS once",
+	"nextdns/anycast":        "Fixed anycast addresses, slower routing",
+	"controld/p0":            "Unfiltered",
+	"controld/p1":            "Malware blocked",
+	"controld/p2":            "Ads and trackers blocked",
+	"controld/p3":            "Social media blocked",
+	"controld/x-oisd":        "OISD blocklist",
+	"controld/x-stevenblack": "StevenBlack blocklist",
+	"controld/x-adguard":     "AdGuard blocklist",
+	"controld/family":        "Family-friendly",
+	"controld/uncensored":    "Uncensored",
+	"controld/custom":        "Custom profile",
+	"controld/x-hagezi":      "Hagezi lists",
+	"controld/free":          "Free preset",
+	"custom/custom":          "Custom URL",
+}
+
+// variantLabel is a variant's human display name, with the raw variant name as
+// a fallback for a catalog addition this table has not covered yet.
+func variantLabel(provider string, v providers.Variant) (label string) {
+	return variantNameLabel(provider, v.Name)
+}
+
+// variantNameLabel is variantLabel for a stored/summary variant name, so the
+// Status page's chips and Connection Info rows reuse the same display copy.
+func variantNameLabel(provider, variant string) (label string) {
+	if label, ok := variantLabels[provider+"/"+variant]; ok {
+		return label
+	}
+
+	return variant
 }
 
 // variantOptions lists the selected provider's variants.
@@ -1343,11 +1517,7 @@ func variantOptions(provider string) (opts []gogui.SelectOption) {
 	}
 
 	for _, v := range p.Variants {
-		label := v.Name
-		if v.Description != "" {
-			label += " — " + v.Description
-		}
-		opts = append(opts, gogui.NewSelectOption(label, v.Name))
+		opts = append(opts, gogui.NewSelectOption(variantLabel(provider, v), v.Name))
 	}
 
 	return opts
@@ -1383,7 +1553,7 @@ func protocolSelect(d profileDraft, disabled bool, floor float32) gogui.View {
 func blockResponseOptions() (opts []gogui.SelectOption) {
 	return []gogui.SelectOption{
 		gogui.NewSelectOption("0.0.0.0", "0.0.0.0"),
-		gogui.NewSelectOption("nxdomain", "nxdomain"),
+		gogui.NewSelectOption("NXDOMAIN", "nxdomain"),
 	}
 }
 

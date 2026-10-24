@@ -1,10 +1,12 @@
-<p align="center"><img src="docs/icon.png" width="112" alt="Sigil DNS icon"></p>
+<p align="center"><img src="assets/appicon-256.png" width="112" alt="Sigil DNS icon"></p>
 
 <h1 align="center">Sigil DNS</h1>
 
 <p align="center"><a href="https://github.com/daika7ana/sigil-dns/actions/workflows/ci.yml"><img src="https://github.com/daika7ana/sigil-dns/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/daika7ana/sigil-dns/releases/latest"><img src="https://img.shields.io/github/v/release/daika7ana/sigil-dns?sort=semver" alt="Release"></a> <a href="LICENSE"><img src="https://img.shields.io/github/license/daika7ana/sigil-dns" alt="License"></a> <img src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D6" alt="Platform"> <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/daika7ana/sigil-dns" alt="Go"></a></p>
 
 <p align="center"><strong>System-wide encrypted DNS for Windows 11 — no kernel driver, no per-adapter fiddling.</strong></p>
+
+<p align="center"><img src="assets/hero.png" alt="Sigil DNS — your DNS, encrypted" width="100%"></p>
 
 Sigil DNS quietly points Windows at a DNS resolver you trust. It runs a small
 loopback DNS server on `127.0.0.1:53` and `[::1]:53`, then installs a catch-all
@@ -154,8 +156,8 @@ interception).
    and hit **Save**.
 3. On **Settings**, press **Start** in the service card.
 
-The banner turns green (**Protected**) once the resolver is up and interception is
-applied. Everything the GUI does is available on the CLI too.
+The state hero turns green (**Protected**) once the resolver is up and
+interception is applied. Everything the GUI does is available on the CLI too.
 
 ### With the CLI
 
@@ -200,16 +202,18 @@ sigildns run --upstream https://dns.quad9.net/dns-query
 
 `sigildns-gui.exe` is the full configuration client, in five pages:
 
-- **Status** — a banner, profile / filtering / cache cards, and **Restore now**
-  for a crash-leftover state.
+- **Status** — a state hero, Connection Info, Filtering, Filter lists, and
+  Cache & bootstrap cards, plus **Restore now** for a crash-leftover state.
 - **Settings** — a Start / Stop control plus service install / remove and state,
-  a profile list with add / rename / delete / set-active, a per-profile editor
+  an **Appearance** card with the Auto / Light / Dark picker, a profile list
+  with add / rename / delete / set-active, a per-profile editor
   (provider / variant / protocol, a masked resolver id, custom URL, bootstrap,
-  fallback profile, filtering + block response, cache and size), and
+  fallback profile, cache and size), and
   **Window & tray**.
-- **Rules** — filter lists and per-domain routing rules (Upstream or Bypass).
+- **Rules** — the filtering toggle and block response, filter lists, and
+  per-domain routing rules (Upstream or Bypass).
 - **Logging** — level, location, and a live log viewer.
-- **About** — version, IPC protocol, author, repository, license.
+- **About** — client / service / interface versions, author, repository, license.
 
 Start runs the service and applies interception; Stop removes it. The binaries
 request admin via an embedded manifest, so Windows shows **one UAC prompt when

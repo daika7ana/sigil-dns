@@ -5,7 +5,6 @@ package gui
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
@@ -177,6 +176,7 @@ func (a *App) showToast(w *gogui.Window, n noticeMessage) {
 		ttl = defaultToastTTL
 	}
 
+	n.body = alertBody(n.title, n.body)
 	a.toast = &n
 	a.toastSeq++
 	seq := a.toastSeq
@@ -225,48 +225,48 @@ func noticeFor(action guiAction, res applyResult, err error) noticeMessage {
 		return noticeMessage{
 			kind:  noticeWarning,
 			title: "Configuration changed",
-			body:  "The config changed since this window read it. Try again.",
+			body:  "The configuration changed since this window loaded it. Try again.",
 		}
-	case err != nil || looksCancelled(res):
-		// UAC declined, or the elevated launch never completed.  Calm and
-		// non-scary: nothing was changed.
+	case err != nil:
+		// A launch/communication failure is not a user cancellation: the
+		// helper reports UAC declines as a Result, not an error.  Keep the
+		// cause visible instead of claiming nothing happened.
+		return noticeMessage{
+			kind:  noticeError,
+			title: failTitle(action),
+			body:  alertBody(failTitle(action), err.Error()),
+		}
+	case looksCancelled(res):
+		// UAC declined.  Calm and non-scary: nothing was changed.
 		return noticeMessage{
 			kind:  noticeWarning,
-			title: "Elevation cancelled",
-			body:  "Nothing changed.",
+			title: "Administrator approval cancelled",
+			body:  "No changes were made.",
 		}
 	case !res.ok:
 		return noticeMessage{
 			kind:  noticeError,
 			title: failTitle(action),
-			body:  bodyOr(res.errText, "The change could not be applied."),
+			body:  alertBody(failTitle(action), res.errText),
 		}
 	default:
 		return noticeMessage{
 			kind:  noticeSuccess,
 			title: doneTitle(action),
-			body:  bodyOr(res.message, "Done."),
+			body:  alertBody(doneTitle(action), res.message),
 		}
 	}
 }
 
-// looksCancelled is a hedge until internal/elevate exposes a cancellation
-// sentinel: a helper result that names a user decline is treated as the calm
-// cancelled outcome rather than a hard error.
+// looksCancelled reports a real UAC decline.  `internal/elevate` returns
+// "elevation cancelled" as a Result for that one case; matching the exact
+// message keeps "context canceled" from a helper that already wrote the config
+// from being misreported as a user cancellation.
 func looksCancelled(res applyResult) bool {
-	return strings.Contains(strings.ToLower(res.errText), "cancel")
-}
-
-// bodyOr returns s, trimmed and length-capped, or def when empty.
-func bodyOr(s, def string) (body string) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return def
-	}
-	const maxBody = 200
-	if len(s) > maxBody {
-		s = strings.TrimSpace(s[:maxBody]) + "..."
+	switch normaliseMessage(res.errText) {
+	case "elevation cancelled", "user cancelled":
+		return true
 	}
 
-	return s
+	return false
 }
