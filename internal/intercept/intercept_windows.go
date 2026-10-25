@@ -221,7 +221,13 @@ func runPS(ctx context.Context, script string) (out string, err error) {
 	cmd.Stderr = &stderr
 
 	if err = cmd.Run(); err != nil {
-		return "", fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+		// PowerShell exits non-zero with an empty stderr during a system
+		// shutdown; do not leave a dangling separator there.
+		if reason := psErrorMessage(stderr.String()); reason != "" {
+			return "", fmt.Errorf("powershell: %w: %s", err, reason)
+		}
+
+		return "", fmt.Errorf("powershell: %w", err)
 	}
 
 	return stdout.String(), nil

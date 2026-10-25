@@ -179,7 +179,7 @@ func parseFlags(cmd string, rest []string) (o options, err error) {
 
 // logger returns the CLI logger.
 func logger() (l *slog.Logger) {
-	return slog.New(redact.Handler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), nil))
+	return slog.New(redact.Handler(logging.NewTextHandler(os.Stderr, slog.LevelInfo), nil))
 }
 
 // fallbackLogger is the fail-open logger used when the config cannot be

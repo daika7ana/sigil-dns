@@ -145,6 +145,50 @@ try {
 }
 `
 
+// psMessageMax bounds the condensed PowerShell error text.
+const psMessageMax = 300
+
+// psErrorMessage condenses PowerShell stderr to the one useful line: Windows
+// PowerShell's normal error view echoes the whole failing command (for -Command
+// that is the entire script) followed by a position block and "CategoryInfo"
+// scaffolding.  The message is the line above the position block, after the
+// echoed command and its " : " separator.
+//
+// The block is found by the unindented "+" marker that follows it, not by its
+// header text: "At line:" is localized ("In Zeile:", "Au niveau de la ligne
+// …").  The header is exactly one line, hence the two-line step back.
+func psErrorMessage(stderr string) (msg string) {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	for i, ln := range lines {
+		if i >= 2 && strings.HasPrefix(ln, "+") {
+			msg = lines[i-2]
+
+			break
+		}
+	}
+	if msg == "" {
+		for i, ln := range lines {
+			if i > 0 && strings.HasPrefix(strings.TrimSpace(ln), "At line:") {
+				msg = lines[i-1]
+
+				break
+			}
+		}
+	}
+	if msg == "" && len(lines) > 0 {
+		msg = lines[0]
+	}
+	if _, after, ok := strings.Cut(msg, " : "); ok {
+		msg = after
+	}
+	msg = strings.TrimSpace(msg)
+	if r := []rune(msg); len(r) > psMessageMax {
+		msg = string(r[:psMessageMax]) + "…"
+	}
+
+	return msg
+}
+
 // psQuote renders s as a single-quoted PowerShell string literal.
 func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 

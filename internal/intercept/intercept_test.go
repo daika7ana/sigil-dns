@@ -89,6 +89,44 @@ func TestNrptVerify(t *testing.T) {
 	}
 }
 
+func TestPSErrorMessage(t *testing.T) {
+	// Shape of a Windows PowerShell 5.1 error record: the echoed command (the
+	// whole -Command script), then the message, then the position block.
+	stderr := "$ErrorActionPreference = 'Stop'\r\ntry {\r\n" +
+		"    Get-DnsClientNrptRule | Remove-DnsClientNrptRule\r\n" +
+		"} : Cannot connect to CIM server. A system shutdown is in progress. \r\n" +
+		"At line:13 char:5\r\n+     Write-Error $_\r\n" +
+		"    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException\r\n"
+
+	if got, want := psErrorMessage(stderr), "Cannot connect to CIM server. A system shutdown is in progress."; got != want {
+		t.Errorf("psErrorMessage() = %q, want %q", got, want)
+	}
+
+	// The position-block header is localized; the "+" marker is not.
+	german := "$ErrorActionPreference = 'Stop'\r\ntry {\r\n" +
+		"    Get-DnsClientNrptRule | Remove-DnsClientNrptRule\r\n" +
+		"} : Cannot connect to CIM server. A system shutdown is in progress. \r\n" +
+		"In Zeile:13 Zeichen:5\r\n+     Write-Error $_\r\n" +
+		"+     ~~~~~~~~~~~~~~\r\n" +
+		"    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException\r\n"
+
+	if got, want := psErrorMessage(german), "Cannot connect to CIM server. A system shutdown is in progress."; got != want {
+		t.Errorf("localized psErrorMessage() = %q, want %q", got, want)
+	}
+
+	// No position block: never fall back to the echoed command.
+	if got := psErrorMessage("The system cannot find the file specified.\r\n"); got != "The system cannot find the file specified." {
+		t.Errorf("psErrorMessage() = %q", got)
+	}
+
+	// PowerShell exits 1 with no message during a system shutdown.
+	for _, empty := range []string{"", "\r\n", "  \n"} {
+		if got := psErrorMessage(empty); got != "" {
+			t.Errorf("psErrorMessage(%q) = %q, want empty", empty, got)
+		}
+	}
+}
+
 func TestNrptFallbackScript(t *testing.T) {
 	script := nrptFallbackScript([]string{".a.example"}, []string{"9.9.9.9", "149.112.112.112"})
 
