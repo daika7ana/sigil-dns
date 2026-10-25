@@ -281,14 +281,17 @@ function Invoke-WithRetry {
 function Copy-InstallerForUninstall {
     # The Add/Remove Programs entry points at a copy of this script: the
     # downloaded temp directory is removed when the launcher exits, so the
-    # uninstaller must live in the install directory.
+    # uninstaller must live in the install directory.  A piped install has no
+    # $PSCommandPath, so the caller passes the extracted release copy instead.
+    param([string] $Source = $PSCommandPath)
+
     $destination = Join-Path $InstallDir 'install.ps1'
-    if (-not $PSCommandPath -or -not (Test-Path -LiteralPath $PSCommandPath)) { return $false }
-    if ([string]::Equals([IO.Path]::GetFullPath($PSCommandPath), [IO.Path]::GetFullPath($destination), [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $Source -or -not (Test-Path -LiteralPath $Source)) { return $false }
+    if ([string]::Equals([IO.Path]::GetFullPath($Source), [IO.Path]::GetFullPath($destination), [StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
     try {
-        Invoke-WithRetry { Copy-Item -LiteralPath $PSCommandPath -Destination $destination -Force -ErrorAction Stop }
+        Invoke-WithRetry { Copy-Item -LiteralPath $Source -Destination $destination -Force -ErrorAction Stop }
         return $true
     }
     catch {
@@ -436,7 +439,7 @@ function Install-SigilDns {
 
     # Add/Remove Programs entry.  Register it only once the uninstaller copy
     # exists; a broken UninstallString is worse than no entry at all.
-    if (Copy-InstallerForUninstall) {
+    if (Copy-InstallerForUninstall -Source $installerSource) {
         try {
             $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SigilDNS'
             $icon = if ($guiInstalled) { $guiExe } else { $targetExe }
@@ -766,12 +769,18 @@ if (-not $doInstall -and -not $doUninstall) {
 }
 
 $temp = $null
+# Where the uninstaller copy comes from: this file, or the extracted release
+# copy when the script arrived through iex.
+$installerSource = $PSCommandPath
 try {
     if ($doInstall -and -not $hasLocalPayload) {
         $release = Get-LatestRelease
         $temp = $release.Temp
         $exePath = $release.Exe
         $guiPath = $release.GuiExe
+        # A legacy release ships setup.ps1, which takes no -Uninstall/-Quiet;
+        # leave the source unset rather than register a broken UninstallString.
+        if ((Split-Path -Leaf $release.Installer) -eq 'install.ps1') { $installerSource = $release.Installer }
     }
 
     if ($doInstall) {

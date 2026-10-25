@@ -84,7 +84,17 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    workflow checks the CI history for the tag's SHA itself and **refuses to
    publish** if the newest completed push run for that SHA failed or is still
    running.
-2. Tag the release and push the tag:
+2. Smoke-test the elevated piped install on Windows — CI never runs
+   `install.ps1`. In an **elevated** terminal:
+
+   ```pwsh
+   & ([scriptblock]::Create((Get-Content -Raw .\install.ps1)))
+   ```
+
+   The scriptblock form has no `$PSCommandPath`, exactly like `irm | iex`.
+   Then check that `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SigilDNS`
+   exists and that the `.ps1` file its `UninstallString` names is present.
+3. Tag the release and push the tag:
 
    ```sh
    git tag vX.Y.Z
