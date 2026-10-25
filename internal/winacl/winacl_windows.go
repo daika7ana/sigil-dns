@@ -53,23 +53,10 @@ func SetDACL(path, sddl string) (err error) {
 		return errReparsePoint
 	}
 
-	// Confirm it opens without following a link (directories need backup
-	// semantics), then close it straight away.
-	h, err := windows.CreateFile(
-		name,
-		windows.FILE_READ_ATTRIBUTES,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS,
-		0,
-	)
-	if err != nil {
-		return fmt.Errorf("winacl: opening for acl: %w", err)
-	}
-	_ = windows.CloseHandle(h)
-
-	// shortcut: the probe and SetNamedSecurityInfo are separate path lookups, so
+	// GetFileAttributes reports the link itself, not its target, so the check
+	// above is the reparse-point guard; opening the path here would add nothing.
+	//
+	// shortcut: the check and SetNamedSecurityInfo are separate path lookups, so
 	// a reparse point swapped in between them is still followed; apply the DACL
 	// with SetSecurityInfo on an open WRITE_DAC handle if that race matters.
 	sd, err := windows.SecurityDescriptorFromString(sddl)
