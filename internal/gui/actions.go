@@ -45,6 +45,16 @@ const (
 	// verified control pipe (elevate.ActionClearCache).
 	actionClearCache guiAction = "cache:clear"
 
+	// actionPauseFiltering suspends the running service's filter stage for
+	// 15 minutes.  It carries no config patch and leaves interception on, so
+	// DNS keeps resolving (elevate.ActionPauseFiltering).
+	actionPauseFiltering guiAction = "filtering:pause"
+
+	// actionResumeFiltering re-enables the filter stage before the pause
+	// expires.  Like the pause, it carries no config patch and drives the
+	// running service over the verified control pipe.
+	actionResumeFiltering guiAction = "filtering:resume"
+
 	// actionSaveLog writes the Logging page's level and path.  It maps onto
 	// elevate.ActionApply and carries only the log patch (LOGGING_PLAN §4.7).
 	actionSaveLog guiAction = "log:save"
@@ -129,6 +139,11 @@ var actionMetas = map[guiAction]actionMeta{
 		"Waiting for the service to update filter lists\u2026", "Filter lists updated", "Could not update filter lists"},
 	actionClearCache: {"Clear DNS cache", gogui.ButtonSecondary,
 		"Waiting for the service to clear the DNS cache\u2026", "DNS cache cleared", "Could not clear the DNS cache"},
+	actionPauseFiltering: {"Pause filtering", gogui.ButtonSecondary,
+		"Waiting for the service to pause filtering\u2026",
+		"Filtering paused", "Could not pause filtering"},
+	actionResumeFiltering: {"Resume filtering", gogui.ButtonSecondary,
+		"Waiting for the service to resume filtering\u2026", "Filtering resumed", "Could not resume filtering"},
 	actionSaveLog: {"Apply", gogui.ButtonPrimary,
 		"Waiting for administrator approval to save logging settings\u2026", "Logging settings saved", "Could not save logging settings"},
 }

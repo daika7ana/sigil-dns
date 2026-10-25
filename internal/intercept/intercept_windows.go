@@ -30,13 +30,14 @@ type nrptController struct {
 }
 
 // Enable implements Controller.  It is idempotent: any stale rule of ours is
-// removed before the catch-all and the bypass exemptions are added.  A bypass
-// exemption whose empty-name-server encoding did not take effect falls back to
-// pinning the adapter's current DNS servers.
-func (c nrptController) Enable(ctx context.Context, bypass []string) (err error) {
+// removed before the catch-all and the bypass exemptions are added.  servers
+// are the resolver's bound addresses; an empty list keeps the dual-stack
+// default.  A bypass exemption whose empty-name-server encoding did not take
+// effect falls back to pinning the adapter's current DNS servers.
+func (c nrptController) Enable(ctx context.Context, bypass, servers []string) (err error) {
 	namespaces := normalizeBypass(bypass)
 
-	out, err := runPS(ctx, nrptEnableScript(namespaces))
+	out, err := runPS(ctx, nrptEnableScript(namespaces, servers))
 	if err != nil {
 		return err
 	}
@@ -48,14 +49,14 @@ func (c nrptController) Enable(ctx context.Context, bypass []string) (err error)
 
 	// The empty-name-server encoding is not first-class in the DnsClient
 	// cmdlets, so fall back to the adapter's current DNS servers.
-	servers := currentDNSServers(ctx)
-	if len(servers) == 0 {
+	adapterServers := currentDNSServers(ctx)
+	if len(adapterServers) == 0 {
 		c.warnUnverified(ctx, missing)
 
 		return nil
 	}
 
-	fbOut, fErr := runPS(ctx, nrptFallbackScript(missing, servers))
+	fbOut, fErr := runPS(ctx, nrptFallbackScript(missing, adapterServers))
 	if fErr != nil {
 		c.logger.WarnContext(ctx, "bypass fallback failed", "err", fErr)
 		c.warnUnverified(ctx, missing)
@@ -81,7 +82,7 @@ func (c nrptController) warnUnverified(ctx context.Context, namespaces []string)
 func normalizeBypass(bypass []string) (namespaces []string) {
 	seen := map[string]bool{}
 	for _, d := range bypass {
-		ns := nrptNamespace(d)
+		ns := NRPTNamespace(d)
 		if ns == "" || seen[ns] {
 			continue
 		}
@@ -115,12 +116,25 @@ func currentDNSServers(ctx context.Context) (servers []string) {
 	return servers
 }
 
-// Disable implements Controller.  It removes only our rule and is idempotent.
+// Disable implements Controller.  It removes only our rules and is idempotent.
+// Removal is proven by re-enumerating: a surviving rule exits non-zero, so the
+// caller keeps the resolver up rather than pointing DNS at a dead port.
 func (nrptController) Disable(ctx context.Context) (err error) {
 	const script = `
-$ErrorActionPreference = 'SilentlyContinue'
-Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } |
-    Remove-DnsClientNrptRule -Force
+$ErrorActionPreference = 'Stop'
+try {
+    Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } |
+        Remove-DnsClientNrptRule -Force -ErrorAction Stop
+    $left = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' }).Count
+    if ($left -gt 0) {
+        Write-Output "remaining=$left"
+        exit 1
+    }
+    Write-Output 'ok=1'
+} catch {
+    Write-Error $_
+    exit 1
+}
 `
 	_, err = runPS(ctx, script)
 
@@ -186,35 +200,15 @@ Get-DnsClientServerAddress -ErrorAction SilentlyContinue | ForEach-Object {
 	return entries, nil
 }
 
-// ProbeNRPT reports whether our rule is present and any foreign rules.
+// ProbeNRPT reports our rules' namespaces and any foreign rules.  Failure to
+// enumerate is an error, never an empty (false-negative) state.
 func ProbeNRPT(ctx context.Context) (st NRPTState, err error) {
-	const script = `
-$ErrorActionPreference = 'SilentlyContinue'
-$ours = @(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' }).Count
-Write-Output "ours=$ours"
-Get-DnsClientNrptRule | Where-Object { $_.DisplayName -ne 'Sigil DNS' } | ForEach-Object {
-    Write-Output ("foreign={0}|{1}" -f $_.DisplayName, $_.Namespace)
-}
-`
-	out, err := runPS(ctx, script)
+	out, err := runPS(ctx, nrptProbeScript)
 	if err != nil {
 		return NRPTState{}, err
 	}
 
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		// Bypass exemptions make our rule count > 1, so any positive count is ours.
-		case strings.HasPrefix(line, "ours="):
-			if n, cErr := strconv.Atoi(strings.TrimPrefix(line, "ours=")); cErr == nil && n >= 1 {
-				st.Ours = true
-			}
-		case strings.HasPrefix(line, "foreign="):
-			st.Conflicts = append(st.Conflicts, strings.TrimPrefix(line, "foreign="))
-		}
-	}
-
-	return st, nil
+	return parseNRPTProbe(out)
 }
 
 // runPS runs a PowerShell command and returns its stdout.
@@ -227,7 +221,13 @@ func runPS(ctx context.Context, script string) (out string, err error) {
 	cmd.Stderr = &stderr
 
 	if err = cmd.Run(); err != nil {
-		return "", fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+		// PowerShell exits non-zero with an empty stderr during a system
+		// shutdown; do not leave a dangling separator there.
+		if reason := psErrorMessage(stderr.String()); reason != "" {
+			return "", fmt.Errorf("powershell: %w: %s", err, reason)
+		}
+
+		return "", fmt.Errorf("powershell: %w", err)
 	}
 
 	return stdout.String(), nil

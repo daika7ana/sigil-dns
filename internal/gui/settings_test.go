@@ -1082,7 +1082,7 @@ func TestTrayMenuHasExpectedActions(t *testing.T) {
 	}
 }
 
-// TestTrayMenuIDsCompensateGoGUIRoot pins the workaround for go-gui v0.89.1's
+// TestTrayMenuIDsCompensateGoGUIRoot pins the workaround for go-gui v0.92.0's
 // Win32 tray menu: a click on item i resolves through menuNodes[i], whose
 // element 0 is the root, so it fires item i-1's ID.  If a go-gui upgrade fixes
 // that, this test still passes but the real menu will be wrong: the shortcut
@@ -1294,6 +1294,12 @@ func TestTrayEnableFailureReverts(t *testing.T) {
 	w := newSettingsWindow(t, app)
 
 	setTrayEnabled(gogui.EventCtx{Window: w}, true)
+
+	// The start runs off the frame thread; drive frames until its result lands.
+	for i := 0; i < 400 && app.settings.Tray; i++ {
+		w.FrameFn()
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if app.settings.Tray {
 		t.Error("settings.Tray = true after the tray host could not start")

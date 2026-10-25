@@ -112,9 +112,10 @@ Common owners of port 53 are:
   WSL, Docker, or the Host Network Service (HNS);
 - a Docker backend or another local resolver.
 
-If the bind fails, `enable` aborts and reports the owner rather than silently
-failing. Stopping ICS usually frees the port, but that also tears down NAT for
-Hyper-V/WSL/Docker networking.
+If the bind fails, `enable` aborts and names the common owners rather than
+silently failing; finding the exact process is the manual recipe in
+docs/TROUBLESHOOTING.md. Stopping ICS usually frees the port, but that also
+tears down NAT for Hyper-V/WSL/Docker networking.
 
 Do **not** disable the Windows DNS Client service to free the port — it is
 mandatory on Windows 11 24H2.

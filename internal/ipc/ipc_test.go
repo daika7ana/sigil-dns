@@ -506,6 +506,134 @@ func TestStatusSanitized(t *testing.T) {
 	}
 }
 
+// fakePauser is an in-memory ipc.Pauser.
+type fakePauser struct {
+	err   error
+	calls int
+}
+
+func (f *fakePauser) PauseFiltering(context.Context) (err error) {
+	f.calls++
+
+	return f.err
+}
+
+// TestHandlePauseFiltering covers the admin-only pause_filtering method.
+func TestHandlePauseFiltering(t *testing.T) {
+	ctx := context.Background()
+
+	p := &fakePauser{}
+	srv := NewServer(&fakeLifecycle{}, nil).SetPauser(p)
+
+	if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodPauseFiltering}); resp.OK ||
+		resp.Error != ErrForbidden.Error() {
+		t.Fatalf("pause_filtering non-admin: %+v", resp)
+	}
+	if p.calls != 0 {
+		t.Fatal("non-admin caller reached the pauser")
+	}
+
+	if resp := srv.Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodPauseFiltering}); !resp.OK {
+		t.Fatalf("pause_filtering admin: %+v", resp)
+	}
+	if p.calls != 1 {
+		t.Fatalf("pause calls = %d, want 1", p.calls)
+	}
+
+	if resp := NewServer(&fakeLifecycle{}, nil).Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodPauseFiltering}); resp.OK ||
+		resp.Error != ErrUnsupported.Error() {
+		t.Fatalf("pause_filtering without handler: %+v", resp)
+	}
+}
+
+// fakeResumer is an in-memory ipc.Resumer.
+type fakeResumer struct {
+	err   error
+	calls int
+}
+
+func (f *fakeResumer) ResumeFiltering(context.Context) (err error) {
+	f.calls++
+
+	return f.err
+}
+
+// TestHandleResumeFiltering covers the admin-only resume_filtering method.
+func TestHandleResumeFiltering(t *testing.T) {
+	ctx := context.Background()
+
+	r := &fakeResumer{}
+	srv := NewServer(&fakeLifecycle{}, nil).SetResumer(r)
+
+	if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodResumeFiltering}); resp.OK ||
+		resp.Error != ErrForbidden.Error() {
+		t.Fatalf("resume_filtering non-admin: %+v", resp)
+	}
+	if r.calls != 0 {
+		t.Fatal("non-admin caller reached the resumer")
+	}
+
+	if resp := srv.Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodResumeFiltering}); !resp.OK {
+		t.Fatalf("resume_filtering admin: %+v", resp)
+	}
+	if r.calls != 1 {
+		t.Fatalf("resume calls = %d, want 1", r.calls)
+	}
+
+	if resp := NewServer(&fakeLifecycle{}, nil).Handle(ctx, Caller{Admin: true}, Request{Version: ProtocolVersion, Method: MethodResumeFiltering}); resp.OK ||
+		resp.Error != ErrUnsupported.Error() {
+		t.Fatalf("resume_filtering without handler: %+v", resp)
+	}
+}
+
+// fakeStats is an in-memory ipc.StatsReporter.
+type fakeStats struct {
+	until time.Time
+	q     uint64
+	b     uint64
+}
+
+func (f *fakeStats) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	return f.q, f.b, f.until
+}
+
+// TestStatusRuntimeStats checks that the sanitized status carries the counters
+// and only a still-unexpired pause.
+func TestStatusRuntimeStats(t *testing.T) {
+	ctx := context.Background()
+	lc := &fakeLifecycle{st: &state.State{Mode: state.ModeOn, Intercept: state.MechanismNRPT}}
+
+	future := time.Now().Add(10 * time.Minute)
+	srv := NewServer(lc, nil).SanitizeStatus().SetStatsReporter(&fakeStats{q: 12, b: 3, until: future})
+
+	resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodStatus})
+	if !resp.OK {
+		t.Fatalf("status: %+v", resp)
+	}
+
+	var dto StatusDTO
+	if err := json.Unmarshal(resp.Data, &dto); err != nil {
+		t.Fatalf("unmarshal DTO: %v", err)
+	}
+	if dto.Stats == nil || dto.Stats.Queries != 12 || dto.Stats.Blocked != 3 {
+		t.Fatalf("stats = %+v", dto.Stats)
+	}
+	if dto.Stats.PausedUntil == nil || !dto.Stats.PausedUntil.After(time.Now()) {
+		t.Fatalf("paused_until = %v, want a future time", dto.Stats.PausedUntil)
+	}
+
+	// An expired pause is not advertised.
+	dto = StatusDTO{}
+	srv = NewServer(lc, nil).SanitizeStatus().SetStatsReporter(&fakeStats{q: 1, until: time.Now().Add(-time.Minute)})
+	resp = srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: MethodStatus})
+	if err := json.Unmarshal(resp.Data, &dto); err != nil {
+		t.Fatalf("unmarshal DTO: %v", err)
+	}
+	if dto.Stats == nil || dto.Stats.PausedUntil != nil {
+		t.Fatalf("expired pause advertised: %+v", dto.Stats)
+	}
+}
+
 func TestClientRejectsBadServerVersion(t *testing.T) {
 	endpoint := testEndpoint(t)
 	ln, err := Listen(endpoint)
@@ -644,5 +772,21 @@ func TestServeGivesUpAfterRepeatedAcceptFailures(t *testing.T) {
 	err := Serve(context.Background(), ln, NewServer(&fakeLifecycle{}, nil), AdminAuthorizer)
 	if err == nil {
 		t.Fatal("Serve should give up after repeated Accept failures")
+	}
+}
+
+// TestErrorResponseScrubsURLs: every IPC error crosses errorResponse, so a
+// resolver id embedded in an upstream URL must not survive the pipe.
+func TestErrorResponseScrubsURLs(t *testing.T) {
+	const id = "abc123secret"
+
+	resp := errorResponse(fmt.Errorf(
+		"creating upstream %q: dial failed", "https://dns.nextdns.io/"+id,
+	))
+	if strings.Contains(resp.Error, id) {
+		t.Fatalf("response leaks the resolver id: %q", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "https://dns.nextdns.io") {
+		t.Fatalf("response lost the host: %q", resp.Error)
 	}
 }

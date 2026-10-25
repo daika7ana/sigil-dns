@@ -113,6 +113,7 @@ type Resolver struct {
 	filterState       atomic.Pointer[filterState]
 	filterCfg         FilterConfig
 	listen            []string
+	stats             *stats
 	cacheSize         int
 	cacheDisabled     bool
 }
@@ -124,6 +125,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		logger:        quietUpstreamErrors(loggerOrDefault(cfg.Logger)),
 		filterCfg:     cfg.Filter,
 		listen:        cfg.Listen,
+		stats:         &stats{},
 		cacheSize:     cfg.CacheSizeBytes,
 		cacheDisabled: cfg.CacheDisabled,
 	}
@@ -221,7 +223,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		r.upstreamConf.SubdomainExclusions = rulesConf.SubdomainExclusions
 	}
 
-	r.handler = &probeHandler{synthetic: SyntheticName(), state: &r.filterState}
+	r.handler = &probeHandler{synthetic: SyntheticName(), state: &r.filterState, stats: r.stats}
 	if cfg.Filter.Enabled && len(cfg.Filter.Lists) > 0 {
 		if err = r.reloadFilter(context.Background(), cfg.Filter); err != nil {
 			closeUpstreams(ups)
@@ -257,6 +259,7 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 	}
 	if len(raw) == 0 {
 		r.setFilterState(nil)
+		r.ClearCache()
 
 		return nil
 	}
@@ -352,6 +355,29 @@ func parseRules(rules []Rule, opts *upstream.Options) (conf *proxy.UpstreamConfi
 	}
 
 	return conf, nil
+}
+
+// ValidateRuleUpstream reports whether u is a per-domain upstream the dnsproxy
+// parser accepts.  It parses one synthetic rule with zero options, the same
+// configuration parseRules gets for a bootstrap-free profile.  The error is
+// static, so no URL can leak into a caller-visible message.
+func ValidateRuleUpstream(u string) (err error) {
+	if strings.TrimSpace(u) == "" {
+		return errors.New("invalid per-domain upstream")
+	}
+
+	conf, parseErr := proxy.ParseUpstreamsConfig(
+		[]string{"[/sigildns-validate.invalid/]" + u},
+		&upstream.Options{},
+	)
+	if conf != nil {
+		_ = conf.Close()
+	}
+	if parseErr != nil {
+		return errors.New("invalid per-domain upstream")
+	}
+
+	return nil
 }
 
 // rulesToLines renders structured rules in dnsmasq syntax:
@@ -557,6 +583,7 @@ func closeBootstrapResolvers(boots []*upstream.UpstreamResolver) (err error) {
 type probeHandler struct {
 	synthetic string
 	state     *atomic.Pointer[filterState]
+	stats     *stats
 }
 
 // ServeDNS implements proxy.Handler.
@@ -568,10 +595,15 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 		return nil
 	}
 
-	if len(req.Question) == 1 {
+	// The health probe is not user traffic; every other query counts, including
+	// cache hits, because this handler runs before dnsproxy's cache.
+	h.stats.queries.Add(1)
+
+	if len(req.Question) == 1 && !h.stats.paused() {
 		if st := h.state.Load(); st != nil && st.engine != nil {
 			q := req.Question[0]
 			if resp := buildFilterResponse(req, st.engine.Match(q.Name, q.Qtype), st); resp != nil {
+				h.stats.blocked.Add(1)
 				dctx.Res = resp
 
 				return nil

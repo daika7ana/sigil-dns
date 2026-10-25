@@ -4,7 +4,9 @@ package gui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	gogui "github.com/go-gui-org/go-gui/gui"
 
@@ -78,13 +80,14 @@ const (
 	// divider (a fractional band would antialias it into two faint rows).
 	headerMinHeight float32 = 64
 
-	// Status dashboard geometry.  The hero takes the left of a two-column top
-	// row, the connection panel a fixed right column, and the three secondary
-	// cards split the row below.  Both rows share one card minimum height and
-	// one gutter, so the dashboard reads as a single grid; FillFill sizing on a
-	// row's cards keeps their heights equal when one card's content grows.
+	// Status dashboard geometry.  Both rows share one three-column grid: the
+	// bottom row's cards take one column each, and the top row's hero spans two
+	// columns beside the connection card.  The column is sized from the window
+	// (statusColumnWidth) rather than a fixed card width, so every card edge and
+	// gutter lines up at any window width.  Fill alone cannot do that: a Fill
+	// row starts each child at its content width, so a wider card (the pause
+	// row) would quietly take a bigger share.
 	statusStackWidth            = 1160
-	statusInfoWidth     float32 = 320
 	statusTopMinHeight  float32 = 200
 	statusCardMinHeight float32 = 200
 	statusPillHeight    float32 = 32
@@ -470,27 +473,33 @@ func statusPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 		return pageColumn("gui:content", []gogui.View{statusHero(t, v, nil, false)})
 	}
 
-	return pageColumn("gui:content", []gogui.View{statusDashboard(t, v, app.summary(), windowWidth)})
+	return pageColumn("gui:content", []gogui.View{statusDashboard(t, v, app, windowWidth)})
 }
 
-// statusDashboard arranges the Status cards.  Above statusStackWidth the top
-// row splits hero/connection and the bottom row splits three ways; below it the
-// top row stacks, the first two bottom cards stay side by side, and the cache
-// card takes the full width.
-func statusDashboard(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, windowWidth int) gogui.View {
+// statusDashboard arranges the Status cards on one three-column grid.  Above
+// statusStackWidth the top row is the hero over two columns beside the
+// connection card, and the bottom row is three one-column cards; below it the
+// top row stacks and the two secondary cards share a row above the full-width
+// cache card.  One column width and one gutter put every card edge on the same
+// lines in either layout.
+func statusDashboard(t gogui.Theme, v statusVisual, app *App, windowWidth int) gogui.View {
 	stacked := windowWidth < statusStackWidth
+	sum := app.summary()
+	gridWidth := statusGridWidth(t, windowWidth)
+	col := statusColumnWidth(t, windowWidth)
 
 	// On a wide row both cards fill the row height, so hero and connection
 	// share one baseline even when one of them has more content.  The paired
 	// bottom cards always fill; the full-width cache card does not need to.
 	hero := statusHero(t, v, sum, !stacked)
 	connection := connectionSection(sum, t, !stacked)
-	filtering := filteringSection(sum, t, true)
+	filtering := filteringSection(app, sum, t, true)
 	lists := filterListsSection(sum, t, true)
 	cache := cacheSection(sum, t, !stacked)
 
 	var top, bottom gogui.View
 	if stacked {
+		half := (gridWidth - t.SpacingMedium) / 2
 		top = gogui.Column(gogui.ContainerCfg{
 			ID: "gui:status:top", Sizing: gogui.FillFit,
 			Padding: gogui.PaddingNone, Spacing: gogui.SpacingMedium, SizeBorder: gogui.NoBorder,
@@ -503,7 +512,10 @@ func statusDashboard(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, wind
 				gogui.Row(gogui.ContainerCfg{
 					Sizing: gogui.FillFit, Padding: gogui.PaddingNone,
 					Spacing: gogui.SpacingMedium, SizeBorder: gogui.NoBorder,
-					Content: []gogui.View{filtering, lists},
+					Content: []gogui.View{
+						fixedWidth(half, filtering),
+						fixedWidth(half, lists),
+					},
 				}),
 				cache,
 			},
@@ -512,12 +524,16 @@ func statusDashboard(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, wind
 		top = gogui.Row(gogui.ContainerCfg{
 			ID: "gui:status:top", Sizing: gogui.FillFit,
 			Padding: gogui.PaddingNone, Spacing: gogui.SpacingMedium, SizeBorder: gogui.NoBorder,
-			Content: []gogui.View{hero, fixedWidth(statusInfoWidth, connection)},
+			Content: []gogui.View{hero, fixedWidth(col, connection)},
 		})
 		bottom = gogui.Row(gogui.ContainerCfg{
 			ID: "gui:status:bottom", Sizing: gogui.FillFit,
 			Padding: gogui.PaddingNone, Spacing: gogui.SpacingMedium, SizeBorder: gogui.NoBorder,
-			Content: []gogui.View{filtering, lists, cache},
+			Content: []gogui.View{
+				fixedWidth(col, filtering),
+				fixedWidth(col, lists),
+				fixedWidth(col, cache),
+			},
 		})
 	}
 
@@ -528,8 +544,27 @@ func statusDashboard(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, wind
 	})
 }
 
-// fixedWidth wraps a card in an inert fixed-width column, so the top row keeps
-// its two-to-one split without a second card-sizing path.
+// statusColumnWidth is one cell of the dashboard's three-column grid.  The
+// fixed width is what keeps both rows on one grid; a Fill row distributes
+// leftover space, but starts every child at its content width, so content
+// could otherwise set the columns.
+func statusColumnWidth(t gogui.Theme, windowWidth int) float32 {
+	return (statusGridWidth(t, windowWidth) - 2*t.SpacingMedium) / 3
+}
+
+// statusGridWidth is the dashboard's content width.  It mirrors the shell's
+// geometry (nav rail, centred capped page column, page inset) the way
+// selectFloor does.
+func statusGridWidth(t gogui.Theme, windowWidth int) float32 {
+	navTotal := navRailWidth + 2*navRailPad
+	avail := float32(windowWidth) - navTotal - t.SizeBorder - 2*contentPad
+	pageWidth := min(avail, contentMaxWidth)
+
+	return pageWidth - (2*contentPad + scrollbarGutter)
+}
+
+// fixedWidth wraps a card in an inert fixed-width column, so a row card takes
+// exactly one grid column without a second card-sizing path.
 func fixedWidth(width float32, content gogui.View) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		Width: width, Sizing: gogui.FixedFill,
@@ -541,7 +576,7 @@ func fixedWidth(width float32, content gogui.View) gogui.View {
 // statusHero is the active-state surface: a soft state-tinted gradient, the
 // headline pill, one calm sentence, the profile chips, and a shield
 // illustration.  It carries every state's messaging; the tint and pill follow
-// the state's semantic colour.
+// the state's semantic colour, and the content is centred vertically.
 func statusHero(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, fill bool) gogui.View {
 	body := []gogui.View{
 		caption(t, "Active status"),
@@ -571,6 +606,7 @@ func statusHero(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, fill bool
 		VAlign:      gogui.VAlignMiddle,
 		Content: []gogui.View{
 			gogui.Row(gogui.ContainerCfg{
+				ID:         "gui:banner:row",
 				Sizing:     gogui.FillFit,
 				Padding:    gogui.PaddingNone,
 				Spacing:    gogui.SpacingMedium,
@@ -754,10 +790,11 @@ func connectionSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.V
 		statusTopMinHeight, statusBoxSizing(fill))
 }
 
-// filteringSection renders filtering settings and rule counts.  The list count
-// is deliberately absent: the Filter lists card names every list beside it, so
-// a count here duplicated that card's purpose.
-func filteringSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.View {
+// filteringSection renders filtering settings, the running session's counters,
+// and the temporary-pause control.  The list count is deliberately absent: the
+// Filter lists card names every list beside it, so a count here duplicated that
+// card's purpose.
+func filteringSection(app *App, sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.View {
 	rows := []gogui.View{}
 	if sum == nil {
 		rows = append(rows, kv(t, "Status", "—"))
@@ -771,8 +808,114 @@ func filteringSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.Vi
 		)
 	}
 
+	// Counters are a running-session value, so a missing Stats read shows the
+	// em dash rather than a fabricated zero.
+	var stats *ipc.RuntimeStats
+	if app.snap.status != nil {
+		stats = app.snap.status.Stats
+	}
+	rows = append(rows, filteringStatsRow(t, stats))
+	if ctl := pauseControl(t, app, sum); ctl != nil {
+		rows = append(rows, ctl)
+	}
+
 	return cardBoxSized(t, "gui:card:filtering", "Filtering", rows,
 		statusCardMinHeight, statusBoxSizing(fill))
+}
+
+// filteringStatsRow is the counter block: queries handled and blocked since
+// the current resolver started.  The count is the loudest element in the card,
+// so the pair reads as a stat, not as another pair of form rows.  Both values
+// are em dashes when Stats is nil.
+func filteringStatsRow(t gogui.Theme, stats *ipc.RuntimeStats) gogui.View {
+	queries, blocked := "—", "—"
+	if stats != nil {
+		queries = groupDigits(stats.Queries)
+		blocked = groupDigits(stats.Blocked)
+	}
+
+	return gogui.Row(gogui.ContainerCfg{
+		ID: "gui:status:stats", Sizing: gogui.FillFit,
+		Spacing: gogui.SpacingLarge, Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			statColumn(t, "gui:status:stats:queries", "Queries", queries),
+			statColumn(t, "gui:status:stats:blocked", "Blocked", blocked),
+		},
+	})
+}
+
+// statColumn is one counter: a caption label above its value, with the value
+// at title weight so the number leads.
+func statColumn(t gogui.Theme, id, label, value string) gogui.View {
+	return gogui.Column(gogui.ContainerCfg{
+		Sizing: gogui.FitFit, Spacing: gogui.SpacingSmall,
+		Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			caption(t, label),
+			gogui.Text(gogui.TextCfg{ID: id, Text: value, TextStyle: t.TextStyleTitle, Sizing: gogui.FitFit}),
+		},
+	})
+}
+
+// groupDigits groups a count in threes, so a running total reads as a number
+// rather than raw output.
+func groupDigits(n uint64) string {
+	s := strconv.FormatUint(n, 10)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+
+	return s
+}
+
+// pauseControl is the temporary filtering pause.  While a pause is active the
+// button becomes Resume, so filtering can be turned back on before the interval
+// ends; the auto-expiry stays the default.
+func pauseControl(t gogui.Theme, app *App, sum *ipc.ConfigSummary) gogui.View {
+	if !canEdit(app.snap) || !enabled(app.snap) || app.snap.status == nil || app.snap.status.Stats == nil {
+		return nil
+	}
+	if sum == nil || !sum.FilteringEnabled {
+		return nil
+	}
+
+	action := actionPauseFiltering
+	desc := fmt.Sprintf("Skips all filtering for %d minutes.", int(filteringPauseDuration/time.Minute))
+	if mins, paused := pauseRemaining(app.snap.status.Stats.PausedUntil, time.Now()); paused {
+		action = actionResumeFiltering
+		desc = fmt.Sprintf("Paused. Filtering resumes automatically in %d minutes.", mins)
+	}
+
+	label := actionLabel(action)
+	if app.busy && app.busyAction == action {
+		label = "Pausing\u2026"
+		if action == actionResumeFiltering {
+			label = "Resuming\u2026"
+		}
+	}
+
+	return settingRow(t, "Filtering pause", desc,
+		gogui.Button(gogui.ButtonCfg{
+			ID: "gui:filtering:toggle", Variant: actionVariant(action),
+			Label: label, Sizing: gogui.FitFit,
+			Disabled: app.busy,
+			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, action) },
+		}))
+}
+
+// pauseRemaining returns the whole minutes left in the pause (rounded up, so it
+// never reads "0 min" while still active) and whether the pause is active.
+func pauseRemaining(until *time.Time, now time.Time) (mins int, paused bool) {
+	if until == nil {
+		return 0, false
+	}
+
+	left := until.Sub(now)
+	if left <= 0 {
+		return 0, false
+	}
+
+	return int((left + time.Minute - 1) / time.Minute), true
 }
 
 // blockResponseLabel is the display casing for the config's block response,
@@ -787,11 +930,16 @@ func blockResponseLabel(resp string) (label string) {
 
 // filterListsSection names every configured list and its enabled state.  The
 // host is clipped rather than wrapped so a long host cannot grow the card.
+// With no lists, one quiet centred line fills the body: the card is stretched
+// by its row, and an empty column under the title read as a failed read.
 func filterListsSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.View {
 	rows := []gogui.View{}
-	if sum == nil || len(sum.Lists) == 0 {
-		rows = append(rows, kv(t, "Lists", "—"))
-	} else {
+	switch {
+	case sum == nil:
+		rows = append(rows, kv(t, "Status", "—"))
+	case len(sum.Lists) == 0:
+		rows = append(rows, emptyCardBody(t, "No filter lists configured."))
+	default:
 		for _, l := range sum.Lists {
 			rows = append(rows, filterListRow(t, fallback(l.Host, "(list)"), l.Enabled))
 		}
@@ -799,6 +947,19 @@ func filterListsSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.
 
 	return cardBoxSized(t, "gui:card:filterlists", "Filter lists", rows,
 		statusCardMinHeight, statusBoxSizing(fill))
+}
+
+// emptyCardBody fills the space rows would use and centres the card's empty
+// message.  A centre-aligned Fit text stays narrow instead of filling the row.
+func emptyCardBody(t gogui.Theme, text string) gogui.View {
+	return gogui.Row(gogui.ContainerCfg{
+		ID: "gui:status:filterlists:empty", Sizing: gogui.FillFill,
+		HAlign: gogui.HAlignCenter, VAlign: gogui.VAlignMiddle,
+		Padding: gogui.PaddingNone, SizeBorder: gogui.NoBorder,
+		Content: []gogui.View{
+			gogui.Text(gogui.TextCfg{Text: text, TextStyle: captionStyle(t), Sizing: gogui.FitFit}),
+		},
+	})
 }
 
 // filterListRow is one filter list: a state dot, the clipped host, and its word.
@@ -852,7 +1013,8 @@ func cacheSection(sum *ipc.ConfigSummary, t gogui.Theme, fill bool) gogui.View {
 
 // bootstrapValue stacks the bootstrap addresses one per line.  A joined,
 // comma-separated string is a single unbreakable run to the layout, so a long
-// list would widen this card past the rest of the bottom row.
+// list would widen its card past the grid column.  Clip caps the block at that
+// column: the literal is cut at the card edge instead.
 func bootstrapValue(t gogui.Theme, addrs []string) gogui.View {
 	lines := make([]gogui.View, 0, max(len(addrs), 1))
 	for _, addr := range addrs {
@@ -869,6 +1031,7 @@ func bootstrapValue(t gogui.Theme, addrs []string) gogui.View {
 		Spacing:    gogui.SpacingTight,
 		Content:    lines,
 		SizeBorder: gogui.NoBorder,
+		Clip:       true,
 	})
 }
 
@@ -1054,6 +1217,7 @@ func toastOverlay(t gogui.Theme, app *App) gogui.View {
 				gogui.Text(gogui.TextCfg{
 					Text:      n.title,
 					TextStyle: title,
+					Mode:      gogui.TextModeWrap,
 					Sizing:    gogui.FillFit,
 				}),
 				gogui.Button(gogui.ButtonCfg{

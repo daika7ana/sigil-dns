@@ -40,6 +40,30 @@ func TestUpstream(t *testing.T) {
 	}
 }
 
+// TestSource labels a filter-list source without exposing its path or token.
+func TestSource(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"https with token", "https://lists.example.com/path/to/SECRET?token=abc", "https://lists.example.com"},
+		{"http", "http://lists.example.com/x", "http://lists.example.com"},
+		{"windows drive", `C:\Users\alice\lists\ads.txt`, "local file"},
+		{"unc", `\\server\share\ads.txt`, "local file"},
+		{"relative", "lists/ads.txt", "local file"},
+		{"empty", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Source(tc.in); got != tc.want {
+				t.Fatalf("Source(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUpstreamDoesNotLeakID is the explicit regression guard from the review:
 // a planted NextDNS/ControlD id must never appear in redacted output.
 func TestUpstreamDoesNotLeakID(t *testing.T) {

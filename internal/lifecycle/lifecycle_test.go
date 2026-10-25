@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/health"
 	"github.com/daika7ana/sigil-dns/internal/resolver"
@@ -20,7 +21,10 @@ import (
 // event log instead of binding sockets.
 type testResolver struct {
 	events      *[]string
+	stats       resolver.Stats
 	cacheClears int
+	pauses      int
+	resumes     int
 }
 
 func (r *testResolver) Start(context.Context) error {
@@ -39,6 +43,9 @@ func (r *testResolver) SyntheticName() string              { return "probe.sigil
 func (r *testResolver) UDPAddrs() []string                 { return []string{"127.0.0.1:53"} }
 func (r *testResolver) RefreshLists(context.Context) error { return nil }
 func (r *testResolver) ClearCache()                        { r.cacheClears++ }
+func (r *testResolver) PauseFiltering(time.Duration)       { r.pauses++ }
+func (r *testResolver) ResumeFiltering()                   { r.resumes++ }
+func (r *testResolver) Stats() resolver.Stats              { return r.stats }
 
 // testIntercept is an intercept.Controller that records calls, captures the
 // dirty flag it observes when Enable runs (proving the snapshot was persisted
@@ -50,12 +57,14 @@ type testIntercept struct {
 	disableErr    error
 	enabled       int
 	disabled      int
+	servers       []string
 	dirtyAtEnable *bool
 }
 
-func (i *testIntercept) Enable(_ context.Context, _ []string) error {
+func (i *testIntercept) Enable(_ context.Context, _, servers []string) error {
 	*i.events = append(*i.events, "intercept-enable")
 	i.enabled++
+	i.servers = servers
 	if st, err := i.store.Load(); err == nil {
 		dirty := st.Dirty
 		i.dirtyAtEnable = &dirty
@@ -237,6 +246,13 @@ func TestLifecycleInvariants(t *testing.T) {
 				}
 				if st.Mode != state.ModeOn || !st.Dirty {
 					t.Fatalf("state = %+v, want mode=on dirty=true", st)
+				}
+				// NRPT must advertise only the addresses that actually bound.
+				if !reflect.DeepEqual(st.NameServers, []string{"127.0.0.1"}) {
+					t.Fatalf("NameServers = %v, want [127.0.0.1]", st.NameServers)
+				}
+				if !reflect.DeepEqual(e.ic.servers, st.NameServers) {
+					t.Fatalf("intercept servers = %v, want %v", e.ic.servers, st.NameServers)
 				}
 			},
 		},
@@ -426,7 +442,7 @@ func TestLifecycleInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "restore with corrupt state still disables interception",
+			name: "restore with corrupt state disables and recovers",
 			setup: func(t *testing.T, e *testEnv) {
 				t.Helper()
 				if err := os.WriteFile(e.path, []byte("{not valid json"), 0o600); err != nil {
@@ -436,17 +452,21 @@ func TestLifecycleInvariants(t *testing.T) {
 			run: func(ctx context.Context, e *testEnv) error { return e.lc.Restore(ctx) },
 			check: func(t *testing.T, e *testEnv, err error) {
 				t.Helper()
-				if err == nil {
-					t.Fatal("Restore should surface the corrupt-state error")
-				}
-				if errors.Is(err, state.ErrNoState) {
-					t.Fatalf("err = %v, corrupt is not missing", err)
-				}
-				if !strings.Contains(err.Error(), "parsing state") {
-					t.Fatalf("err = %v, want the original parse error", err)
+				if err != nil {
+					t.Fatalf("Restore: %v, want recovery", err)
 				}
 				if e.ic.disabled != 1 {
 					t.Fatalf("intercept disable = %d, want 1 (best-effort cleanup)", e.ic.disabled)
+				}
+				if _, sErr := os.Stat(e.path + ".corrupt"); sErr != nil {
+					t.Fatalf("corrupt state was not quarantined: %v", sErr)
+				}
+				st, lErr := e.store.Load()
+				if lErr != nil {
+					t.Fatalf("Load after recovery: %v", lErr)
+				}
+				if st.Mode != state.ModeOff || st.Dirty {
+					t.Fatalf("state = %+v, want a clean off state", st)
 				}
 			},
 		},
@@ -477,5 +497,42 @@ func TestClearCacheClearsResolver(t *testing.T) {
 	}
 	if res.cacheClears != 1 {
 		t.Fatalf("resolver cache clears = %d, want 1", res.cacheClears)
+	}
+}
+
+// TestPauseFilteringAndRuntimeStats: pausing is resolver-scoped, flushes the OS
+// cache on success, and the status counters come from the live resolver.
+func TestPauseFilteringAndRuntimeStats(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	if err := env.lc.PauseFiltering(ctx); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("pause without a resolver = %v, want ErrNotRunning", err)
+	}
+	if err := env.lc.ResumeFiltering(ctx); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("resume without a resolver = %v, want ErrNotRunning", err)
+	}
+	if q, b, until := env.lc.RuntimeStats(); q != 0 || b != 0 || !until.IsZero() {
+		t.Fatalf("stats without a resolver = %d/%d/%v", q, b, until)
+	}
+
+	res := &testResolver{events: env.events, stats: resolver.Stats{Queries: 7, Blocked: 2}}
+	env.lc.setResolver(res)
+
+	if err := env.lc.PauseFiltering(ctx); err != nil {
+		t.Fatalf("PauseFiltering: %v", err)
+	}
+	if res.pauses != 1 {
+		t.Fatalf("pauses = %d, want 1", res.pauses)
+	}
+	if q, b, _ := env.lc.RuntimeStats(); q != 7 || b != 2 {
+		t.Fatalf("stats = %d/%d, want 7/2", q, b)
+	}
+
+	if err := env.lc.ResumeFiltering(ctx); err != nil {
+		t.Fatalf("ResumeFiltering: %v", err)
+	}
+	if res.resumes != 1 {
+		t.Fatalf("resumes = %d, want 1", res.resumes)
 	}
 }

@@ -203,8 +203,13 @@ func TestSetPageSignalsRefresh(t *testing.T) {
 // window to the tray host; the branch must run even though a minimized window
 // is normally unfocused too.
 func TestPollerMinimizeQuitsWindow(t *testing.T) {
+	origStart := hostStart
+	hostStart = func() error { return nil }
+	t.Cleanup(func() { hostStart = origStart })
+
 	src := &countingSource{full: sampleSnapshot(), live: liveOnly(sampleSnapshot())}
 	app := statusApp()
+	app.tray.want.Store(true)
 	app.tray.minimize.Store(true)
 	app.tray.minimized = func() bool { return true }
 
@@ -216,4 +221,61 @@ func TestPollerMinimizeQuitsWindow(t *testing.T) {
 	startPoller(w, src, app.refresh, &app.logView, alwaysFocused(), &app.tray)
 
 	waitFor(t, w, func() bool { return w.CloseRequested() })
+}
+
+// TestPollerMergesLivePauseWithFullCounters proves a live read supplies the
+// pause expiry (so the control flips within a tick) while the counters stay
+// from the last read (so they do not relayout the page every second).
+func TestPollerMergesLivePauseWithFullCounters(t *testing.T) {
+	until := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+
+	full := sampleSnapshot()
+	full.status.Stats = &ipc.RuntimeStats{Queries: 10, Blocked: 2}
+	live := liveOnly(sampleSnapshot())
+	live.status.Stats = &ipc.RuntimeStats{PausedUntil: &until}
+
+	src := &countingSource{full: full, live: live}
+	w, app := pollWindow(t, src, alwaysFocused())
+
+	waitFor(t, w, func() bool {
+		return app.snap.status != nil && app.snap.status.Stats != nil &&
+			app.snap.status.Stats.PausedUntil != nil
+	})
+
+	stats := app.snap.status.Stats
+	if stats.Queries != 10 || stats.Blocked != 2 {
+		t.Fatalf("live merge dropped the counters: %+v", stats)
+	}
+	if !stats.PausedUntil.Equal(until) {
+		t.Fatalf("live merge lost the pause expiry: %v", stats.PausedUntil)
+	}
+}
+
+// TestPauseActive covers the minute-ticker guard: only an unexpired expiry is
+// a live pause, and a missing status is not.
+func TestPauseActive(t *testing.T) {
+	now := time.Now()
+	future, past := now.Add(time.Minute), now.Add(-time.Minute)
+
+	for _, tc := range []struct {
+		name  string
+		stats *ipc.RuntimeStats
+		want  bool
+	}{
+		{"no stats", nil, false},
+		{"no expiry", &ipc.RuntimeStats{}, false},
+		{"future", &ipc.RuntimeStats{PausedUntil: &future}, true},
+		{"past", &ipc.RuntimeStats{PausedUntil: &past}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot{status: &ipc.StatusDTO{Stats: tc.stats}}
+			if got := pauseActive(s); got != tc.want {
+				t.Fatalf("pauseActive = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if pauseActive(snapshot{}) {
+		t.Fatal("a snapshot without a status reports a pause")
+	}
 }

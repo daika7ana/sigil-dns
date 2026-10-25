@@ -124,6 +124,7 @@ func runRequest(w *gogui.Window, req applyRequest) {
 
 	app.busy = true
 	app.busyNote = waitingLabel(req.action)
+	app.busyAction = req.action
 
 	apply := app.apply
 	winCtx := w.Ctx()
@@ -135,15 +136,52 @@ func runRequest(w *gogui.Window, req applyRequest) {
 
 		w.QueueCommand(func(win *gogui.Window) {
 			a := gogui.State[App](win)
+			if res.ok {
+				a.reflectFilteringAction(req.action)
+			}
 			a.busy = false
 			a.busyNote = ""
+			a.busyAction = ""
 			a.showToast(win, noticeFor(req.action, res, err))
-			// Re-poll at once.  The banner reflects the service, never an
-			// optimistic guess.
+			// Re-poll at once.  The protection banner reflects the service,
+			// never an optimistic guess; only the pause toggle above flips
+			// immediately, and the full read replaces it with the real expiry.
 			requestRefresh(a.refresh)
 			win.InvalidateLayout()
 		})
 	}()
+}
+
+// filteringPauseDuration mirrors internal/lifecycle.FilteringPauseDuration.
+//
+// shortcut: the GUI cannot import lifecycle without pulling the resolver into
+// the config client; keep the two values in sync.
+const filteringPauseDuration = 15 * time.Minute
+
+// reflectFilteringAction flips the visible pause state from a successful
+// pause/resume, so the control changes on the click instead of waiting for the
+// next status read.  The poller's full read replaces it with the service's
+// exact expiry.
+func (a *App) reflectFilteringAction(action guiAction) {
+	if a.snap.status == nil || a.snap.status.Stats == nil {
+		return
+	}
+	if action != actionPauseFiltering && action != actionResumeFiltering {
+		return
+	}
+
+	// Copy the DTO and its stats instead of mutating them: the poller still
+	// holds the same pointers in its last-applied snapshot, and mutating those
+	// off the frame thread's copy would race with its next comparison.
+	st := *a.snap.status
+	stats := *st.Stats
+	stats.PausedUntil = nil
+	if action == actionPauseFiltering {
+		until := time.Now().Add(filteringPauseDuration)
+		stats.PausedUntil = &until
+	}
+	st.Stats = &stats
+	a.snap.status = &st
 }
 
 // noticeKind is the severity of an action-result toast.

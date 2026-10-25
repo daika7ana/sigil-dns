@@ -676,7 +676,7 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 				return "", false
 			}
 
-			return decodePathID(u.Path)
+			return decodePathID(u.EscapedPath())
 		}
 
 		return firstHostLabel(host, "dns.nextdns.io")
@@ -691,7 +691,7 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 				return "", false
 			}
 
-			return decodePathID(u.Path)
+			return decodePathID(u.EscapedPath())
 		}
 
 		return firstHostLabel(host, "dns.controld.com")
@@ -702,11 +702,20 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 	}
 }
 
-// decodePathID URL-decodes a DoH path into an id.  An empty path means no id.
+// decodePathID URL-decodes the leading DoH path segment into an id, the
+// position NextDNS/ControlD put it in.  Later segments (a device or client
+// name) are not part of the id.  An empty path means no id.
+//
+// The split happens on the escaped path: u.Path is already decoded, so an
+// encoded separator (%2F) would otherwise be treated as a segment boundary and
+// silently truncate the id (e.g. "ab%2Fcd" -> "ab").
 func decodePathID(path string) (id string, ok bool) {
 	path = strings.Trim(path, "/")
 	if path == "" {
 		return "", false
+	}
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		path = path[:i]
 	}
 
 	decoded, err := url.PathUnescape(path)

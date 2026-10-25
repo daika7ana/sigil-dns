@@ -190,11 +190,12 @@ type App struct {
 	// what it is waiting on.  toast is the last action result, shown as a
 	// transient floating toast; toastSeq guards its auto-dismiss timer, and
 	// toastTTL overrides the default lifetime (tests shorten it).
-	busy     bool
-	busyNote string
-	toast    *noticeMessage
-	toastSeq uint64
-	toastTTL time.Duration
+	busy       bool
+	busyNote   string
+	busyAction guiAction
+	toast      *noticeMessage
+	toastSeq   uint64
+	toastTTL   time.Duration
 
 	// update is the About page's update-check row.  updateStarted guards the
 	// one automatic check per app run; updateChecking keeps a double-clicked
@@ -301,19 +302,44 @@ func run() (err error) {
 			// get a native-size frame instead of a scaled-down one.
 			installWindowIcons()
 			if app.settings.Tray {
-				if err := hostStart(); err != nil {
-					// The setting survived from a previous session but the
-					// platform cannot honour it now; turn it off rather than
-					// leaving a close-to-tray preference with no icon.
-					app.settings.Tray = false
-					app.tray.minimize.Store(false)
-					app.showToast(w, noticeMessage{
-						kind:  noticeWarning,
-						title: "System tray unavailable",
-						body:  "The tray host could not be started.",
+				app.tray.want.Store(true)
+				gen := app.tray.gen.Add(1)
+				go func() {
+					err := hostStart()
+					if !app.tray.want.Load() {
+						hostStop()
+
+						return
+					}
+					if err == nil {
+						return
+					}
+
+					// Do not block first paint for a host that may be dead;
+					// the switch reverts when the queued command runs.
+					w.QueueCommand(func(w *gogui.Window) {
+						a := gogui.State[App](w)
+						if a.tray.gen.Load() != gen || !a.tray.want.Load() {
+							return
+						}
+						a.settings.Tray = false
+						a.tray.want.Store(false)
+						a.tray.minimize.Store(false)
+
+						body := "The tray host could not be started."
+						if a.dropTrayStartup() {
+							body += " Sign-in may still start it in the background."
+						}
+
+						a.showToast(w, noticeMessage{
+							kind:  noticeWarning,
+							title: "System tray unavailable",
+							body:  body,
+						})
+						a.persist()
+						w.InvalidateLayout()
 					})
-					app.persist()
-				}
+				}()
 			}
 			startPoller(w, src, app.refresh, &app.logView, &focused, &app.tray)
 			if restoring {
@@ -363,6 +389,10 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 		defer live.Stop()
 		safety := time.NewTicker(safetyInterval)
 		defer safety.Stop()
+		// The pause countdown is rendered from the expiry; without a tick it
+		// freezes between safety reads when no queries change the counters.
+		pause := time.NewTicker(time.Minute)
+		defer pause.Stop()
 
 		tail := &logTail{}
 
@@ -370,6 +400,10 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 		// heavy fields a live read does not fetch.  applied is what the UI
 		// currently shows, so only a change against it is worth a repaint.
 		var last, applied snapshot
+
+		// counters is the last known query/blocked pair.  It survives a failed
+		// read, so a transient failure does not show a fabricated zero.
+		var counters *ipc.RuntimeStats
 
 		// process folds one read into the UI.  A live read whose service state
 		// moved is replaced by a full read, because only that switches the
@@ -382,6 +416,19 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 			if !full {
 				snap.summary = last.summary
 				snap.info = last.info
+				// The live read carries the pause expiry but no counters.  Keep
+				// the live pause and the last known counters: counters move on
+				// every query, and a live value would relayout the page each
+				// second.  The 30 s safety read refreshes both.
+				if snap.status != nil {
+					snap.status.Stats = keepCounters(snap.status.Stats, counters)
+				}
+			}
+			if snap.status != nil && snap.status.Stats != nil {
+				counters = &ipc.RuntimeStats{
+					Queries: snap.status.Stats.Queries,
+					Blocked: snap.status.Stats.Blocked,
+				}
 			}
 			last = snap
 
@@ -454,6 +501,10 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 			case <-refresh:
 				tailLog()
 				process(readOnce(ctx, src), true)
+			case <-pause.C:
+				if focused.Load() && pauseActive(last) {
+					w.QueueCommand(func(win *gogui.Window) { win.InvalidateLayout() })
+				}
 			}
 		}
 	}()
@@ -464,6 +515,27 @@ func startPoller(w *gogui.Window, src statusSource, refresh chan struct{}, lv *l
 // the service just stopped, so offlineSummary must replace the live one).
 func liveStateChanged(a, b snapshot) bool {
 	return a.installed != b.installed || a.running != b.running || a.scmState != b.scmState
+}
+
+// pauseActive reports whether a snapshot shows an unexpired filtering pause.
+func pauseActive(s snapshot) bool {
+	return s.status != nil && s.status.Stats != nil &&
+		s.status.Stats.PausedUntil != nil && s.status.Stats.PausedUntil.After(time.Now())
+}
+
+// keepCounters keeps a live read's pause expiry but the last known counters.
+// A live read without stats (a service that reports none) falls back to the
+// last pair.
+func keepCounters(live, last *ipc.RuntimeStats) *ipc.RuntimeStats {
+	if live == nil {
+		return last
+	}
+	if last != nil {
+		live.Queries = last.Queries
+		live.Blocked = last.Blocked
+	}
+
+	return live
 }
 
 // requestRefresh asks the poller for an immediate full read without blocking:

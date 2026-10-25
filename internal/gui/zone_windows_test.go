@@ -44,7 +44,7 @@ func TestDownloadUpdateWritesZoneIdentifier(t *testing.T) {
 	defer srv.Close()
 
 	asset := releaseAsset{Name: "sigildns_v1.2.3_windows_amd64.zip", URL: srv.URL}
-	path, err := downloadUpdateDefault(context.Background(), asset)
+	path, err := downloadUpdateDefault(context.Background(), asset, checksumServer(t, asset.Name, []byte("PK")))
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

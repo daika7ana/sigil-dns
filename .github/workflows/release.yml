@@ -266,6 +266,9 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $zip = (Get-ChildItem -Path dist -Filter '*.zip' | Select-Object -First 1).FullName
           $sums = (Resolve-Path 'dist/SHA256SUMS.txt').Path
+          # Also published as a standalone asset: releases/latest/download/install.ps1
+          # is the documented one-line URL, so it needs no per-release bump.
+          $installer = (Resolve-Path 'install.ps1').Path
 
           # Draft first: a failed run must never leave a public release with no assets.
           # Notes: a curated release-notes/<tag>.md wins, then the matching
@@ -309,7 +312,7 @@ jobs:
             }
           }
 
-          gh release upload $tag $zip $sums --clobber
+          gh release upload $tag $zip $sums $installer --clobber
           if ($LASTEXITCODE -ne 0) { throw "gh release upload failed ($LASTEXITCODE)" }
 
           gh release edit $tag --draft=false

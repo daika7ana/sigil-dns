@@ -12,18 +12,20 @@ import (
 // TestElevateActionFor covers the full GUI-action -> elevate.Action mapping.
 func TestElevateActionFor(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
-		actionEnable:        elevate.ActionEnable,
-		actionRestore:       elevate.ActionRestore,
-		actionInstall:       elevate.ActionServiceInstall,
-		actionUninstall:     elevate.ActionServiceUninstall,
-		actionServiceStop:   elevate.ActionServiceStop,
-		actionRefreshLists:  elevate.ActionRefreshLists,
-		actionClearCache:    elevate.ActionClearCache,
-		actionSaveProfile:   elevate.ActionApply,
-		actionAddProfile:    elevate.ActionApply,
-		actionRenameProfile: elevate.ActionApply,
-		actionDeleteProfile: elevate.ActionApply,
-		actionSetActive:     elevate.ActionApply,
+		actionEnable:          elevate.ActionEnable,
+		actionRestore:         elevate.ActionRestore,
+		actionInstall:         elevate.ActionServiceInstall,
+		actionUninstall:       elevate.ActionServiceUninstall,
+		actionServiceStop:     elevate.ActionServiceStop,
+		actionRefreshLists:    elevate.ActionRefreshLists,
+		actionClearCache:      elevate.ActionClearCache,
+		actionPauseFiltering:  elevate.ActionPauseFiltering,
+		actionResumeFiltering: elevate.ActionResumeFiltering,
+		actionSaveProfile:     elevate.ActionApply,
+		actionAddProfile:      elevate.ActionApply,
+		actionRenameProfile:   elevate.ActionApply,
+		actionDeleteProfile:   elevate.ActionApply,
+		actionSetActive:       elevate.ActionApply,
 	}
 
 	for a, want := range cases {
@@ -43,11 +45,13 @@ func TestElevateActionFor(t *testing.T) {
 // config patch and a valid request.
 func TestServiceRequestHasEmptyPatch(t *testing.T) {
 	cases := map[guiAction]elevate.Action{
-		actionInstall:      elevate.ActionServiceInstall,
-		actionUninstall:    elevate.ActionServiceUninstall,
-		actionServiceStop:  elevate.ActionServiceStop,
-		actionRefreshLists: elevate.ActionRefreshLists,
-		actionClearCache:   elevate.ActionClearCache,
+		actionInstall:         elevate.ActionServiceInstall,
+		actionUninstall:       elevate.ActionServiceUninstall,
+		actionServiceStop:     elevate.ActionServiceStop,
+		actionRefreshLists:    elevate.ActionRefreshLists,
+		actionClearCache:      elevate.ActionClearCache,
+		actionPauseFiltering:  elevate.ActionPauseFiltering,
+		actionResumeFiltering: elevate.ActionResumeFiltering,
 	}
 
 	for a, want := range cases {

@@ -38,6 +38,8 @@ profiles:
       lists:
         - url: https://lists.example.com/path/to/SECRETLIST.txt
           enabled: true
+        - url: 'C:\Users\alice\lists\ads.txt'
+          enabled: true
 `
 
 func writeConfigFile(t *testing.T, body string) (path string) {
@@ -100,6 +102,7 @@ func TestConfigSummaryNeverLeaksSecrets(t *testing.T) {
 		"lists.example.com/path",
 		"/path/to/",
 		"dns.controld.com",
+		`C:\Users\alice`,
 	} {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("summary leaked URL part %q: %s", forbidden, raw)
@@ -119,11 +122,12 @@ func TestConfigSummaryNeverLeaksSecrets(t *testing.T) {
 	if !sum.IDSet {
 		t.Error("id_set should be true for a DoH path id")
 	}
-	if sum.PerDomainCount != 1 || sum.ListCount != 1 {
-		t.Errorf("counts = %d/%d, want 1/1", sum.PerDomainCount, sum.ListCount)
+	if sum.PerDomainCount != 1 || sum.ListCount != 2 {
+		t.Errorf("counts = %d/%d, want 1/2", sum.PerDomainCount, sum.ListCount)
 	}
-	if len(sum.Lists) != 1 || sum.Lists[0].Host != "https://lists.example.com" || !sum.Lists[0].Enabled {
-		t.Errorf("lists = %+v, want host https://lists.example.com enabled", sum.Lists)
+	if len(sum.Lists) != 2 || sum.Lists[0].Host != "https://lists.example.com" ||
+		sum.Lists[1].Host != "local file" || !sum.Lists[0].Enabled || !sum.Lists[1].Enabled {
+		t.Errorf("lists = %+v, want host/local file enabled", sum.Lists)
 	}
 	if len(sum.Bootstrap) != 1 || sum.Bootstrap[0] != "9.9.9.9" {
 		t.Errorf("bootstrap = %v", sum.Bootstrap)
@@ -291,15 +295,17 @@ func TestConfigSummaryBrokenConfig(t *testing.T) {
 // every admin method is rejected for a non-admin caller.
 func TestPrivilegeTable(t *testing.T) {
 	want := map[Method]Privilege{
-		MethodStatus:        ReadOnly,
-		MethodInfo:          ReadOnly,
-		MethodConfigSummary: ReadOnly,
-		MethodEnable:        Admin,
-		MethodDisable:       Admin,
-		MethodReload:        Admin,
-		MethodRestore:       Admin,
-		MethodRefreshLists:  Admin,
-		MethodClearCache:    Admin,
+		MethodStatus:          ReadOnly,
+		MethodInfo:            ReadOnly,
+		MethodConfigSummary:   ReadOnly,
+		MethodEnable:          Admin,
+		MethodDisable:         Admin,
+		MethodReload:          Admin,
+		MethodRestore:         Admin,
+		MethodRefreshLists:    Admin,
+		MethodClearCache:      Admin,
+		MethodPauseFiltering:  Admin,
+		MethodResumeFiltering: Admin,
 	}
 	if len(methodPrivileges) != len(want) {
 		t.Fatalf("privilege table has %d entries, want %d", len(methodPrivileges), len(want))
@@ -340,7 +346,7 @@ func TestStatusPipeRejectsAdminMethods(t *testing.T) {
 	srv := NewServer(&fakeLifecycle{}, nil).SetReloader(&fakeReloader{}).SanitizeStatus()
 	ctx := context.Background()
 
-	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists, MethodClearCache} {
+	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists, MethodClearCache, MethodPauseFiltering, MethodResumeFiltering} {
 		resp := srv.Handle(ctx, ReadOnlyAuthorizer(nil), Request{Version: ProtocolVersion, Method: m})
 		if resp.OK || resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s on status pipe = %+v, want ErrForbidden", m, resp)

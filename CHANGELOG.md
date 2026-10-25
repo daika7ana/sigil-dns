@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-25
+
+### Added
+- The Status page shows how many queries this session handled and blocked, plus a **Pause filtering** button that skips filtering for 15 minutes when a site is broken by a list. DNS protection stays on; the button becomes **Resume filtering** while paused, and filtering turns itself back on when the timer runs out.
+- Setup registers Sigil DNS in Windows **Add/Remove Programs**, so it can be uninstalled from Settings → Apps as well as from the installer menu.
+
+### Changed
+- The Status page cards now share one three-column grid at every window width, so card edges and gaps line up and the layout no longer jumps between sizes.
+- Log entries are readable: `[date time][LEVEL] message key=value`, one line per entry, with control characters escaped. A failed PowerShell step reports the one useful error line instead of the whole echoed command.
+- Filter-list failures now say what went wrong — not found (404), permission denied (403), timed out, HTML instead of a list — without printing the list's address.
+- Resolver IDs are no longer accepted as a command-line value: `providers show` prompts for the id with hidden input (`--id`) or reads it from a file or pipe (`--id-file <path>`, `-` for stdin). A value on the command line is refused. Scripts that passed `--id <value>` must switch to `--id-file`.
+- The one-line install command is served from the latest published release instead of the moving `main` branch, so a push to `main` can never change the script it runs.
+- Installer paths come from Windows' own known folders rather than environment variables, and setup refuses an install or data folder redirected by a reparse point.
+
+### Fixed
+- NextDNS Ultralow stays bootstrap-free: only an omitted bootstrap gets the default, while a deliberately empty list stays empty.
+- DNS interception advertises only the loopback addresses the resolver actually bound instead of always claiming IPv6; when another program holds the IPv6 port, Windows clients are no longer sent to it.
+- The drift check now compares the actual DNS rules and name servers, so a partly removed rule set or a stale leftover is repaired instead of being missed. A failing bypass rule can no longer turn protection off.
+- A corrupt state file is quarantined and replaced with a clean off state, so the app recovers instead of failing to start or leaving protection on with no way to stop it.
+- Startup fails closed when old DNS rules cannot be removed, instead of reporting protection on over a half-applied rule set.
+- Pausing or resuming filtering clears the DNS cache, and a failed cache flush no longer reports a successful filter-list update as failed.
+- Uninstall now stops if interception cannot be proven removed instead of deleting the install anyway; it also closes tray hosts owned by other signed-in users before removing the folder.
+- Uninstall removes the per-user autostart task even when it was created by another administrator account.
+- Turning the tray on or off no longer freezes the window while the tray starts, cannot leave a stray icon or a duplicate host behind, and switches itself back off with an explanation when the tray cannot start.
+- Configuration mistakes are now reported instead of silently ignored: unknown keys, a bootstrap that is not an IP address, a malformed per-domain rule, an explicit `schema_version: 0`, or a zero cache size with the cache enabled. Configs written by 0.1.x still load.
+
+### Security
+- The About page's update download is verified against the release's `SHA256SUMS.txt` and refuses a file that does not match or has no checksum entry.
+- Resolver IDs stay off the command line and out of logs and error messages, and URLs are scrubbed from status and filter-list errors before they reach the window or the admin channel.
+
 ## [0.5.0] - 2026-10-24
 
 ### Added

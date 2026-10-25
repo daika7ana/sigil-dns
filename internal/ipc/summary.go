@@ -29,7 +29,7 @@ type Info struct {
 
 // ListSummary is one filter list, reduced to its host.
 type ListSummary struct {
-	// Host is the list URL's scheme+host (never the full path).
+	// Host is the list source's scheme+host, or "local file" for a local path.
 	Host string `json:"host"`
 
 	// Enabled reports whether the list is enabled.
@@ -216,7 +216,7 @@ func Summarize(cfg *config.Config) (sum ConfigSummary) {
 
 	for _, l := range p.Filtering.Lists {
 		sum.Lists = append(sum.Lists, ListSummary{
-			Host:    redact.Upstream(l.URL),
+			Host:    redact.Source(l.URL),
 			Enabled: l.Enabled,
 		})
 	}
@@ -266,7 +266,7 @@ func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSumm
 
 	for _, l := range p.Filtering.Lists {
 		s.Lists = append(s.Lists, ListSummary{
-			Host:    redact.Upstream(l.URL),
+			Host:    redact.Source(l.URL),
 			Enabled: l.Enabled,
 		})
 	}

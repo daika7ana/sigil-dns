@@ -43,6 +43,9 @@ const (
 // ErrNoState is returned by Load when no state file exists yet.
 var ErrNoState = errors.New("no state file")
 
+// ErrCorrupt is returned by Load when the state file cannot be parsed.
+var ErrCorrupt = errors.New("state file is corrupt")
+
 // ErrLocked is returned by AcquireLock when another instance holds the lock.
 var ErrLocked = errors.New("another Sigil DNS instance is running")
 
@@ -61,6 +64,10 @@ type State struct {
 	Intercept     Mechanism `json:"intercept"`
 	Upstream      string    `json:"active_upstream"`
 	Bypass        []string  `json:"bypass,omitempty"`
+
+	// NameServers are the bound resolver IPs the NRPT catch-all advertises.
+	// Empty on legacy state; the interceptor then uses the dual-stack default.
+	NameServers   []string  `json:"name_servers,omitempty"`
 	Health        *Health   `json:"last_health,omitempty"`
 	SchemaVersion int       `json:"schema_version"`
 	Dirty         bool      `json:"dirty"`
@@ -87,22 +94,23 @@ func (s *Store) Load() (st *State, err error) {
 
 	st = &State{}
 	if err = json.Unmarshal(data, st); err != nil {
-		return nil, fmt.Errorf("parsing state: %w", err)
+		return nil, fmt.Errorf("%w: parsing state: %w", ErrCorrupt, err)
+	}
+	if st.Mode != ModeOn && st.Mode != ModeOff {
+		// Valid JSON without a usable mode (e.g. "{}") cannot gate recovery.
+		return nil, fmt.Errorf("%w: unknown mode %q", ErrCorrupt, st.Mode)
 	}
 
 	return st, nil
 }
 
-// Save writes st atomically.
+// Save writes st atomically.  An unreadable existing file is replaced: a
+// corrupt state must not be able to wedge recovery.
 func (s *Store) Save(st *State) (err error) {
 	if st.SchemaVersion == 0 {
 		st.SchemaVersion = SchemaVersion
 	}
 	st.Timestamp = time.Now().UTC()
-
-	if _, lErr := s.Load(); lErr != nil && !errors.Is(lErr, ErrNoState) {
-		return lErr
-	}
 
 	return s.writeAtomic(st)
 }
@@ -123,9 +131,19 @@ func (s *Store) writeAtomic(st *State) (err error) {
 
 // MarkClean records the state as off and clears the dirty marker.  It returns
 // ErrNoState when no state file exists (callers decide whether that is an
-// error).
+// error).  A corrupt file is quarantined as <path>.corrupt and replaced with a
+// clean off state, so every caller (including drift auto-disable) recovers.
 func (s *Store) MarkClean() (err error) {
 	st, err := s.Load()
+	if errors.Is(err, ErrCorrupt) {
+		_ = os.Rename(s.path, s.path+".corrupt")
+
+		return s.Save(&State{
+			SchemaVersion: SchemaVersion,
+			Mode:          ModeOff,
+			Intercept:     MechanismNRPT,
+		})
+	}
 	if err != nil {
 		return err
 	}

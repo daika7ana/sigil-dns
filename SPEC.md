@@ -5,7 +5,7 @@ Target: Windows 11 x64 (ARM64 deferred).
 Developed on Linux, cross-built, released on a Windows runner.
 **License: GPLv3** — forced by `AdguardTeam/urlfilter`; see §3.
 
-Status: the design below is implemented and shipped through **v0.3.0**. §11
+Status: the design below is implemented and shipped through **v0.5.0**. §11
 separates what exists from what is deliberately deferred.
 
 ---
@@ -21,6 +21,8 @@ kernel driver.
 - Kernel WFP/NDIS driver interception.
 - Defeating app-level DoH/DoT, VPN-pushed DNS, or hardcoded resolver IPs.
 - macOS/Linux clients; authoritative DNS serving.
+- Per-app / process-aware routing (a different resolver or rule set per
+  application). This is a YogaDNS differentiator but not part of this product.
 - Per-adapter DNS rewriting (the contingency in §4.2 is not implemented).
 
 ### What is / isn't intercepted
@@ -70,8 +72,10 @@ The GUI and README surface this table; it is a product boundary, not a bug.
   Least privilege remains a future hardening goal (service SID + explicit
   grants) once those operations can be delegated.
 - **GUI**: reads sanitized status over the read-only status pipe; state-changing
-  operations go through the elevated `--apply` helper. The GUI code never reads
-  `config.yaml` directly. Built with **go-gui** (§15). The optional system-tray
+  operations go through the elevated `--apply` helper. While the service is
+  stopped the GUI reads `config.yaml` only to build the sanitized summary
+  in-process (`ipc.LoadSummary`); editing reads and writes go through the helper.
+  Built with **go-gui** (§15). The optional system-tray
   icon runs in a separate native host process started with `--tray`, so the GUI
   can exit while the icon stays; the `tray` build tag remains a retired stub.
 - **Binaries**: one Go module produces two Windows executables —
@@ -92,7 +96,7 @@ The GUI and README surface this table; it is a product boundary, not a bug.
 | Filtering | `github.com/AdguardTeam/urlfilter` v0.23.4 (`DNSEngine`) | **GPL-3.0** → whole app GPLv3 |
 | Windows service | `golang.org/x/sys/windows/svc` | BSD-3 |
 | IPC | `github.com/Microsoft/go-winio` v0.6.4 (deliberately pinned) | MIT |
-| GUI + tray | `github.com/go-gui-org/go-gui` v0.89.1 (`SystemTrayCfg`) | MIT |
+| GUI + tray | `github.com/go-gui-org/go-gui` v0.92.0 (`SystemTrayCfg`) | MIT |
 | Config | YAML (`gopkg.in/yaml.v3`) | MIT/Apache |
 | State | JSON (stdlib), atomic write, ACL SYSTEM+Admins | — |
 
@@ -144,7 +148,9 @@ stop/uninstall verification. Adding it is a feature, not a switch:
 ### 4.3 Enable sequence
 Strict order:
 1. Bind UDP+TCP listeners on `127.0.0.1:53` and `[::1]:53`. If bind fails →
-   abort, report the owner.
+   abort and name the common owners (ICS/`SharedAccess`, a Docker backend,
+   another resolver); the exact process is found with the manual recipe in
+   docs/TROUBLESHOOTING.md.
 2. **Two-stage health check** (§9) — prove loopback→us, then prove upstream
    (per family) with an uncached query.
 3. Persist state + write the atomic **dirty marker** (schema-versioned).
@@ -174,10 +180,12 @@ Never touch NRPT until the resolver is proven listening *and* forwarding. The
 
 ### 4.5 Port 53 conflicts
 Pre-bind-test **UDP and TCP** on both loopbacks *before* any interception
-change. Detect the owning process (common: `SharedAccess`/ICS from
-Hyper-V/WSL/Docker/HNS; also a Docker backend or another resolver). Offer to stop
-ICS; never silently fail. Do not disable the Windows DNS Client service — it is
-mandatory on 24H2.
+change. The bind error names the common owners (`SharedAccess`/ICS from
+Hyper-V/WSL/Docker/HNS; also a Docker backend or another resolver). Identifying
+the exact owning process and stopping ICS are manual steps (see
+docs/TROUBLESHOOTING.md) — the product does not detect the process or stop ICS
+for you, and it never fails silently. Do not disable the Windows DNS Client
+service — it is mandatory on 24H2.
 
 ### 4.6 Drift detection
 `NotifyIpInterfaceChange` fires only on adapter up/down — it **misses** GPO
@@ -278,6 +286,19 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
   blocklists"), rebuilds the engine, and flushes the cache (§5). No scheduled
   updater. Changed-content dedupe is an unconditional GET compared by content
   checksum (sha256), not ETag.
+- **Pause filtering**: the admin `pause_filtering` IPC method skips the filter
+  stage (blocklists, hosts entries, and `$dnsrewrite` mappings) for 15 minutes
+  and clears the resolver + Windows DNS caches first. Interception and upstream
+  resolution stay on, so a site broken by a list is reachable without losing
+  encrypted DNS. The pause expires on its own, or the GUI's **Resume filtering**
+  control (`resume_filtering`, admin) turns filtering back on early; both clear
+  the caches. A service restart or an applied config change starts a fresh
+  session (a reload builds a new resolver).
+- **Session counters**: the resolver counts queries and blocked answers since
+  the current resolver started (the synthetic health probe is excluded); an
+  applied config change resets them with the new resolver. Only those two
+  integers, plus the pause expiry, are exposed on the sanitized status pipe. No
+  query names, upstreams, or ids are involved, and nothing is persisted.
 
 ---
 
@@ -466,16 +487,42 @@ docs/CONFIG.md.
   assetless release. Notes come from `release-notes/<tag>.md` when present, else
   generated notes; the curated CHANGELOG entry is the reference for the same
   version.
+- **Installer (`install.ps1`) contract.** Installs `sigildns.exe` and (when
+  present) `sigildns-gui.exe` to `%ProgramFiles%\SigilDNS`, seeds `config.yaml`
+  in `%ProgramData%\SigilDNS`, restricts the data directory to SYSTEM +
+  Administrators, registers and starts the service, and keeps the binaries
+  beside a copy of the script so the uninstaller survives the temp download
+  directory. It also writes the standard Add/Remove Programs entry
+  (`DisplayName` / `Publisher` / `DisplayIcon` / `InstallLocation` /
+  `UninstallString` = `install.ps1 -Uninstall -Quiet`, no modify/repair). The
+  Start Menu shortcut is always created; the Desktop shortcut is opt-in
+  (`-DesktopShortcut`). System-PATH registration is opt-in (`-AddToPath`, or a
+  prompt unless `-Quiet`), and so is opening the GUI (`-OpenGui`, or a prompt).
+  `-Quiet` skips the menu and every prompt. Uninstall removes interception in a
+  fail-closed order: a failed `restore` aborts before any file, task, registry,
+  or PATH removal; the service removal itself is already fail-closed. It also
+  removes the per-user `ONLOGON` task, shortcuts, the PATH entry, the
+  Add/Remove Programs entry, and any tray host (all users), then the install
+  directory.
+- **Installer distribution.** The documented one-line command fetches
+  `install.ps1` from the latest published release's assets
+  (`github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1`); the
+  release workflow uploads it beside the zip, so the URL is not a branch,
+  always serves the latest release, and needs no per-release bump. The zip checksum proves
+  integrity, not authorship: only a release built with the signing secrets is
+  Authenticode-signed.
 
 ---
 
 ## 11. Status and roadmap
 
-**Delivered through v0.3.0:** the walking skeleton, YAML config + provider
-presets (DoH/DoT/DoQ), per-domain rules + blocklists, the LocalSystem service
-with dual SDDL-locked pipes, drift reconcile + config-independent restore,
-packaging/signing, the five-page go-gui config client, and the opt-in tray with
-`ONLOGON` autostart. Details in §15.4.
+**Delivered through v0.5.0:** the walking skeleton, YAML config + provider
+presets (DoH/DoH3/DoT/DoQ), per-domain rules + blocklists, the LocalSystem
+service with dual SDDL-locked pipes, drift reconcile + config-independent
+restore, packaging/signing, the redesigned five-page go-gui config client, the
+About update checker with a checksum-verified download, the one-line installer
+(install/upgrade/uninstall, `-Quiet`), and the opt-in tray with `ONLOGON`
+autostart. Details in §15.4.
 
 **Deferred / future:**
 - Per-adapter DNS fallback (§4.2) — only if NRPT proves unreliable in the field.
@@ -484,6 +531,7 @@ packaging/signing, the five-page go-gui config client, and the opt-in tray with
   one active).
 - Scheduled list updates; a rule-editor UI beyond the current GUI forms;
   `$dnsrewrite` UX.
+- Per-app routing is a **non-goal** (§1), not a deferred feature.
 - Least-privilege service account (service SID + explicit grants).
 
 ---
@@ -494,19 +542,20 @@ packaging/signing, the five-page go-gui config client, and the opt-in tray with
   single-instance guard, rule selection, blocked responses, allowlist overrides,
   cache flush, IPC privilege table (non-admin rejection), uninstall ordering
   (restore → stop → verify → delete).
-- **Integration (Windows CI)**: SCM install/start/stop; status DTO reflects
-  state; drift re-applied and the reconcile loop catches a simulated registry
-  change; two-stage health check; real Quad9 DoH through
-  `scripts/ci-windows-integration.ps1`.
+- **Integration (Windows CI)**: CLI `enable`, NRPT presence, a killed resolver
+  leaving the dirty marker, and `restore`; real Quad9 DoH through
+  `scripts/ci-windows-integration.ps1`. SCM install/start/stop, the drift
+  reconcile loop, and the two-stage health check are covered by unit tests and
+  Windows-only code paths, not yet end to end.
 - **Release**: package contents (both binaries + docs + installer), checksum
   match, optional Authenticode verification; a red or still-running CI run
   blocks publishing.
 - **Security**: a planted id never appears in `config_summary` JSON or any log;
   a non-admin cannot connect to the control pipe; `reload` swaps live
   resolution; declining launch-time UAC starts nothing; a tampered staging file
-  is rejected with no write; a non-admin process cannot read `config.yaml`; a
-  squatted status pipe is detected as unverified; `disable` works with a corrupt
-  config.
+  is rejected with no write; a non-admin process cannot read `config.yaml`
+  (ACL unit test; no end-to-end non-admin read test yet); a squatted status pipe
+  is detected as unverified; `disable` works with a corrupt config.
 
 ---
 
@@ -526,7 +575,7 @@ packaging/signing, the five-page go-gui config client, and the opt-in tray with
 - **Quad9 ECS variants / captive portals** — ECS leaks a prefix (opt-in only);
   captive-portal back-off is implemented but remains a rough edge.
 - **GPLv3 obligations** — ship LICENSE + source; documented in README.
-- **go-gui is pre-1.0** — pin (`v0.89.1`), update deliberately. The GUI is a
+- **go-gui is pre-1.0** — pin (`v0.92.0`), update deliberately. The GUI is a
   client, so swapping the shell does not touch the service core.
 
 ---
@@ -542,7 +591,7 @@ than reimplement it.
 
 ## 15. GUI — go-gui
 
-**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.89.1`.** Chosen over
+**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.92.0`.** Chosen over
 Wails and verified by a hello-world spike cross-built on Linux and run on Win11
 24H2.
 
@@ -562,7 +611,9 @@ existing `internal/*` packages. It is a **full-parity configuration client**,
 not a status viewer.
 
 - **Reads** — the status pipe (`AU`, read-only) carries *sanitized* methods:
-  `info` (protocol/app version, capability bits) and `config_summary` (active
+  `status` (mode / interception / health plus the session query and blocked
+  counters and the filtering-pause expiry; never ids or upstreams), `info`
+  (protocol/app version, capability bits) and `config_summary` (active
   provider/variant/protocol **labels**, `id_set` bool, active profile name,
   bootstrap IP literals, rule/list **counts** and list **hosts**, filtering +
   cache settings, `config_valid` with a secret-free error, a revision token, and
@@ -579,7 +630,7 @@ not a status viewer.
   re-loads and validates the staged patch with `internal/config`, writes
   `config.yaml` (atomic + ACL), then drives the service over the existing admin
   control pipe (`reload` / `enable` / `disable` / `refresh_lists` /
-  `clear_cache`).
+  `clear_cache` / `pause_filtering` / `resume_filtering`).
   The allowlist is the **whole config surface**: `ActiveProfile`, per-profile
   `Profiles` patches (provider / variant / protocol / id / custom URL /
   bootstrap / fallback profile / filtering / cache, plus **per-list operations**
@@ -588,14 +639,15 @@ not a status viewer.
   carries no upstream), the structural `AddProfile` / `RenameProfile` /
   `DeleteProfile`, and the service actions `service_install` /
   `service_uninstall` / `service_start` / `service_stop` / `refresh_lists` /
-  `clear_cache`. A start re-reads the SCM registration and refuses unless
+  `clear_cache` / `pause_filtering` / `resume_filtering`. A start re-reads the SCM registration and refuses unless
   `BinaryPathName` still points at the current executable with `--service`; the
   CLI and the GUI both use `service.Start`, so neither can bypass the check.
   Every field is validated (bootstrap as IP literals, provider / variant /
   protocol against the registry, id charset + length, explicit-zero rejection);
   ids travel only inside the DPAPI-sealed staging body, and a blank id means
-  *keep* (replace-only). `refresh_lists` and `clear_cache` are both classified
-  `Admin` in the §15.3 privilege table (the status pipe rejects them).
+  *keep* (replace-only). `refresh_lists`, `clear_cache`, `pause_filtering` and
+  `resume_filtering` are all classified `Admin` in the §15.3 privilege table
+  (the status pipe rejects them).
   `clear_cache` has no input: it clears the running resolver's dnsproxy cache and
   then the Windows DNS cache, so a newly added rule (for example a provider-side
   bypass) also applies to names that are already cached. No persistent broker and
@@ -608,7 +660,10 @@ not a status viewer.
   - **Status**: a dashboard — a state hero with an illustration, then
     Connection Info, Filtering, Filter lists, and Cache & bootstrap cards
     (stacking at narrow widths); the header keeps only the **Restore now**
-    action for a crash-leftover dirty state.
+    action for a crash-leftover dirty state. The Filtering card shows the
+    session's query/blocked counters and, while filtering is on and the service
+    is running, a **Pause filtering** control that becomes **Resume filtering**
+    with the countdown while paused (15-minute auto-expiry).
   - **Settings**: a service card — a **Start / Stop** control (Start runs the
     service and applies interception, Stop removes it; the installed/running
     state is the header badge) plus install / remove — an **Appearance** card
@@ -626,10 +681,11 @@ not a status viewer.
     the **next service start**, plus a live read-only tail of the log file with a
     0–30 s refresh slider (0 = off) and **Open log file** / **Clear log file**
     actions.
-  - **About**: three cards — identity, **Version & license** (client version,
+  - **About**: four cards — identity, **Version & license** (client version,
     live service version, interface version, license and its GPL-3.0 linkage
-    note), and **Links** (author and repository, both opened in the default
-    browser).
+    note), **Updates** (the current build against the latest release, with a
+    checksum-verified download that is saved, not installed automatically), and
+    **Links** (author and repository, both opened in the default browser).
   A `gui.lock` beside `gui.json` enforces a single GUI instance.
 - **Tray (opt-in)** — Settings → **Window & tray**: a **System tray icon**
   switch (off by default) plus, while it is on, independent **Minimize to tray**
@@ -687,9 +743,14 @@ every config write still goes through the one-shot `--apply` helper.
 - Resolver ids live only in the admin-only `%ProgramData%\SigilDNS\config.yaml`
   and, for status, the equally ACLed `state.json` (SYSTEM + Administrators).
   They are **never** on the status pipe, never logged, and never on
-  argv/environment (argv is cross-process readable). The GUI *code* never reads
-  `config.yaml` directly — full-fidelity reads happen only inside the elevated
-  helper, regardless of whether the GUI process itself is elevated.
+  argv/environment (argv is cross-process readable). The single documented
+  exception is the `run`/`enable --upstream` dev/CI flag; the normal paths
+  (`config.yaml`, the GUI helper, `providers show --id` (hidden prompt) or
+  `--id-file <path>`) keep ids off argv.
+  The GUI reads `config.yaml` only to build the sanitized summary in-process
+  while the service is stopped (`ipc.LoadSummary`); full-fidelity reads and every
+  write happen only inside the elevated helper, so the editor never holds the
+  full file regardless of whether the GUI process itself is elevated.
 - Editing is **replace-only** (empty id field, or an empty custom-upstream URL
   field, = keep); display is masked (`••••`); no reveal on the AU pipe.
 - `--apply` staging: `%LOCALAPPDATA%\SigilDNS\staging\<uuid>.bin`, **DPAPI**
@@ -719,7 +780,8 @@ every config write still goes through the one-shot `--apply` helper.
 5. Never send across any pipe: ids, credential-bearing URLs (upstream/user/list),
    or hashes of secret-bearing files. Only labels, flags, counts, hosts, and
    non-secret IP literals.
-6. Never secrets on argv/env; staging is DPAPI + user ACL + delete.
+6. Never secrets on argv/env (`run`/`enable --upstream` is the only documented
+   dev/CI exception, §15.2); staging is DPAPI + user ACL + delete.
 7. The elevated helper never trusts staged input: re-load, re-validate, allowlist
    fields, fixed config path, atomic + ACL write; ACL failure is a hard error.
 8. **No silent elevation** (no scheduled task / COM broker / "highest
@@ -749,9 +811,9 @@ Status: **phases 0–8 are implemented.**
    non-secret profile metadata (`provider`/`variant`/`protocol`).
 1. **IPC extension** — `info` + `config_summary` (status pipe, with the
    `profiles` list), `reload` (control pipe), privilege table + tests.
-2. **go-gui shell** — window, status polling, identity check,
-   degraded/stopped/unverified states, `gui.json`, and the `gui.lock`
-   single-instance guard.
+2. **go-gui shell** — window, the redesigned Status dashboard, status polling,
+   identity check, degraded/stopped/unverified states, `gui.json`, and the
+   `gui.lock` single-instance guard.
 3. **Profile view + draft editing** — local catalog, masked id, local validation,
    and writes through the elevated helper.
 4. **Elevation + Apply** — the allowlist is the full config surface plus service
@@ -766,9 +828,11 @@ Status: **phases 0–8 are implemented.**
 6. **Enable/disable/degrade UX** — **Start / Stop** in the Settings service
    card, service management via the helper, the dirty **Restore now** header
    action, and the five-page surface.
-7. **Packaging** — go-gui binary (no cgo), installer ships the GUI + Start-Menu
-   shortcut, and a protocol-version mismatch is surfaced from `info`.
-   Code signing stays optional, gated on repository secrets.
+7. **Packaging** — go-gui binary (no cgo), a one-line `install.ps1`
+   (install/upgrade/uninstall, `-Quiet`), the GUI + Start-Menu shortcut, and the
+   About **Updates** card (release check with a checksum-verified download; the
+   page shows the client, live service, and IPC protocol versions). Code signing
+   stays optional, gated on repository secrets.
 8. **Tray** — an opt-in go-gui system-tray icon (off by default) in a separate
    native host process, with a live service status row, Open, Open log file,
    Clear DNS cache (resolver + Windows caches), Exit, and independent
@@ -797,10 +861,19 @@ A planted id never appears in `config_summary` JSON or any log; a non-admin
 cannot connect to the control pipe; `reload` swaps live resolution (dig via
 loopback); declining the launch-time UAC prompt starts nothing; a tampered
 staging file is rejected with no write; a non-admin process cannot read
-`config.yaml` (the manifest-elevated GUI still never reads it directly — writes
-go through the helper); a squatted `status` pipe is detected as unverified;
+`config.yaml` (while stopped the GUI reads it only through `ipc.LoadSummary`,
+which returns the sanitized DTO; full-fidelity reads and writes go through the
+helper); a squatted `status` pipe is detected as unverified;
 `disable` works with a corrupt config. The `profiles` summary carries no ids or
-URLs (test); the helper rejects an out-of-registry provider/variant/protocol, a
-non-IP bootstrap, a bad id charset, and explicit-zero cache/TTL; uninstall never
+URLs (test); an unknown config key is rejected rather than ignored; the helper
+rejects an out-of-registry provider/variant/protocol, a non-IP bootstrap, a bad
+id charset, a malformed per-domain domain or upstream, an explicit-zero cache
+size while the cache is enabled, and a zero block TTL; uninstall never
 deletes while interception is unproven down (ordered restore → stop → verify →
 delete, unit-tested).
+
+Known gaps: the SCM service install/start/stop, drift reconcile, and two-stage
+health paths are unit/Windows-code-level only; an end-to-end non-admin read test
+and the GUI's pipe-owner check are not yet exercised in CI. The tray host's
+control-window lifecycle (findable, single-instance, WM_CLOSE exit) is tested on
+Windows; icon creation still needs a real desktop session.

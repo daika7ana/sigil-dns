@@ -11,7 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/health"
@@ -23,6 +26,10 @@ import (
 // ErrNotRunning is returned when a resolver-scoped operation is requested while
 // no resolver is running.
 var ErrNotRunning = errors.New("resolver is not running")
+
+// FilteringPauseDuration is the fixed pause interval offered in the GUI.  A
+// fixed interval keeps the control-pipe method parameterless.
+const FilteringPauseDuration = 15 * time.Minute
 
 // ErrRestore marks a failure to remove interception.  The resolver is still
 // running in that case, so callers must not stop it and point DNS at a dead
@@ -58,6 +65,9 @@ type resolverHandle interface {
 	UDPAddrs() []string
 	RefreshLists(ctx context.Context) error
 	ClearCache()
+	PauseFiltering(d time.Duration)
+	ResumeFiltering()
+	Stats() resolver.Stats
 }
 
 // Lifecycle owns the resolver, state store, and interception controller.
@@ -68,6 +78,10 @@ type Lifecycle struct {
 	ic     intercept.Controller
 	logger *slog.Logger
 	cfg    Config
+
+	// resMu guards res: a status read may call RuntimeStats while Enable or
+	// Disable swaps the resolver.
+	resMu sync.RWMutex
 
 	// newResolver, checkHealth and flushDNS are the injectable dependencies;
 	// New points them at production and tests replace them to stay hermetic.
@@ -113,7 +127,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// Enable is idempotent: a client Enable can race service startup, and a
 	// running enabled session must not be torn down and re-enabled.
-	if st, sErr := l.store.Load(); sErr == nil && st.Mode == state.ModeOn && l.res != nil {
+	if st, sErr := l.store.Load(); sErr == nil && st.Mode == state.ModeOn && l.resolver() != nil {
 		return nil
 	}
 
@@ -143,6 +157,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 3. Persist the atomic dirty marker.
+	servers := nameServers(res)
 	st := &state.State{
 		SchemaVersion: state.SchemaVersion,
 		Mode:          state.ModeOn,
@@ -151,6 +166,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		Upstream:      strings.Join(l.upstreamsOrDefault(), ","),
 		Health:        toStateHealth(hr),
 		Bypass:        l.cfg.Bypass,
+		NameServers:   servers,
 	}
 	if err = l.store.Save(st); err != nil {
 		_ = l.stopResolver(ctx)
@@ -158,8 +174,8 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return err
 	}
 
-	// 4. Apply interception.
-	if err = l.ic.Enable(ctx, l.cfg.Bypass); err != nil {
+	// 4. Apply interception to the listeners that actually bound.
+	if err = l.ic.Enable(ctx, l.cfg.Bypass, servers); err != nil {
 		enableErr := fmt.Errorf("enabling interception: %w", err)
 
 		// A partial apply must not be left pointing at a resolver we are about
@@ -239,10 +255,21 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 	st, lErr := l.store.Load()
 	dirty := lErr == nil && st.Dirty
 	if lErr != nil && !errors.Is(lErr, state.ErrNoState) {
-		// A corrupt state file must not block cleanup (M2): make a best-effort
-		// attempt to undo any partial interception, then surface the original
-		// load error.  Missing state keeps its existing behaviour below.
-		_ = l.ic.Disable(ctx)
+		// A corrupt state file must not block cleanup (M2): undo any partial
+		// interception, then quarantine the bad file and record a clean off
+		// state so the next start can proceed.  If interception cannot be
+		// proven down, stay fail-closed and surface the errors.
+		if dErr := l.ic.Disable(ctx); dErr != nil {
+			return errors.Join(lErr, dErr)
+		}
+		if errors.Is(lErr, state.ErrCorrupt) {
+			if rErr := l.store.MarkClean(); rErr != nil {
+				return errors.Join(lErr, rErr)
+			}
+			l.logger.WarnContext(ctx, "quarantined a corrupt state file", "err", lErr)
+
+			return nil
+		}
 
 		return lErr
 	}
@@ -308,25 +335,80 @@ func (l *Lifecycle) Run(ctx context.Context) (err error) {
 func (l *Lifecycle) Status() (st *state.State, err error) { return l.store.Load() }
 
 // RefreshLists re-downloads the running resolver's filter lists and rebuilds
-// its filter engine (SPEC §15.1).  It returns ErrNotRunning when no resolver is
-// active.
+// its filter engine (SPEC §15.1).  It then flushes the OS DNS cache so a
+// previously blocked answer does not outlive the refreshed lists.  It returns
+// ErrNotRunning when no resolver is active.
 func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
-	if l.res == nil {
+	res := l.resolver()
+	if res == nil {
 		return ErrNotRunning
 	}
 
-	return l.res.RefreshLists(ctx)
+	if err = res.RefreshLists(ctx); err != nil {
+		return err
+	}
+
+	// The lists are already live; a failed ipconfig must not report the
+	// refresh as failed (Enable treats the same failure as a warning).
+	l.flush(ctx)
+
+	return nil
 }
 
 // ClearCache clears the running resolver's cache and the OS DNS cache.  A
 // stopped resolver still gets the OS flush: there is no in-process cache to
 // clear, and the Windows cache may hold an answer that predates a rule change.
 func (l *Lifecycle) ClearCache(ctx context.Context) (err error) {
-	if l.res != nil {
-		l.res.ClearCache()
+	if res := l.resolver(); res != nil {
+		res.ClearCache()
 	}
 
 	return FlushDNS(ctx)
+}
+
+// PauseFiltering suspends the running resolver's filter stage for
+// FilteringPauseDuration and flushes the OS cache, so an answer blocked just
+// before the pause does not outlive it.  Interception stays on and queries keep
+// resolving; only filtering is skipped.
+func (l *Lifecycle) PauseFiltering(ctx context.Context) (err error) {
+	res := l.resolver()
+	if res == nil {
+		return ErrNotRunning
+	}
+
+	res.PauseFiltering(FilteringPauseDuration)
+	l.flush(ctx)
+
+	return nil
+}
+
+// ResumeFiltering turns the running resolver's filtering back on before the
+// pause expires and flushes the OS cache, so an answer allowed during the
+// pause does not outlive it.  Interception is untouched.
+func (l *Lifecycle) ResumeFiltering(ctx context.Context) (err error) {
+	res := l.resolver()
+	if res == nil {
+		return ErrNotRunning
+	}
+
+	res.ResumeFiltering()
+	l.flush(ctx)
+
+	return nil
+}
+
+// RuntimeStats returns the live resolver counters for the sanitized status
+// DTO.  It never takes the lifecycle lock, so a status read cannot block behind
+// a slow reload, and it is safe while Enable/Disable swap the resolver.
+func (l *Lifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	res := l.resolver()
+	if res == nil {
+		return 0, 0, time.Time{}
+	}
+
+	s := res.Stats()
+
+	return s.Queries, s.Blocked, s.PausedUntil
 }
 
 // resolverConfig builds the resolver configuration from the lifecycle config.
@@ -361,19 +443,22 @@ func (l *Lifecycle) healthCheck(ctx context.Context, res resolverHandle) (r heal
 
 // stopResolver shuts the resolver down if running.
 func (l *Lifecycle) stopResolver(ctx context.Context) (err error) {
-	if l.res == nil {
+	res := l.resolver()
+	if res == nil {
 		return nil
 	}
 
-	err = l.res.Shutdown(ctx)
-	l.res = nil
+	err = res.Shutdown(ctx)
+	l.setResolver(nil)
 
 	return err
 }
 
-// markClean clears the dirty marker.  A missing state file is not an error.
+// markClean clears the dirty marker.  A missing state file is not an error, and
+// MarkClean replaces a corrupt one with a clean off state.
 func (l *Lifecycle) markClean() (err error) {
-	if err = l.store.MarkClean(); errors.Is(err, state.ErrNoState) {
+	err = l.store.MarkClean()
+	if errors.Is(err, state.ErrNoState) {
 		return nil
 	}
 
@@ -392,9 +477,24 @@ func (l *Lifecycle) startResolver(ctx context.Context) (res resolverHandle, err 
 
 		return nil, err
 	}
-	l.res = res
+	l.setResolver(res)
 
 	return res, nil
+}
+
+// resolver returns the current resolver, or nil when none is running.
+func (l *Lifecycle) resolver() (res resolverHandle) {
+	l.resMu.RLock()
+	defer l.resMu.RUnlock()
+
+	return l.res
+}
+
+// setResolver swaps the resolver pointer.
+func (l *Lifecycle) setResolver(res resolverHandle) {
+	l.resMu.Lock()
+	l.res = res
+	l.resMu.Unlock()
 }
 
 // acquire takes the single-instance lock, or is a no-op if already held.
@@ -432,13 +532,33 @@ func (l *Lifecycle) upstreamsOrDefault() (ups []string) {
 	return []string{resolver.DefaultUpstream}
 }
 
-// bootstrapOrDefault returns the configured bootstrap or the default.
+// bootstrapOrDefault returns the configured bootstrap or the default.  An
+// explicit empty list is kept: it means no bootstrap (NextDNS Ultralow).
 func (l *Lifecycle) bootstrapOrDefault() (b []string) {
-	if len(l.cfg.Bootstrap) > 0 {
+	if l.cfg.Bootstrap != nil {
 		return l.cfg.Bootstrap
 	}
 
 	return []string{resolver.DefaultBootstrap}
+}
+
+// nameServers returns the resolver's bound loopback UDP hosts without their
+// port.  Only loopback IP literals may reach Add-DnsClientNrptRule; an
+// unparseable or non-loopback bind address would make the rule invalid.
+func nameServers(res resolverHandle) (servers []string) {
+	for _, addr := range res.UDPAddrs() {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		ip, err := netip.ParseAddr(host)
+		if err != nil || !ip.IsLoopback() {
+			continue
+		}
+		servers = append(servers, host)
+	}
+
+	return servers
 }
 
 // toStateHealth converts a health result for persistence.

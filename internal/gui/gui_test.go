@@ -450,6 +450,32 @@ func TestNoticeForOutcome(t *testing.T) {
 	}
 }
 
+// TestReflectFilteringAction proves a successful pause/resume flips the visible
+// toggle before the next status read, and that a missing stats payload is safe.
+func TestReflectFilteringAction(t *testing.T) {
+	app := statusApp()
+	app.snap.status.Stats = &ipc.RuntimeStats{}
+
+	app.reflectFilteringAction(actionPauseFiltering)
+	until := app.snap.status.Stats.PausedUntil
+	if until == nil || until.Before(time.Now().Add(14*time.Minute)) {
+		t.Fatalf("pause did not set a future expiry: %v", until)
+	}
+
+	app.reflectFilteringAction(actionResumeFiltering)
+	if app.snap.status.Stats.PausedUntil != nil {
+		t.Fatalf("resume left an expiry: %v", app.snap.status.Stats.PausedUntil)
+	}
+
+	// A finished stats read (for example while stopped) must not panic.
+	noStats := statusApp()
+	noStats.snap.status.Stats = nil
+	noStats.reflectFilteringAction(actionPauseFiltering)
+	if noStats.snap.status.Stats != nil {
+		t.Fatal("reflect created a stats payload")
+	}
+}
+
 // TestNoticeForCopy proves the toast copy rules: generic backend messages and
 // title restatements are suppressed, while a real cause survives sentence-cased.
 func TestNoticeForCopy(t *testing.T) {
@@ -461,6 +487,7 @@ func TestNoticeForCopy(t *testing.T) {
 		body   string
 	}{
 		{"generic success", actionSaveProfile, applyResult{ok: true, message: "config saved"}, "Profile saved", ""},
+		{"pause adds the auto-resume note", actionPauseFiltering, applyResult{ok: true, message: "resumes automatically in 15 minutes"}, "Filtering paused", "Resumes automatically in 15 minutes."},
 		{"generic cache jargon", actionClearCache, applyResult{ok: true, message: "Windows DNS cache cleared"}, "DNS cache cleared", ""},
 		{"generic uninstall jargon", actionUninstall, applyResult{ok: true, message: "service uninstalled (no active interception)"}, "Service removed", ""},
 		{"duplicate title", actionServiceStop, applyResult{errText: "could not stop the service"}, "Could not stop the service", ""},

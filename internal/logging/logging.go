@@ -108,9 +108,7 @@ func Open(opts Options) (l *slog.Logger, closer io.Closer, err error) {
 		size:      info.Size(),
 	}
 
-	base := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level, ReplaceAttr: replaceAttr})
-
-	return slog.New(redact.Handler(base, opts.Secrets)), w, nil
+	return slog.New(redact.Handler(NewTextHandler(w, level), opts.Secrets)), w, nil
 }
 
 // UpdateSecrets replaces the redaction seeds of a logger built by Open, so a
@@ -151,37 +149,14 @@ func parseLevel(s string) (level slog.Level, off bool, err error) {
 	}
 }
 
-// tabReplacement is what replaceAttr substitutes for each TAB in a string
+// tabReplacement is what the handler substitutes for each TAB in a string
 // value.  dnsproxy emits DNS message dumps as tab-separated "line" attributes
-// and slog's TextHandler would otherwise render them as the two-character \t
-// escape.
+// and the two-character \t escape would be unreadable.
 const tabReplacement = "    "
-
-// replaceAttr expands TABs inside string attribute values at format time.  It
-// runs after redact.Handler has scrubbed the record and leaves every other
-// kind, and the time/level/msg records, untouched.
-func replaceAttr(_ []string, a slog.Attr) slog.Attr {
-	if a.Value.Kind() != slog.KindString {
-		return a
-	}
-	switch a.Key {
-	case slog.TimeKey, slog.LevelKey, slog.MessageKey:
-		return a
-	}
-
-	s := a.Value.String()
-	if !strings.ContainsRune(s, '\t') {
-		return a
-	}
-
-	return slog.String(a.Key, strings.ReplaceAll(s, "\t", tabReplacement))
-}
 
 // stderrLogger is the fail-open fallback: redacted, stderr only.
 func stderrLogger(level slog.Level, secrets []string) (l *slog.Logger) {
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level, ReplaceAttr: replaceAttr})
-
-	return slog.New(redact.Handler(h, secrets))
+	return slog.New(redact.Handler(NewTextHandler(os.Stderr, level), secrets))
 }
 
 // mebibytes converts MiB to bytes.

@@ -4,11 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/daika7ana/sigil-dns/internal/filter"
 	"github.com/miekg/dns"
 )
 
@@ -172,5 +175,83 @@ func TestSyntheticNameUnique(t *testing.T) {
 	}
 	if len(a) < 20 {
 		t.Fatalf("SyntheticName too short: %q", a)
+	}
+}
+
+// TestStatsAndFilteringPause proves the counters track every non-probe query
+// (blocked included) and that a pause skips only the filter stage: the same
+// blocked name resolves through the upstream while the pause is active.
+func TestStatsAndFilteringPause(t *testing.T) {
+	upstreamAddr, _ := startUpstream(t, "192.0.2.1")
+
+	listPath := filepath.Join(t.TempDir(), "block.txt")
+	if err := os.WriteFile(listPath, []byte("0.0.0.0 blocked.example\n"), 0o600); err != nil {
+		t.Fatalf("write list: %v", err)
+	}
+
+	r, err := New(Config{
+		Logger:    slog.Default(),
+		Upstreams: []string{upstreamAddr},
+		Listen:    []string{"127.0.0.1:0"},
+		Filter: FilterConfig{
+			Enabled:       true,
+			Lists:         []filter.List{{Source: listPath}},
+			BlockResponse: BlockResponseZero,
+			TTL:           60,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	if err = r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	addr := r.UDPAddrs()[0]
+
+	// The health probe is not user traffic and must not move the counter.
+	query(t, addr, r.SyntheticName(), dns.TypeA)
+	if s := r.Stats(); s.Queries != 0 || s.Blocked != 0 {
+		t.Fatalf("probe counted: %+v", s)
+	}
+
+	resp := query(t, addr, "blocked.example.", dns.TypeA)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("blocked query answers = %v", resp.Answer)
+	}
+	if s := r.Stats(); s.Queries != 1 || s.Blocked != 1 || !s.PausedUntil.IsZero() {
+		t.Fatalf("stats after blocked query = %+v", s)
+	}
+
+	r.PauseFiltering(time.Minute)
+	if s := r.Stats(); s.PausedUntil.IsZero() || !s.PausedUntil.After(time.Now()) {
+		t.Fatalf("pause not recorded: %+v", s)
+	}
+
+	// The same name now reaches the upstream: only filtering was skipped.
+	resp = query(t, addr, "blocked.example.", dns.TypeA)
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.ParseIP("192.0.2.1")) {
+		t.Fatalf("paused query was still filtered: %v", resp.Answer)
+	}
+	if s := r.Stats(); s.Queries != 2 || s.Blocked != 1 {
+		t.Fatalf("stats after paused query = %+v", s)
+	}
+
+	// Resume early: the same name is filtered again before the interval ends.
+	r.ResumeFiltering()
+	if s := r.Stats(); !s.PausedUntil.IsZero() {
+		t.Fatalf("resume did not clear the pause: %+v", s)
+	}
+	resp = query(t, addr, "blocked.example.", dns.TypeA)
+	a, ok = resp.Answer[0].(*dns.A)
+	if !ok || !a.A.IsUnspecified() {
+		t.Fatalf("query after resume was not filtered: %v", resp.Answer)
+	}
+	if s := r.Stats(); s.Queries != 3 || s.Blocked != 2 {
+		t.Fatalf("stats after resumed query = %+v", s)
 	}
 }

@@ -119,6 +119,13 @@ func (s *pipeSource) ReadLive(ctx context.Context) (snapshot, error) {
 
 	var st ipc.StatusDTO
 	if exchange(conn, ipc.MethodStatus, &st) == nil {
+		// The pause expiry changes only when a pause starts or ends, so it must
+		// reach the UI live (the Resume control flips within a tick).  Counters
+		// move on every query and would force a relayout each second; the poller
+		// reuses the last full read's counters instead.
+		if st.Stats != nil {
+			st.Stats = &ipc.RuntimeStats{PausedUntil: st.Stats.PausedUntil}
+		}
 		snap.status = &st
 	}
 

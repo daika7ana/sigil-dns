@@ -5,8 +5,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/netip"
 	"os"
@@ -209,6 +211,11 @@ type Config struct {
 	Profile       string             `yaml:"profile"`
 	SchemaVersion int                `yaml:"schema_version"`
 	Log           LogConfig          `yaml:"log"`
+
+	// Mode is the retired 0.1.x on/off switch.  It is still accepted so a
+	// config written by 0.1.x keeps loading under strict decoding, and it is
+	// never written back (omitempty).
+	Mode string `yaml:"mode,omitempty"`
 }
 
 // Default returns the default configuration: one "default" profile, cache
@@ -258,8 +265,35 @@ func Load(path string) (c *Config, err error) {
 	}
 
 	c = &Config{}
-	if err = yaml.Unmarshal(data, c); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err = dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+
+	// An absent schema_version still defaults to 1 (normalize), but an explicit
+	// 0 must be rejected rather than silently upgraded.  The same probe keeps an
+	// explicit size_bytes: 0 distinguishable from a missing one.
+	var probe struct {
+		SchemaVersion *int `yaml:"schema_version"`
+		Profiles      map[string]struct {
+			Cache *struct {
+				Enabled   *bool `yaml:"enabled"`
+				SizeBytes *int  `yaml:"size_bytes"`
+			} `yaml:"cache"`
+		} `yaml:"profiles"`
+	}
+	if err = yaml.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if probe.SchemaVersion != nil && *probe.SchemaVersion == 0 {
+		return nil, fmt.Errorf("unsupported schema_version 0 (want %d)", SchemaVersion)
+	}
+	for name, p := range probe.Profiles {
+		if p.Cache != nil && p.Cache.SizeBytes != nil && *p.Cache.SizeBytes == 0 &&
+			p.Cache.Enabled != nil && *p.Cache.Enabled {
+			return nil, fmt.Errorf("profile %q: cache enabled with non-positive size_bytes", name)
+		}
 	}
 
 	c.normalize()
@@ -279,7 +313,11 @@ func (c *Config) Save(path string) (err error) {
 		return err
 	}
 
-	data, err := yaml.Marshal(c)
+	// The retired 0.1.x mode key is accepted on load but never written back.
+	out := *c
+	out.Mode = ""
+
+	data, err := yaml.Marshal(&out)
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
@@ -321,8 +359,13 @@ func (c *Config) normalize() {
 	for name, p := range c.Profiles {
 		if p.Cache == nil {
 			p.Cache = &Cache{Enabled: true, SizeBytes: DefaultCacheSizeBytes}
-		} else if p.Cache.SizeBytes == 0 {
+		} else if p.Cache.Enabled && p.Cache.SizeBytes == 0 {
 			p.Cache.SizeBytes = DefaultCacheSizeBytes
+		}
+		// Only an absent field (nil) gets the default: an explicit empty list is
+		// deliberate (NextDNS Ultralow must stay bootstrap-free).
+		if p.Bootstrap == nil {
+			p.Bootstrap = []string{resolver.DefaultBootstrap}
 		}
 		p.filteringDefaults()
 
@@ -384,8 +427,8 @@ func (p Profile) validate(name string) (err error) {
 		}
 	}
 	for i, b := range p.Bootstrap {
-		if strings.TrimSpace(b) == "" {
-			return fmt.Errorf("profile %q: bootstrap %d is empty", name, i)
+		if !ValidBootstrap(b) {
+			return fmt.Errorf("profile %q: bootstrap %d is not an IP or IP:port", name, i)
 		}
 	}
 
@@ -404,6 +447,11 @@ func (p Profile) validate(name string) (err error) {
 		if len(pd.Domains) == 0 {
 			return fmt.Errorf("profile %q: per_domain %d needs domains", name, i)
 		}
+		for j, d := range pd.Domains {
+			if err = ValidDomain(d); err != nil {
+				return fmt.Errorf("profile %q: per_domain %d domain %d: %w", name, i, j, err)
+			}
+		}
 		if pd.Bypass {
 			if strings.TrimSpace(pd.Upstream) != "" {
 				return fmt.Errorf("profile %q: per_domain %d is a bypass rule with an upstream", name, i)
@@ -413,6 +461,9 @@ func (p Profile) validate(name string) (err error) {
 		}
 		if strings.TrimSpace(pd.Upstream) == "" {
 			return fmt.Errorf("profile %q: per_domain %d needs an upstream", name, i)
+		}
+		if err = resolver.ValidateRuleUpstream(pd.Upstream); err != nil {
+			return fmt.Errorf("profile %q: per_domain %d: %w", name, i, err)
 		}
 	}
 	for i, l := range p.Filtering.Lists {
@@ -565,6 +616,12 @@ func (p *Profile) ApplySelection(sel providers.Selection) (err error) {
 
 	p.Upstreams = ep.Upstreams
 	p.Bootstrap = ep.Bootstrap
+	if p.Bootstrap == nil {
+		// Preserve bootstrap-free expansions (NextDNS Ultralow, or a Custom
+		// profile with no bootstrap) as explicit empty, which normalize must
+		// not turn into the default.
+		p.Bootstrap = []string{}
+	}
 
 	provider := strings.TrimSpace(sel.Provider)
 	variant := strings.TrimSpace(sel.Variant)
@@ -600,6 +657,43 @@ func ValidBootstrap(s string) (ok bool) {
 	}
 
 	return false
+}
+
+// ValidDomain reports whether d is a domain usable in a per-domain rule: an
+// optional "*." prefix, non-empty labels of at most 63 bytes, at most 253 bytes
+// overall, and no "/" or control/space characters.  An empty entry (also
+// written ".") is the documented unqualified form that matches single-label
+// names.  The error never repeats the value.
+func ValidDomain(d string) (err error) {
+	d = strings.TrimSuffix(strings.TrimSpace(d), ".")
+	if d == "" {
+		return nil
+	}
+	if len(d) > 253 {
+		return errors.New("domain is too long")
+	}
+	if strings.ContainsRune(d, '/') ||
+		strings.ContainsFunc(d, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) {
+		return errors.New("domain contains an unsupported character")
+	}
+
+	host := strings.TrimPrefix(d, "*.")
+	if host == "" {
+		return errors.New("domain has an empty label")
+	}
+	if strings.ContainsRune(host, '*') {
+		return errors.New("domain contains an unsupported character")
+	}
+	for label := range strings.SplitSeq(host, ".") {
+		if label == "" {
+			return errors.New("domain has an empty label")
+		}
+		if len(label) > 63 {
+			return errors.New("domain label is too long")
+		}
+	}
+
+	return nil
 }
 
 // cloneProfile deep-copies p so mutations never alias the original's slices or

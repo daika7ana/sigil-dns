@@ -19,6 +19,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui/backend/soft"
 
 	"github.com/daika7ana/sigil-dns/internal/config"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // A wide window, distinct from the default, so the pages are also exercised
@@ -68,27 +69,147 @@ func TestStatusLayout(t *testing.T) {
 
 // TestStatusLongBootstrapFits proves an uncompressed IPv6 bootstrap address
 // stays inside the cache card instead of widening the dashboard and forcing a
-// horizontal scrollbar on the Status page.
+// horizontal scrollbar on the Status page.  The grid gives the card a fixed
+// column, so the literal is clipped rather than the card growing.
 func TestStatusLongBootstrapFits(t *testing.T) {
-	app := statusApp()
-	app.snap.summary.Bootstrap = []string{
-		"2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-		"2606:4700:4700::1111",
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"default", defaultWidth, defaultHeight},
+		{"screenshot", 1320, 700},
+		{"stack-breakpoint", statusStackWidth, 700},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			app := statusApp()
+			app.snap.summary.Bootstrap = []string{
+				"2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+				"2606:4700:4700::1111",
+			}
+
+			w, root := layoutFor(t, app, size.w, size.h)
+			page := mustFindLayout(t, w, root, "gui:content")
+			if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+				t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+			}
+
+			// The long value must never push the card past its grid column or
+			// its value block past the card.
+			cache := mustFindLayout(t, w, root, "gui:card:cache")
+			grid := mustFindLayout(t, w, root, "gui:status:grid")
+			if cache.Shape.X+cache.Shape.Width > grid.Shape.X+grid.Shape.Width+0.5 {
+				t.Errorf("cache card (%.0f..%.0f) extends past the dashboard (right %.0f)",
+					cache.Shape.X, cache.Shape.X+cache.Shape.Width, grid.Shape.X+grid.Shape.Width)
+			}
+			value := mustFindLayout(t, w, root, "gui:status:bootstrap:value")
+			if value.Shape.X+value.Shape.Width > cache.Shape.X+cache.Shape.Width-0.5 {
+				t.Errorf("bootstrap value (%.0f..%.0f) extends past the cache card (right %.0f)",
+					value.Shape.X, value.Shape.X+value.Shape.Width,
+					cache.Shape.X+cache.Shape.Width)
+			}
+		})
 	}
+}
+
+// TestStatusFilteringStatsAndPause proves the Filtering card shows the running
+// session's counters and offers the pause control only while filtering is on;
+// an active pause turns the control into Resume and shows the remaining minutes.
+// A missing stats read shows the em dash and no control.
+func TestStatusFilteringStatsAndPause(t *testing.T) {
+	// No stats: the counters fall back to the em dash and the pause is not
+	// offered, because there is nothing to confirm the pause against.
+	empty := statusApp()
+	ew, eroot := layoutFor(t, empty, defaultWidth, defaultHeight)
+	for _, id := range []string{"gui:status:stats:queries", "gui:status:stats:blocked"} {
+		if got := mustFindLayout(t, ew, eroot, id).Shape.TC.Text; got != "—" {
+			t.Errorf("nil stats: %s = %q, want an em dash", id, got)
+		}
+	}
+	if n := len(ew.ResolveID("gui:filtering:toggle")); n != 0 {
+		t.Errorf("pause control rendered without stats (%d)", n)
+	}
+
+	// Running session with filtering on: the counters are real values and the
+	// pause is offered.
+	app := statusApp()
+	app.snap.status.Stats = &ipc.RuntimeStats{Queries: 1234, Blocked: 56}
 
 	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
-	page := mustFindLayout(t, w, root, "gui:content")
-	if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
-		t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+	for id, want := range map[string]string{
+		"gui:status:stats:queries": "1,234",
+		"gui:status:stats:blocked": "56",
+	} {
+		if got := mustFindLayout(t, w, root, id).Shape.TC.Text; got != want {
+			t.Errorf("%s = %q, want %q", id, got, want)
+		}
+	}
+	assertDisabled(t, root, w, "gui:filtering:toggle", false)
+	if !textSet(mustFindLayout(t, w, root, "gui:filtering:toggle"))["Pause filtering"] {
+		t.Error(`pause control does not read "Pause filtering"`)
+	}
+	// The copy must say the whole filter stage stops: hosts entries and
+	// $dnsrewrite mappings stop too, not just blocklist matches.
+	if !textSet(mustFindLayout(t, w, root, "gui:card:filtering"))["Skips all filtering for 15 minutes."] {
+		t.Error("unpaused card does not say all filtering stops")
 	}
 
-	// The long value may widen its own card within the row, but it must never
-	// push the card past the dashboard.
-	cache := mustFindLayout(t, w, root, "gui:card:cache")
-	grid := mustFindLayout(t, w, root, "gui:status:grid")
-	if cache.Shape.X+cache.Shape.Width > grid.Shape.X+grid.Shape.Width+0.5 {
-		t.Errorf("cache card (%.0f..%.0f) extends past the dashboard (right %.0f)",
-			cache.Shape.X, cache.Shape.X+cache.Shape.Width, grid.Shape.X+grid.Shape.Width)
+	// The counters are a stat block, not another form row: the value leads its
+	// caption at a larger size.
+	stats := mustFindLayout(t, w, root, "gui:status:stats")
+	queries := mustFindLayout(t, w, root, "gui:status:stats:queries")
+	label := findTextLayout(stats, "Queries")
+	if label == nil {
+		t.Fatal("stats block has no Queries label")
+	}
+	if queries.Shape.Height <= label.Shape.Height {
+		t.Errorf("counter value (%.0f high) is not larger than its label (%.0f high)",
+			queries.Shape.Height, label.Shape.Height)
+	}
+
+	// A future expiry means the service is already paused: the control becomes
+	// Resume, stays usable, and the countdown moves to the description.
+	until := time.Now().Add(12 * time.Minute)
+	app.snap.status.Stats.PausedUntil = &until
+	pw, proot := layoutFor(t, app, defaultWidth, defaultHeight)
+	assertDisabled(t, proot, pw, "gui:filtering:toggle", false)
+	if !textSet(mustFindLayout(t, pw, proot, "gui:filtering:toggle"))["Resume filtering"] {
+		t.Error("paused control does not offer Resume filtering")
+	}
+	if !textSet(mustFindLayout(t, pw, proot, "gui:card:filtering"))["Paused. Filtering resumes automatically in 12 minutes."] {
+		t.Error("paused card does not show the remaining minutes")
+	}
+
+	// The control must still fit inside the card at the minimum width.
+	mw, mroot := layoutFor(t, app, minWidth, minHeight)
+	card := mustFindLayout(t, mw, mroot, "gui:card:filtering")
+	if !layoutContains(card, mustFindLayout(t, mw, mroot, "gui:filtering:toggle")) {
+		t.Error("pause control is outside the Filtering card at the minimum width")
+	}
+	page := mustFindLayout(t, mw, mroot, "gui:content")
+	if ov, ok := mw.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+		t.Errorf("Status page has %.1f px of horizontal overflow at the minimum width (ok=%v)", ov, ok)
+	}
+
+	// An in-flight action also disables it, like every other control, and says
+	// which way it is going so the click is visibly acknowledged.
+	busy := statusApp()
+	busy.busy = true
+	busy.busyAction = actionPauseFiltering
+	busy.snap.status.Stats = &ipc.RuntimeStats{Queries: 1, Blocked: 0}
+	bw, broot := layoutFor(t, busy, defaultWidth, defaultHeight)
+	assertDisabled(t, broot, bw, "gui:filtering:toggle", true)
+	if !textSet(mustFindLayout(t, bw, broot, "gui:filtering:toggle"))["Pausing\u2026"] {
+		t.Error("in-flight pause does not read Pausing...")
+	}
+
+	pausedBusy := statusApp()
+	pausedBusy.busy = true
+	pausedBusy.busyAction = actionResumeFiltering
+	pausedBusy.snap.status.Stats = &ipc.RuntimeStats{Queries: 1, Blocked: 0, PausedUntil: &until}
+	rbw, rroot := layoutFor(t, pausedBusy, defaultWidth, defaultHeight)
+	assertDisabled(t, rroot, rbw, "gui:filtering:toggle", true)
+	if !textSet(mustFindLayout(t, rbw, rroot, "gui:filtering:toggle"))["Resuming\u2026"] {
+		t.Error("in-flight resume does not read Resuming...")
 	}
 }
 
@@ -389,6 +510,8 @@ func assertStatusDashboard(t *testing.T, app *App, width, height int, stacked bo
 		t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
 	}
 
+	assertCardHeaderRhythm(t, w, root)
+
 	if stacked {
 		if conn.Shape.Y <= hero.Shape.Y+hero.Shape.Height-0.5 {
 			t.Errorf("connection panel y=%.0f does not sit below the hero (bottom %.0f)",
@@ -413,6 +536,13 @@ func assertStatusDashboard(t *testing.T, app *App, width, height int, stacked bo
 		}
 		if gap := lists.Shape.X - (filtering.Shape.X + filtering.Shape.Width); gap <= 0.5 {
 			t.Errorf("filtering and filter lists have no gutter (%.1f)", gap)
+		} else if absF(2*filtering.Shape.Width+gap-grid.Shape.Width) > 0.5 {
+			t.Errorf("stacked pair (%.0f+%.0f+%.0f) does not fill the dashboard %.0f",
+				filtering.Shape.Width, gap, lists.Shape.Width, grid.Shape.Width)
+		}
+		if absF(hero.Shape.Width-grid.Shape.Width) > 0.5 {
+			t.Errorf("stacked hero width %.0f is not the dashboard width %.0f",
+				hero.Shape.Width, grid.Shape.Width)
 		}
 		if cache.Shape.Y <= filtering.Shape.Y+filtering.Shape.Height-0.5 {
 			t.Errorf("cache card y=%.0f does not sit below the first bottom row", cache.Shape.Y)
@@ -464,6 +594,22 @@ func assertStatusDashboard(t *testing.T, app *App, width, height int, stacked bo
 		t.Errorf("bottom row y=%.0f does not sit below the top row", filtering.Shape.Y)
 	}
 
+	// One grid: the connection card is the bottom row's third column, so its
+	// left edge and width match the cache card's, and the hero's right edge
+	// lands on the gutter before that column.
+	if absF(conn.Shape.X-cache.Shape.X) > 0.5 {
+		t.Errorf("connection x=%.0f does not land on the cache column x=%.0f",
+			conn.Shape.X, cache.Shape.X)
+	}
+	if absF(conn.Shape.Width-cache.Shape.Width) > 0.5 {
+		t.Errorf("connection width %.0f != cache column width %.0f",
+			conn.Shape.Width, cache.Shape.Width)
+	}
+	if absF((hero.Shape.X+hero.Shape.Width)-(lists.Shape.X+lists.Shape.Width)) > 0.5 {
+		t.Errorf("hero right %.0f does not land on the lists edge %.0f",
+			hero.Shape.X+hero.Shape.Width, lists.Shape.X+lists.Shape.Width)
+	}
+
 	// One gutter across the whole dashboard.
 	gap1 := lists.Shape.X - (filtering.Shape.X + filtering.Shape.Width)
 	gap2 := cache.Shape.X - (lists.Shape.X + lists.Shape.Width)
@@ -478,6 +624,140 @@ func assertStatusDashboard(t *testing.T, app *App, width, height int, stacked bo
 	}
 
 	assertNoFindings(t, w)
+}
+
+// assertCardHeaderRhythm proves the four titled Status cards share one card
+// anatomy: the title sits at the same inset, and the first row starts at the
+// same distance below it.
+func assertCardHeaderRhythm(t *testing.T, w *gogui.Window, root *gogui.Layout) {
+	t.Helper()
+
+	titles := map[string]string{
+		"gui:card:connection":  "Connection Info",
+		"gui:card:filtering":   "Filtering",
+		"gui:card:filterlists": "Filter lists",
+		"gui:card:cache":       "Cache & bootstrap",
+	}
+	var titleOffset, rowOffset float32 = -1, -1
+	for id, title := range titles {
+		card := mustFindLayout(t, w, root, id)
+		if len(card.Children) < 2 {
+			t.Fatalf("%s has %d children, want a title and at least one row", id, len(card.Children))
+		}
+		head := card.Children[0]
+		if head.Shape.TC == nil || head.Shape.TC.Text != title {
+			t.Fatalf("%s first child is not the %q title", id, title)
+		}
+		tOff := head.Shape.Y - card.Shape.Y
+		rOff := card.Children[1].Shape.Y - card.Shape.Y
+		if titleOffset < 0 {
+			titleOffset, rowOffset = tOff, rOff
+
+			continue
+		}
+		if absF(tOff-titleOffset) > 0.5 {
+			t.Errorf("%s title inset %.1f != %.1f", id, tOff, titleOffset)
+		}
+		if absF(rOff-rowOffset) > 0.5 {
+			t.Errorf("%s first row starts %.1f below the card, want %.1f", id, rOff, rowOffset)
+		}
+	}
+
+	// The hero is deliberately not a titled card: its content group is centred
+	// in the card's inner height rather than sitting on the title inset.
+	hero := mustFindLayout(t, w, root, "gui:banner")
+	row := mustFindLayout(t, w, root, "gui:banner:row")
+	innerTop := hero.Shape.Y + hero.Shape.SizeBorder + hero.Shape.Padding.Top
+	innerBottom := hero.Shape.Y + hero.Shape.Height - hero.Shape.SizeBorder - hero.Shape.Padding.Bottom
+	if got, want := row.Shape.Y+row.Shape.Height/2, (innerTop+innerBottom)/2; absF(got-want) > 1 {
+		t.Errorf("hero content centre %.1f != card centre %.1f", got, want)
+	}
+}
+
+// TestStatusGridEqualColumnsWithStats proves the three-column grid holds when
+// the Filtering card grows its pause row: the cards stay equal thirds instead
+// of letting their content set the widths, and the pause control stays on the
+// card's content edge down to the stack breakpoint.
+func TestStatusGridEqualColumnsWithStats(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"default", defaultWidth, defaultHeight},
+		{"screenshot", 1320, 700},
+		{"stack-breakpoint", statusStackWidth, 700},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			app := statusApp()
+			app.snap.status.Stats = &ipc.RuntimeStats{Queries: 1234567, Blocked: 890}
+
+			w, root := layoutFor(t, app, size.w, size.h)
+			filtering := mustFindLayout(t, w, root, "gui:card:filtering")
+			lists := mustFindLayout(t, w, root, "gui:card:filterlists")
+			cache := mustFindLayout(t, w, root, "gui:card:cache")
+
+			for _, ly := range []*gogui.Layout{lists, cache} {
+				if absF(ly.Shape.Width-filtering.Shape.Width) > 0.5 {
+					t.Errorf("%s width %.1f != filtering width %.1f",
+						ly.Shape.ID, ly.Shape.Width, filtering.Shape.Width)
+				}
+			}
+
+			pause := mustFindLayout(t, w, root, "gui:filtering:toggle")
+			contentRight := filtering.Shape.X + filtering.Shape.Width -
+				filtering.Shape.Padding.Right - filtering.Shape.SizeBorder
+			if absF(pause.Shape.X+pause.Shape.Width-contentRight) > 0.5 {
+				t.Errorf("pause control right %.1f != card content right %.1f",
+					pause.Shape.X+pause.Shape.Width, contentRight)
+			}
+			if !layoutContains(filtering, pause) {
+				t.Error("pause control is outside the Filtering card")
+			}
+
+			page := mustFindLayout(t, w, root, "gui:content")
+			if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+				t.Errorf("Status page has %.1f px of horizontal overflow (ok=%v); want none", ov, ok)
+			}
+
+			assertNoFindings(t, w)
+		})
+	}
+}
+
+// TestStatusFilterListsEmptyState proves an empty Filter lists card says so
+// once, in a centred body, instead of rendering a bare em-dash row that reads
+// as data.
+func TestStatusFilterListsEmptyState(t *testing.T) {
+	app := statusApp()
+	app.snap.summary.Lists = nil
+	app.snap.summary.ListCount = 0
+
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"default", defaultWidth, defaultHeight},
+		{"minimum", minWidth, minHeight},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			w, root := layoutFor(t, app, size.w, size.h)
+			card := mustFindLayout(t, w, root, "gui:card:filterlists")
+			empty := mustFindLayout(t, w, root, "gui:status:filterlists:empty")
+
+			if !layoutContains(card, empty) {
+				t.Fatal("empty state is outside the Filter lists card")
+			}
+			if !textSet(empty)["No filter lists configured."] {
+				t.Error(`empty state does not read "No filter lists configured."`)
+			}
+			if n := countText(card, "—"); n != 0 {
+				t.Errorf("empty card still renders %d em-dash rows", n)
+			}
+			if empty.Shape.Height <= 0 {
+				t.Error("empty state collapsed")
+			}
+		})
+	}
 }
 
 // TestSettingsLayout proves the Settings page lays out the same way.
@@ -1662,6 +1942,28 @@ func TestToastAligned(t *testing.T) {
 	}
 	if absF(titleText.Shape.X-body.Shape.X) > 1 {
 		t.Errorf("toast title x=%.0f vs body x=%.0f: not on one left inset", titleText.Shape.X, body.Shape.X)
+	}
+}
+
+// TestToastLongTitleWraps proves a long title wraps inside the fixed toast
+// width instead of running past the close button and the card edge.
+func TestToastLongTitleWraps(t *testing.T) {
+	app := statusApp()
+	app.toast = &noticeMessage{kind: noticeSuccess,
+		title: "Filtering paused; resumes automatically in 15 minutes",
+		body:  "Resumes automatically in 15 minutes."}
+
+	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+	toast := mustFindLayout(t, w, root, "gui:toast")
+	titleRow := childLayout(toast, 0)
+	title := childLayout(titleRow, 0)
+	dismiss := childLayout(titleRow, 1)
+	if title == nil || dismiss == nil || title.Shape == nil || dismiss.Shape == nil {
+		t.Fatal("toast title row is missing the title or dismiss control")
+	}
+	if title.Shape.X+title.Shape.Width > dismiss.Shape.X+0.5 {
+		t.Errorf("title right %.0f runs under the dismiss button (x=%.0f)",
+			title.Shape.X+title.Shape.Width, dismiss.Shape.X)
 	}
 }
 

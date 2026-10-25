@@ -50,6 +50,15 @@ const (
 	trayHostRetryTries = 20
 	trayHostRetryWait  = 50 * time.Millisecond
 
+	// trayHostStartTimeout bounds the GUI's wait for the new host's icon, so
+	// a host that dies on start fails the toggle instead of leaving the
+	// switch on with no icon.  It covers the host's full icon-retry window
+	// plus process start and the icon-creation call.
+	trayHostStartTimeout = trayHostCreateTries*trayHostCreateWait + 3*time.Second
+
+	// trayHostStillActive is the STILL_ACTIVE exit code of a live process.
+	trayHostStillActive = 259
+
 	wmClose   = 0x0010
 	wmDestroy = 0x0002
 
@@ -60,6 +69,10 @@ const (
 	// tray host.  The mutex is the single-instance guard: it closes the race
 	// where the GUI and the logon task start a host at the same moment.
 	trayHostMutexName = `Local\SigilDNS.TrayHost`
+
+	// trayHostReadyProp marks the control window once the icon exists, so the
+	// GUI never reports a tray that has only its window.
+	trayHostReadyProp = "SigilDnsTrayReady"
 )
 
 var (
@@ -72,6 +85,8 @@ var (
 	procDispatchMessageW = user32.NewProc("DispatchMessageW")
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procPostMessageW     = user32.NewProc("PostMessageW")
+	procSetPropW         = user32.NewProc("SetPropW")
+	procGetPropW         = user32.NewProc("GetPropW")
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = kernel32.NewProc("CreateMutexW")
 	procCloseHandle      = kernel32.NewProc("CloseHandle")
@@ -164,6 +179,11 @@ func RunTrayHost() (err error) {
 	}
 	defer tr.Remove(id)
 	applyTrayTooltip(windowTitle) // sni does not set NIF_SHOWTIP
+
+	// The window exists before the icon does; marking it only now lets the
+	// GUI tell a started host from one that failed and is about to exit.
+	prop, _ := syscall.UTF16PtrFromString(trayHostReadyProp)
+	procSetPropW.Call(hwnd, uintptr(unsafe.Pointer(prop)), 1)
 
 	// shortcut: like go-gui, sni does not re-add the icon after an Explorer
 	// restart; toggling the tray setting restarts this host. Upgrade if it
@@ -346,31 +366,105 @@ func trayHostRunning() bool {
 	return trayHostWindow() != 0
 }
 
-// trayHostWindow finds the host's message-only control window.
+// trayHostWindow finds the host's message-only control window.  FindWindowW
+// cannot see message-only windows; they are children of HWND_MESSAGE.
 func trayHostWindow() (hwnd uintptr) {
 	class, err := syscall.UTF16PtrFromString(trayHostClass)
 	if err != nil {
 		return 0
 	}
-	h, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(class)), 0)
+	h, _, _ := procFindWindowExW.Call(
+		hwndMessage, 0, uintptr(unsafe.Pointer(class)), 0)
+	if h == 0 {
+		return 0
+	}
+
+	// A dying host can still own the window for one message-loop turn, so
+	// treat a window whose process is gone as absent.
+	var pid uint32
+	procGetWindowThreadPID.Call(h, uintptr(unsafe.Pointer(&pid)))
+	if !trayHostAlive(pid) {
+		return 0
+	}
 
 	return h
 }
 
-// startTrayHost launches the host unless it is already running.  It returns
-// once the process is created; the icon itself is created by the child.
+// trayHostReady reports whether the host's icon exists.  The control window
+// alone is created before the icon, so only the property the host sets after
+// tr.Create means the tray is usable.
+func trayHostReady() bool {
+	hwnd := trayHostWindow()
+	if hwnd == 0 {
+		return false
+	}
+	prop, err := syscall.UTF16PtrFromString(trayHostReadyProp)
+	if err != nil {
+		return false
+	}
+	h, _, _ := procGetPropW.Call(hwnd, uintptr(unsafe.Pointer(prop)))
+
+	return h != 0
+}
+
+// trayHostAlive reports whether pid is a live process.  Access denied still
+// means the process exists.
+func trayHostAlive(pid uint32) bool {
+	const processQueryLimitedInformation = 0x1000
+
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, pid)
+	if err != nil {
+		return err == syscall.ERROR_ACCESS_DENIED
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+
+	var code uint32
+	if err = syscall.GetExitCodeProcess(h, &code); err != nil {
+		return false
+	}
+
+	return code == trayHostStillActive
+}
+
+// startTrayHost launches the host unless it is already running.  It waits for
+// the host's icon (up to trayHostStartTimeout), because the caller reverts the
+// tray setting when the start fails; the child has to acquire the mutex,
+// register its window and create the icon first.
 func startTrayHost() error {
-	if trayHostRunning() {
+	deadline := time.Now().Add(trayHostStartTimeout)
+
+	var cmd *exec.Cmd
+	if !trayHostRunning() {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		cmd = exec.Command(exe, "--tray")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+	}
+
+	for time.Now().Before(deadline) {
+		if trayHostReady() {
+			return nil
+		}
+		time.Sleep(trayHostRetryWait)
+	}
+
+	if trayHostReady() {
+		// A newer start won the race just before the deadline; do not kill
+		// the host it is about to report as running.
 		return nil
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "--tray")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	return cmd.Start()
+	if cmd != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+
+	return fmt.Errorf("tray host: icon did not appear within %v", trayHostStartTimeout)
 }
 
 // stopTrayHost asks the host to exit.  It is a no-op when none is running.

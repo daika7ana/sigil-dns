@@ -26,6 +26,7 @@ import (
 
 	"github.com/daika7ana/sigil-dns/internal/config"
 	"github.com/daika7ana/sigil-dns/internal/providers"
+	"github.com/daika7ana/sigil-dns/internal/resolver"
 )
 
 // Action is the requested one-shot operation.
@@ -66,6 +67,14 @@ const (
 	// It does not touch the config; when the service is running it drives the
 	// verified control pipe, else it flushes the OS cache directly.
 	ActionClearCache Action = "clear_cache"
+
+	// ActionPauseFiltering suspends the running service's filter stage for
+	// the fixed pause interval.  It does not touch the config or interception.
+	ActionPauseFiltering Action = "pause_filtering"
+
+	// ActionResumeFiltering turns the running service's filter stage back on
+	// before the pause expires.  It carries no config patch (control pipe).
+	ActionResumeFiltering Action = "resume_filtering"
 )
 
 // valid reports whether a is a known action.
@@ -73,7 +82,7 @@ func (a Action) valid() (ok bool) {
 	switch a {
 	case ActionEnable, ActionRestore, ActionApply,
 		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop,
-		ActionRefreshLists, ActionClearCache:
+		ActionRefreshLists, ActionClearCache, ActionPauseFiltering, ActionResumeFiltering:
 		return true
 	default:
 		return false
@@ -92,10 +101,10 @@ func (a Action) serviceAction() (ok bool) {
 }
 
 // noPatch reports whether a takes no config patch (service actions, enable,
-// restore, and the service-only refresh_lists action).
+// restore, and the service-only refresh_lists/pause/resume actions).
 func (a Action) noPatch() (ok bool) {
 	return a.serviceAction() || a == ActionEnable || a == ActionRestore ||
-		a == ActionRefreshLists || a == ActionClearCache
+		a == ActionRefreshLists || a == ActionClearCache || a == ActionPauseFiltering || a == ActionResumeFiltering
 }
 
 // Patch is the allowlisted set of config fields a request may change.  Only the
@@ -148,6 +157,7 @@ type ProfilePatch struct {
 type FilteringPatch struct {
 	Enabled       *bool      `json:"enabled,omitempty"`
 	BlockResponse *string    `json:"block_response,omitempty"`
+	BlockTTL      *uint32    `json:"block_ttl,omitempty"`
 	Lists         *ListPatch `json:"lists,omitempty"`
 }
 
@@ -258,8 +268,8 @@ func (r Request) Validate() (err error) {
 		return fmt.Errorf("unknown action %q", r.Action)
 	}
 
-	if r.UUID == "" {
-		return errors.New("missing request id")
+	if err = validateRequestID(r.UUID); err != nil {
+		return err
 	}
 
 	if r.Action.noPatch() {
@@ -413,6 +423,20 @@ func (pp ProfilePatch) validateShape() (err error) {
 	return nil
 }
 
+// validateRequestID enforces the staging-request id as a single path element:
+// 1-64 ASCII letters/digits/-/_ and nothing else.  The id is never included in
+// the error.
+func validateRequestID(id string) (err error) {
+	if id == "" {
+		return errors.New("missing request id")
+	}
+	if err = validateID(id); err != nil || filepath.Base(id) != id {
+		return errors.New("invalid request id")
+	}
+
+	return nil
+}
+
 // validateID enforces the resolver id charset (ASCII letters/digits/-/_) and
 // length.  The id value is never included in the error.
 func validateID(id string) (err error) {
@@ -435,6 +459,9 @@ func validateID(id string) (err error) {
 func (f FilteringPatch) validateShape() (err error) {
 	if f.BlockResponse != nil && strings.TrimSpace(*f.BlockResponse) == "" {
 		return errors.New("block_response must not be empty")
+	}
+	if f.BlockTTL != nil && *f.BlockTTL == 0 {
+		return errors.New("block ttl must be positive")
 	}
 	if f.Lists != nil {
 		if err = f.Lists.validateShape(); err != nil {
@@ -470,19 +497,29 @@ func (l ListPatch) validateShape() (err error) {
 
 // validatePerDomainPatch enforces the per-domain rule constraints.
 func validatePerDomainPatch(rules []PerDomainPatch) (err error) {
-	for _, r := range rules {
+	for i, r := range rules {
 		if len(r.Domains) == 0 {
-			return errors.New("a per-domain rule needs at least one domain")
+			return fmt.Errorf("per-domain rule %d needs at least one domain", i)
+		}
+		for _, d := range r.Domains {
+			if err = config.ValidDomain(d); err != nil {
+				return fmt.Errorf("per-domain rule %d: %w", i, err)
+			}
 		}
 		if r.Bypass {
 			if r.Upstream != "" || r.Keep != nil {
-				return errors.New("a bypass per-domain rule must not set an upstream or keep index")
+				return fmt.Errorf("per-domain rule %d: a bypass rule must not set an upstream or keep index", i)
 			}
 
 			continue
 		}
 		if r.Keep != nil && *r.Keep < 0 {
-			return errors.New("a per-domain keep index must not be negative")
+			return fmt.Errorf("per-domain rule %d: keep index must not be negative", i)
+		}
+		if strings.TrimSpace(r.Upstream) != "" {
+			if err = resolver.ValidateRuleUpstream(r.Upstream); err != nil {
+				return fmt.Errorf("per-domain rule %d: %w", i, err)
+			}
 		}
 	}
 
@@ -807,6 +844,9 @@ func applyFilteringPatch(f *config.Filtering, fp *FilteringPatch) (err error) {
 	if fp.BlockResponse != nil {
 		f.BlockResponse = strings.TrimSpace(*fp.BlockResponse)
 	}
+	if fp.BlockTTL != nil {
+		f.BlockTTL = *fp.BlockTTL
+	}
 	if fp.Lists != nil {
 		if err = applyListPatch(&f.Lists, *fp.Lists); err != nil {
 			return err
@@ -830,10 +870,16 @@ func applyListPatch(lists *[]config.FilterList, lp ListPatch) (err error) {
 			return errors.New("list index is out of range")
 		}
 	}
+	removed := make(map[int]struct{}, len(lp.Remove))
 	for _, i := range lp.Remove {
 		if i < 0 || i >= len(cur) {
 			return errors.New("list index is out of range")
 		}
+		if _, dup := removed[i]; dup {
+			return fmt.Errorf("duplicate list index %d", i)
+		}
+
+		removed[i] = struct{}{}
 	}
 
 	for i, enabled := range lp.SetEnabled {
