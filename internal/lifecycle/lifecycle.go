@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/health"
@@ -25,6 +26,10 @@ import (
 // ErrNotRunning is returned when a resolver-scoped operation is requested while
 // no resolver is running.
 var ErrNotRunning = errors.New("resolver is not running")
+
+// FilteringPauseDuration is the fixed pause interval offered in the GUI.  A
+// fixed interval keeps the control-pipe method parameterless.
+const FilteringPauseDuration = 15 * time.Minute
 
 // ErrRestore marks a failure to remove interception.  The resolver is still
 // running in that case, so callers must not stop it and point DNS at a dead
@@ -60,6 +65,9 @@ type resolverHandle interface {
 	UDPAddrs() []string
 	RefreshLists(ctx context.Context) error
 	ClearCache()
+	PauseFiltering(d time.Duration)
+	ResumeFiltering()
+	Stats() resolver.Stats
 }
 
 // Lifecycle owns the resolver, state store, and interception controller.
@@ -70,6 +78,10 @@ type Lifecycle struct {
 	ic     intercept.Controller
 	logger *slog.Logger
 	cfg    Config
+
+	// resMu guards res: a status read may call RuntimeStats while Enable or
+	// Disable swaps the resolver.
+	resMu sync.RWMutex
 
 	// newResolver, checkHealth and flushDNS are the injectable dependencies;
 	// New points them at production and tests replace them to stay hermetic.
@@ -115,7 +127,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// Enable is idempotent: a client Enable can race service startup, and a
 	// running enabled session must not be torn down and re-enabled.
-	if st, sErr := l.store.Load(); sErr == nil && st.Mode == state.ModeOn && l.res != nil {
+	if st, sErr := l.store.Load(); sErr == nil && st.Mode == state.ModeOn && l.resolver() != nil {
 		return nil
 	}
 
@@ -327,11 +339,12 @@ func (l *Lifecycle) Status() (st *state.State, err error) { return l.store.Load(
 // previously blocked answer does not outlive the refreshed lists.  It returns
 // ErrNotRunning when no resolver is active.
 func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
-	if l.res == nil {
+	res := l.resolver()
+	if res == nil {
 		return ErrNotRunning
 	}
 
-	if err = l.res.RefreshLists(ctx); err != nil {
+	if err = res.RefreshLists(ctx); err != nil {
 		return err
 	}
 
@@ -346,11 +359,56 @@ func (l *Lifecycle) RefreshLists(ctx context.Context) (err error) {
 // stopped resolver still gets the OS flush: there is no in-process cache to
 // clear, and the Windows cache may hold an answer that predates a rule change.
 func (l *Lifecycle) ClearCache(ctx context.Context) (err error) {
-	if l.res != nil {
-		l.res.ClearCache()
+	if res := l.resolver(); res != nil {
+		res.ClearCache()
 	}
 
 	return FlushDNS(ctx)
+}
+
+// PauseFiltering suspends the running resolver's filter stage for
+// FilteringPauseDuration and flushes the OS cache, so an answer blocked just
+// before the pause does not outlive it.  Interception stays on and queries keep
+// resolving; only filtering is skipped.
+func (l *Lifecycle) PauseFiltering(ctx context.Context) (err error) {
+	res := l.resolver()
+	if res == nil {
+		return ErrNotRunning
+	}
+
+	res.PauseFiltering(FilteringPauseDuration)
+	l.flush(ctx)
+
+	return nil
+}
+
+// ResumeFiltering turns the running resolver's filtering back on before the
+// pause expires and flushes the OS cache, so an answer allowed during the
+// pause does not outlive it.  Interception is untouched.
+func (l *Lifecycle) ResumeFiltering(ctx context.Context) (err error) {
+	res := l.resolver()
+	if res == nil {
+		return ErrNotRunning
+	}
+
+	res.ResumeFiltering()
+	l.flush(ctx)
+
+	return nil
+}
+
+// RuntimeStats returns the live resolver counters for the sanitized status
+// DTO.  It never takes the lifecycle lock, so a status read cannot block behind
+// a slow reload, and it is safe while Enable/Disable swap the resolver.
+func (l *Lifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	res := l.resolver()
+	if res == nil {
+		return 0, 0, time.Time{}
+	}
+
+	s := res.Stats()
+
+	return s.Queries, s.Blocked, s.PausedUntil
 }
 
 // resolverConfig builds the resolver configuration from the lifecycle config.
@@ -385,12 +443,13 @@ func (l *Lifecycle) healthCheck(ctx context.Context, res resolverHandle) (r heal
 
 // stopResolver shuts the resolver down if running.
 func (l *Lifecycle) stopResolver(ctx context.Context) (err error) {
-	if l.res == nil {
+	res := l.resolver()
+	if res == nil {
 		return nil
 	}
 
-	err = l.res.Shutdown(ctx)
-	l.res = nil
+	err = res.Shutdown(ctx)
+	l.setResolver(nil)
 
 	return err
 }
@@ -418,9 +477,24 @@ func (l *Lifecycle) startResolver(ctx context.Context) (res resolverHandle, err 
 
 		return nil, err
 	}
-	l.res = res
+	l.setResolver(res)
 
 	return res, nil
+}
+
+// resolver returns the current resolver, or nil when none is running.
+func (l *Lifecycle) resolver() (res resolverHandle) {
+	l.resMu.RLock()
+	defer l.resMu.RUnlock()
+
+	return l.res
+}
+
+// setResolver swaps the resolver pointer.
+func (l *Lifecycle) setResolver(res resolverHandle) {
+	l.resMu.Lock()
+	l.res = res
+	l.resMu.Unlock()
 }
 
 // acquire takes the single-instance lock, or is a no-op if already held.

@@ -36,16 +36,27 @@ download can be verified:
 Get-FileHash .\sigildns_<version>_windows_amd64.zip -Algorithm SHA256
 ```
 
-The one-line install script lives at `install.ps1` in the repository root and is
-served from `main`, so it needs no release step:
+The one-line install script lives at `install.ps1` in the repository root. The
+documented URL is a **release asset** uploaded beside the zip by the release
+workflow, so it always serves the latest published release (never a branch) and
+needs no per-release bump:
 
 ```powershell
-irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 | iex
+irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1 | iex
 ```
 
 It resolves the latest release through the GitHub API, verifies the zip against
 `SHA256SUMS.txt`, and installs from the extracted copy. The same file ships at
-the zip root, where it installs the local binaries instead of downloading.
+the zip root, where it installs the local binaries instead of downloading. The
+checksum proves integrity, not authorship; only a signed build proves who built
+the binaries, and the Authenticode check is skipped while the signing secrets
+are absent.
+
+The installer also writes a standard Add/Remove Programs entry and keeps a copy
+of itself in the install directory so that entry — and the documented
+`-Uninstall` switches — work after the download's temp directory is gone.
+Uninstall is fail-closed: a failed `restore` aborts before any file, task,
+registry, or PATH removal.
 
 Release builds use the `gui` tag (never `-tags tray`); the **tray icon is part of
 the GUI build** and is off by default (Settings → Window & tray). In a `gui`
@@ -116,10 +127,11 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    requires a `Valid` Authenticode signature on each binary.
 8. Uploads the zip and checksums as a build artifact.
 9. For tag builds, publishes the GitHub Release **draft-first**:
-   `gh release create --draft` → `gh release upload --clobber` → `gh release
-   edit --draft=false`. A failed run therefore never leaves a public release
-   without its assets, and re-running a tag build converges on the same
-   draft.
+   `gh release create --draft` → `gh release upload --clobber` (the zip,
+   `SHA256SUMS.txt`, and `install.ps1`) → `gh release edit --draft=false`. A
+   failed run therefore never leaves a public release without its assets, and
+   re-running a tag build converges on the same draft. The `install.ps1` asset
+   is what the `releases/latest/download/install.ps1` one-line URL serves.
 
 Release runs are serialized per ref (`concurrency: release-${{ github.ref }}`),
 so a re-run for the same tag queues instead of interleaving. Different tags run

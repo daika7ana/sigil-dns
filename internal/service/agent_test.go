@@ -49,6 +49,15 @@ func (f *fakeAgentLC) Restore(context.Context) (err error) { return nil }
 
 func (f *fakeAgentLC) RefreshLists(context.Context) (err error) { return nil }
 func (f *fakeAgentLC) ClearCache(context.Context) (err error)   { return nil }
+func (f *fakeAgentLC) PauseFiltering(context.Context) (err error) {
+	return nil
+}
+func (f *fakeAgentLC) ResumeFiltering(context.Context) (err error) {
+	return nil
+}
+func (f *fakeAgentLC) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	return 0, 0, time.Time{}
+}
 
 // testEndpoint returns a platform-appropriate, unique IPC endpoint: a named
 // pipe on Windows (a filesystem path is not a valid pipe name), else a temp

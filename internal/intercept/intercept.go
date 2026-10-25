@@ -121,7 +121,29 @@ func nrptFallbackScript(namespaces []string, servers []string) string {
 }
 
 // nrptPrintRules emits one rule=<Namespace> line per rule we own.
-const nrptPrintRules = "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | ForEach-Object { Write-Output ('rule=' + $_.Namespace) }\n"
+const nrptPrintRules = "Get-DnsClientNrptRule | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | ForEach-Object { Write-Output ('rule=' + ($_.Namespace -join ',')) }\n"
+
+// nrptProbeScript enumerates the NRPT rules for ProbeNRPT: one
+// rule=<namespace>|<servers> line per rule we own, foreign=<display>|<namespace>
+// lines, and the ok=1 sentinel.  Namespace and NameServers are CIM String[]
+// properties: the format operator renders an array as "System.String[]", so
+// both must be joined explicitly.
+const nrptProbeScript = `
+$ErrorActionPreference = 'Stop'
+try {
+    $rules = @(Get-DnsClientNrptRule)
+    $rules | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | ForEach-Object {
+        Write-Output ('rule={0}|{1}' -f ($_.Namespace -join ','), ($_.NameServers -join ','))
+    }
+    $rules | Where-Object { $_.DisplayName -ne 'Sigil DNS' } | ForEach-Object {
+        Write-Output ("foreign={0}|{1}" -f $_.DisplayName, ($_.Namespace -join ','))
+    }
+    Write-Output 'ok=1'
+} catch {
+    Write-Error $_
+    exit 1
+}
+`
 
 // psQuote renders s as a single-quoted PowerShell string literal.
 func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }

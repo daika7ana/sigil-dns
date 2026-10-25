@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -559,7 +560,15 @@ type svcDaemon interface {
 	Restore(ctx context.Context) (err error)
 	RefreshLists(ctx context.Context) (err error)
 	ClearCache(ctx context.Context) (err error)
+	PauseFiltering(ctx context.Context) (err error)
+	ResumeFiltering(ctx context.Context) (err error)
+	RuntimeStats() (queries, blocked uint64, pausedUntil time.Time)
 }
+
+// liveLifecycle publishes the current inner lifecycle to RuntimeStats, the one
+// reader that deliberately skips the lifecycle mutex.  The wrapper is immutable,
+// so a status read never touches the interface field Reload replaces.
+type liveLifecycle struct{ lc svcDaemon }
 
 // serviceLifecycle lets crash recovery run even when the config is corrupt:
 // Startup/Status/Disable work from persisted state alone, while Enable reports
@@ -568,6 +577,11 @@ type svcDaemon interface {
 // rollback when active; if the rollback also fails the service stops.
 type serviceLifecycle struct {
 	svcDaemon
+
+	// live mirrors svcDaemon for the lock-free RuntimeStats reader.  The embed is
+	// read and written only under the lifecycle mutex.
+	live atomic.Pointer[liveLifecycle]
+
 	build     func() (lc svcDaemon, sum ipc.ConfigSummary, err error)
 	enableErr error
 
@@ -578,6 +592,24 @@ type serviceLifecycle struct {
 	// logger is the service's redacting logger; Reload re-seeds it on rollback
 	// so the restored profile's id stays scrubbed.
 	logger *slog.Logger
+}
+
+// setInner swaps the inner lifecycle and publishes it for the lock-free stats
+// reader.
+func (s *serviceLifecycle) setInner(lc svcDaemon) {
+	s.svcDaemon = lc
+	s.live.Store(&liveLifecycle{lc: lc})
+}
+
+// RuntimeStats implements service.Lifecycle.  It must not take the lifecycle
+// mutex (a status read cannot wait behind a reload), so it reads the atomically
+// published inner lifecycle rather than the embedded field Reload writes.
+func (s *serviceLifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	if live := s.live.Load(); live != nil {
+		return live.lc.RuntimeStats()
+	}
+
+	return 0, 0, time.Time{}
 }
 
 // Enable implements service.Lifecycle.
@@ -622,7 +654,7 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 		// Idle: just replace the in-memory config; only the new profile is live.
 		logging.UpdateSecrets(s.logger, newSecrets)
 
-		s.svcDaemon = newInner
+		s.setInner(newInner)
 		s.enableErr = nil
 
 		return sum, nil
@@ -665,7 +697,7 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	// Swap is final: keep only the new profile's seeds.
 	logging.UpdateSecrets(s.logger, newSecrets)
 
-	s.svcDaemon = newInner
+	s.setInner(newInner)
 	s.enableErr = nil
 
 	return sum, nil
@@ -767,10 +799,10 @@ func cmdServiceHost(args []string) (err error) {
 	if cfgErr != nil {
 		l.Error("config unavailable; service will stop after recovery", "err", ipc.SanitizedConfigError(cfgErr))
 
-		slc.svcDaemon = o.lifecycleForState()
+		slc.setInner(o.lifecycleForState())
 		slc.enableErr = fmt.Errorf("%w: %v", service.ErrConfigUnavailable, cfgErr)
 	} else {
-		slc.svcDaemon = o.lifecycleFor(resolved, l)
+		slc.setInner(o.lifecycleFor(resolved, l))
 	}
 
 	agent := service.NewAgent(slc, l, "")

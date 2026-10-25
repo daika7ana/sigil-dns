@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/config"
 	"github.com/daika7ana/sigil-dns/internal/ipc"
@@ -55,6 +57,9 @@ type fakeDaemon struct {
 	enableCalls  int
 	disableCalls int
 	disableHook  func()
+	queries      uint64
+	blocked      uint64
+	pausedUntil  time.Time
 }
 
 func (f *fakeDaemon) Status() (st *state.State, err error) { return f.st, nil }
@@ -80,6 +85,49 @@ func (f *fakeDaemon) Restore(context.Context) (err error) { return nil }
 
 func (f *fakeDaemon) RefreshLists(context.Context) (err error) { return nil }
 func (f *fakeDaemon) ClearCache(context.Context) (err error)   { return nil }
+func (f *fakeDaemon) PauseFiltering(context.Context) (err error) {
+	return nil
+}
+func (f *fakeDaemon) ResumeFiltering(context.Context) (err error) {
+	return nil
+}
+func (f *fakeDaemon) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	return f.queries, f.blocked, f.pausedUntil
+}
+
+func TestRuntimeStatsFollowsReloadSwap(t *testing.T) {
+	lc := &serviceLifecycle{}
+	lc.setInner(&fakeDaemon{queries: 1, blocked: 2})
+
+	if q, b, _ := lc.RuntimeStats(); q != 1 || b != 2 {
+		t.Fatalf("RuntimeStats = %d/%d, want 1/2", q, b)
+	}
+
+	// Reload replaces the inner lifecycle while the status pipe reads it.  Run
+	// both concurrently: -race catches a read of the unsynchronized embed.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				lc.setInner(&fakeDaemon{queries: 3, blocked: 4})
+			}
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		if q, _, _ := lc.RuntimeStats(); q != 1 && q != 3 {
+			t.Errorf("RuntimeStats served an unpublished lifecycle: %d", q)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
 
 func TestReloadSwapWhenIdle(t *testing.T) {
 	old := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}

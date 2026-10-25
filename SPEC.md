@@ -21,6 +21,8 @@ kernel driver.
 - Kernel WFP/NDIS driver interception.
 - Defeating app-level DoH/DoT, VPN-pushed DNS, or hardcoded resolver IPs.
 - macOS/Linux clients; authoritative DNS serving.
+- Per-app / process-aware routing (a different resolver or rule set per
+  application). This is a YogaDNS differentiator but not part of this product.
 - Per-adapter DNS rewriting (the contingency in §4.2 is not implemented).
 
 ### What is / isn't intercepted
@@ -284,6 +286,19 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
   blocklists"), rebuilds the engine, and flushes the cache (§5). No scheduled
   updater. Changed-content dedupe is an unconditional GET compared by content
   checksum (sha256), not ETag.
+- **Pause filtering**: the admin `pause_filtering` IPC method skips the filter
+  stage (blocklists, hosts entries, and `$dnsrewrite` mappings) for 15 minutes
+  and clears the resolver + Windows DNS caches first. Interception and upstream
+  resolution stay on, so a site broken by a list is reachable without losing
+  encrypted DNS. The pause expires on its own, or the GUI's **Resume filtering**
+  control (`resume_filtering`, admin) turns filtering back on early; both clear
+  the caches. A service restart or an applied config change starts a fresh
+  session (a reload builds a new resolver).
+- **Session counters**: the resolver counts queries and blocked answers since
+  the current resolver started (the synthetic health probe is excluded); an
+  applied config change resets them with the new resolver. Only those two
+  integers, plus the pause expiry, are exposed on the sanitized status pipe. No
+  query names, upstreams, or ids are involved, and nothing is persisted.
 
 ---
 
@@ -472,6 +487,30 @@ docs/CONFIG.md.
   assetless release. Notes come from `release-notes/<tag>.md` when present, else
   generated notes; the curated CHANGELOG entry is the reference for the same
   version.
+- **Installer (`install.ps1`) contract.** Installs `sigildns.exe` and (when
+  present) `sigildns-gui.exe` to `%ProgramFiles%\SigilDNS`, seeds `config.yaml`
+  in `%ProgramData%\SigilDNS`, restricts the data directory to SYSTEM +
+  Administrators, registers and starts the service, and keeps the binaries
+  beside a copy of the script so the uninstaller survives the temp download
+  directory. It also writes the standard Add/Remove Programs entry
+  (`DisplayName` / `Publisher` / `DisplayIcon` / `InstallLocation` /
+  `UninstallString` = `install.ps1 -Uninstall -Quiet`, no modify/repair). The
+  Start Menu shortcut is always created; the Desktop shortcut is opt-in
+  (`-DesktopShortcut`). System-PATH registration is opt-in (`-AddToPath`, or a
+  prompt unless `-Quiet`), and so is opening the GUI (`-OpenGui`, or a prompt).
+  `-Quiet` skips the menu and every prompt. Uninstall removes interception in a
+  fail-closed order: a failed `restore` aborts before any file, task, registry,
+  or PATH removal; the service removal itself is already fail-closed. It also
+  removes the per-user `ONLOGON` task, shortcuts, the PATH entry, the
+  Add/Remove Programs entry, and any tray host (all users), then the install
+  directory.
+- **Installer distribution.** The documented one-line command fetches
+  `install.ps1` from the latest published release's assets
+  (`github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1`); the
+  release workflow uploads it beside the zip, so the URL is not a branch,
+  always serves the latest release, and needs no per-release bump. The zip checksum proves
+  integrity, not authorship: only a release built with the signing secrets is
+  Authenticode-signed.
 
 ---
 
@@ -492,6 +531,7 @@ autostart. Details in §15.4.
   one active).
 - Scheduled list updates; a rule-editor UI beyond the current GUI forms;
   `$dnsrewrite` UX.
+- Per-app routing is a **non-goal** (§1), not a deferred feature.
 - Least-privilege service account (service SID + explicit grants).
 
 ---
@@ -571,7 +611,9 @@ existing `internal/*` packages. It is a **full-parity configuration client**,
 not a status viewer.
 
 - **Reads** — the status pipe (`AU`, read-only) carries *sanitized* methods:
-  `info` (protocol/app version, capability bits) and `config_summary` (active
+  `status` (mode / interception / health plus the session query and blocked
+  counters and the filtering-pause expiry; never ids or upstreams), `info`
+  (protocol/app version, capability bits) and `config_summary` (active
   provider/variant/protocol **labels**, `id_set` bool, active profile name,
   bootstrap IP literals, rule/list **counts** and list **hosts**, filtering +
   cache settings, `config_valid` with a secret-free error, a revision token, and
@@ -588,7 +630,7 @@ not a status viewer.
   re-loads and validates the staged patch with `internal/config`, writes
   `config.yaml` (atomic + ACL), then drives the service over the existing admin
   control pipe (`reload` / `enable` / `disable` / `refresh_lists` /
-  `clear_cache`).
+  `clear_cache` / `pause_filtering` / `resume_filtering`).
   The allowlist is the **whole config surface**: `ActiveProfile`, per-profile
   `Profiles` patches (provider / variant / protocol / id / custom URL /
   bootstrap / fallback profile / filtering / cache, plus **per-list operations**
@@ -597,14 +639,15 @@ not a status viewer.
   carries no upstream), the structural `AddProfile` / `RenameProfile` /
   `DeleteProfile`, and the service actions `service_install` /
   `service_uninstall` / `service_start` / `service_stop` / `refresh_lists` /
-  `clear_cache`. A start re-reads the SCM registration and refuses unless
+  `clear_cache` / `pause_filtering` / `resume_filtering`. A start re-reads the SCM registration and refuses unless
   `BinaryPathName` still points at the current executable with `--service`; the
   CLI and the GUI both use `service.Start`, so neither can bypass the check.
   Every field is validated (bootstrap as IP literals, provider / variant /
   protocol against the registry, id charset + length, explicit-zero rejection);
   ids travel only inside the DPAPI-sealed staging body, and a blank id means
-  *keep* (replace-only). `refresh_lists` and `clear_cache` are both classified
-  `Admin` in the §15.3 privilege table (the status pipe rejects them).
+  *keep* (replace-only). `refresh_lists`, `clear_cache`, `pause_filtering` and
+  `resume_filtering` are all classified `Admin` in the §15.3 privilege table
+  (the status pipe rejects them).
   `clear_cache` has no input: it clears the running resolver's dnsproxy cache and
   then the Windows DNS cache, so a newly added rule (for example a provider-side
   bypass) also applies to names that are already cached. No persistent broker and
@@ -617,7 +660,10 @@ not a status viewer.
   - **Status**: a dashboard — a state hero with an illustration, then
     Connection Info, Filtering, Filter lists, and Cache & bootstrap cards
     (stacking at narrow widths); the header keeps only the **Restore now**
-    action for a crash-leftover dirty state.
+    action for a crash-leftover dirty state. The Filtering card shows the
+    session's query/blocked counters and, while filtering is on and the service
+    is running, a **Pause filtering** control that becomes **Resume filtering**
+    with the countdown while paused (15-minute auto-expiry).
   - **Settings**: a service card — a **Start / Stop** control (Start runs the
     service and applies interception, Stop removes it; the installed/running
     state is the header badge) plus install / remove — an **Appearance** card

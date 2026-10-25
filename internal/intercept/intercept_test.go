@@ -45,8 +45,26 @@ func TestNrptEnableScript(t *testing.T) {
 	if !strings.Contains(script, "try { Add-DnsClientNrptRule -Namespace '.a.example'") {
 		t.Errorf("exemption must be guarded so one rejection cannot abort enable:\n%s", script)
 	}
-	if !strings.Contains(script, "Write-Output ('rule=' + $_.Namespace)") {
+	if !strings.Contains(script, "Write-Output ('rule=' + ($_.Namespace -join ','))") {
 		t.Errorf("script lacks the rule= echo:\n%s", script)
+	}
+}
+
+// TestNrptProbeScriptJoinsArrays guards the probe's output format.  Namespace
+// is a CIM String[], and `'{0}' -f $_.Namespace` renders it as
+// "System.String[]", which made every probe look like drift (the catch-all
+// namespace never matched) and auto-disabled interception after three tries.
+func TestNrptProbeScriptJoinsArrays(t *testing.T) {
+	for _, want := range []string{
+		"($_.Namespace -join ',')",
+		"($_.NameServers -join ',')",
+	} {
+		if !strings.Contains(nrptProbeScript, want) {
+			t.Errorf("probe script lacks %q:\n%s", want, nrptProbeScript)
+		}
+	}
+	if strings.Contains(nrptProbeScript, "-f $_.Namespace,") {
+		t.Errorf("probe script formats the namespace array directly:\n%s", nrptProbeScript)
 	}
 }
 

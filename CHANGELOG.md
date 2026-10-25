@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The Status page shows this session's query and blocked counts, and can pause filtering for 15 minutes (DNS protection stays on) when a site is broken by a list, with a Resume button to turn it back on early.
+- Setup registers Sigil DNS in Windows **Add/Remove Programs**, so it can be uninstalled from Settings → Apps.
+- The one-line install command is now fetched from the latest published release's assets instead of the moving `main` branch.
+
+### Fixed
+- Uninstalling now stops if interception cannot be proven removed, instead of deleting the install anyway; it also closes tray hosts owned by other signed-in users before removing the folder.
+- Uninstall removes the per-user autostart task even when it was created by another administrator account.
+
 ## [0.5.0] - 2026-10-24
 
 ### Added

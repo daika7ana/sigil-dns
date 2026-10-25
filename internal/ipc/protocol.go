@@ -35,10 +35,16 @@ const (
 
 	// CapClearCache marks the admin clear_cache method.
 	CapClearCache
+
+	// CapPauseFiltering marks the admin pause_filtering method.
+	CapPauseFiltering
+
+	// CapResumeFiltering marks the admin resume_filtering method.
+	CapResumeFiltering
 )
 
 // Capabilities is the set of capability bits this build supports.
-const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore | CapRefreshLists | CapClearCache
+const Capabilities = CapInfo | CapConfigSummary | CapReload | CapRestore | CapRefreshLists | CapClearCache | CapPauseFiltering | CapResumeFiltering
 
 // Method is an IPC request method.
 type Method string
@@ -77,6 +83,17 @@ const (
 	// DNS cache, so a newly added rule (e.g. a provider-side bypass) takes
 	// effect for names already cached.
 	MethodClearCache Method = "clear_cache"
+
+	// MethodPauseFiltering is state-changing and requires administrator
+	// privileges.  It skips the filter stage for a fixed interval without
+	// touching interception, so a site broken by a filter can be reached
+	// while DNS stays encrypted.
+	MethodPauseFiltering Method = "pause_filtering"
+
+	// MethodResumeFiltering is state-changing and requires administrator
+	// privileges.  It turns the filter stage back on before the pause
+	// expires; interception is untouched.
+	MethodResumeFiltering Method = "resume_filtering"
 )
 
 // Privilege classifies a method's required caller identity (SPEC §15.3.2).
@@ -95,15 +112,17 @@ const (
 // is a table so a test can assert every method's classification and that every
 // non-read-only method is rejected for a non-admin caller.
 var methodPrivileges = map[Method]Privilege{
-	MethodStatus:        ReadOnly,
-	MethodInfo:          ReadOnly,
-	MethodConfigSummary: ReadOnly,
-	MethodEnable:        Admin,
-	MethodDisable:       Admin,
-	MethodReload:        Admin,
-	MethodRestore:       Admin,
-	MethodRefreshLists:  Admin,
-	MethodClearCache:    Admin,
+	MethodStatus:          ReadOnly,
+	MethodInfo:            ReadOnly,
+	MethodConfigSummary:   ReadOnly,
+	MethodEnable:          Admin,
+	MethodDisable:         Admin,
+	MethodReload:          Admin,
+	MethodRestore:         Admin,
+	MethodRefreshLists:    Admin,
+	MethodClearCache:      Admin,
+	MethodPauseFiltering:  Admin,
+	MethodResumeFiltering: Admin,
 }
 
 // valid reports whether m is a known method.

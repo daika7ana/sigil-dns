@@ -32,14 +32,27 @@ running.
 The left nav rail switches between **Status**, **Settings**, **Rules**, **Logging**, and **About**.
 **Status** refreshes the live service state about every 1 second while the window is focused and shows a
 dashboard: an **Active status** hero with the state pill, one sentence, the
-provider / variant / protocol chips and a small shield illustration, a
-**Connection Info** card, then **Filtering**, **Filter lists**, and **Cache &
-bootstrap**. It is a read-only view of real data — provider, variant, and
+provider / variant / protocol chips, and a small shield illustration, a
+**Connection Info** card with the active profile's provider, variant, protocol
+and masked resolver id, then **Filtering**,
+**Filter lists**, and **Cache & bootstrap**. The three lower cards share one
+three-column grid with the top row, so their edges line up at every width. It is
+a read-only view of real data — provider, variant, and
 protocol are **labels** (`Cloudflare / Malware blocking / DoH`), and the resolver id is
 **masked** — `•••• (set)` or `Not set`, never the value. A **Restore now** header
 action appears only for a crash-leftover dirty state; service **Start** / **Stop**
 lives in the **Settings** service card. At the minimum window width the top row
 stacks and the cache card takes the full width.
+
+The **Filtering** card also shows this session's **queries** and **blocked**
+counts (counted since the current resolver started, health probes excluded,
+refreshed with the full status read every 30 s; applying a settings change
+starts a new resolver). While filtering is on and the service is running it
+offers **Pause filtering**: filtering — lists, hosts entries, and rewrite rules
+— stops for 15 minutes and both the resolver and Windows DNS caches are cleared
+first, so a site broken by a list can be reached. Protection and encrypted DNS
+stay on. While the pause is active the control becomes **Resume filtering**, and
+the description shows the remaining minutes until it expires on its own.
 
 **Settings** shows:
 

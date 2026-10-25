@@ -71,6 +71,18 @@ func (c *Client) ClearCache(ctx context.Context) (err error) {
 	return c.callTimeout(ctx, MethodClearCache, nil, reloadTimeout)
 }
 
+// PauseFiltering asks the service (control pipe) to skip its filter stage
+// for the fixed pause interval.  Interception stays on, so DNS keeps resolving.
+func (c *Client) PauseFiltering(ctx context.Context) (err error) {
+	return c.callTimeout(ctx, MethodPauseFiltering, nil, reloadTimeout)
+}
+
+// ResumeFiltering asks the service (control pipe) to turn filtering back on
+// before the pause expires.
+func (c *Client) ResumeFiltering(ctx context.Context) (err error) {
+	return c.callTimeout(ctx, MethodResumeFiltering, nil, reloadTimeout)
+}
+
 // call performs one request/response exchange with the default timeout.
 func (c *Client) call(ctx context.Context, method Method, out any) (err error) {
 	return c.callTimeout(ctx, method, out, clientTimeout)

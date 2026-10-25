@@ -203,23 +203,7 @@ Get-DnsClientServerAddress -ErrorAction SilentlyContinue | ForEach-Object {
 // ProbeNRPT reports our rules' namespaces and any foreign rules.  Failure to
 // enumerate is an error, never an empty (false-negative) state.
 func ProbeNRPT(ctx context.Context) (st NRPTState, err error) {
-	const script = `
-$ErrorActionPreference = 'Stop'
-try {
-    $rules = @(Get-DnsClientNrptRule)
-    $rules | Where-Object { $_.DisplayName -eq 'Sigil DNS' } | ForEach-Object {
-        Write-Output ('rule={0}|{1}' -f $_.Namespace, ($_.NameServers -join ','))
-    }
-    $rules | Where-Object { $_.DisplayName -ne 'Sigil DNS' } | ForEach-Object {
-        Write-Output ("foreign={0}|{1}" -f $_.DisplayName, $_.Namespace)
-    }
-    Write-Output 'ok=1'
-} catch {
-    Write-Error $_
-    exit 1
-}
-`
-	out, err := runPS(ctx, script)
+	out, err := runPS(ctx, nrptProbeScript)
 	if err != nil {
 		return NRPTState{}, err
 	}

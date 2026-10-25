@@ -361,7 +361,9 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			return false
 		}
 
-		r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts+1)
+		r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts+1,
+			"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
+			"expected_servers", obs.Expected.Servers, "actual_servers", obs.Actual.Servers)
 
 		if r.applier != nil {
 			if aErr := r.applier.Apply(ctx); aErr != nil {
@@ -398,7 +400,9 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			*attempts++
 
 			if *attempts < r.maxAttempts {
-				r.logger.WarnContext(ctx, "drift persists after re-apply", "attempts", *attempts)
+				r.logger.WarnContext(ctx, "drift persists after re-apply", "attempts", *attempts,
+					"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+					"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers)
 
 				return false
 			}
@@ -406,6 +410,8 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			r.logger.ErrorContext(ctx,
 				"persistent drift; auto-disabling interception",
 				"attempts", *attempts,
+				"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+				"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers,
 			)
 
 			if r.disabler != nil {

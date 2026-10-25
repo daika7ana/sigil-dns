@@ -272,6 +272,8 @@ func runAction(ctx context.Context, req Request) (res Result) {
 		return stopServiceAndVerify(ctx)
 	case ActionClearCache:
 		return clearCaches(ctx)
+	case ActionPauseFiltering, ActionResumeFiltering:
+		return toggleFiltering(ctx, req.Action)
 	}
 
 	changed := false
@@ -619,6 +621,40 @@ func clearCaches(ctx context.Context) (res Result) {
 	}
 
 	return Result{OK: true, Message: "Windows DNS cache cleared"}
+}
+
+// toggleFiltering drives the running service's filtering pause.  It never
+// starts the service: a pause (or a resume) must not turn protection on behind
+// the user's back.
+func toggleFiltering(ctx context.Context, action Action) (res Result) {
+	running, pid := serviceRunning()
+	if !running || pid == 0 {
+		return Result{Err: "the service is not running"}
+	}
+	if err := waitControlServer(ctx, pid); err != nil {
+		return Result{Err: err.Error()}
+	}
+
+	client := ipc.NewClient(ipc.PipeName)
+	if action == ActionPauseFiltering {
+		if err := client.PauseFiltering(ctx); err != nil {
+			return Result{Err: err.Error()}
+		}
+
+		return Result{OK: true, Message: "resumes automatically in 15 minutes"}
+	}
+
+	if err := client.ResumeFiltering(ctx); err != nil {
+		// A running service from before this method exists answers
+		// "unknown method"; the user needs to restart it with this build.
+		if strings.Contains(err.Error(), ipc.ErrMethod.Error()) {
+			return Result{Err: "the running service predates resume; restart it with this build"}
+		}
+
+		return Result{Err: err.Error()}
+	}
+
+	return Result{OK: true, Message: "filtering resumed"}
 }
 
 // driveControl verifies the control-pipe server identity, then issues the IPC

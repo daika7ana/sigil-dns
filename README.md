@@ -96,19 +96,21 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 From a normal (non-elevated) PowerShell window:
 
 ```powershell
-irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 | iex
+irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1 | iex
 ```
 
 It downloads the latest release, verifies the zip against the release's
 `SHA256SUMS.txt`, then shows the Install / Uninstall menu in the elevated window
-(**one UAC prompt**). After installing it offers to add the install folder to the
-system PATH (so `sigildns` works in any new terminal) and to open the GUI.
-Running it again upgrades an existing install.
+(**one UAC prompt**). The URL is a release asset, not a branch, so a push to
+`main` can never change the script; it still installs the latest release. After
+installing it offers to add the install folder to the system PATH (so
+`sigildns` works in any new terminal) and to open the GUI. Running it again
+upgrades an existing install.
 
 Piping a remote script into `iex` runs it sight unseen. To inspect it first:
 
 ```powershell
-irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 -OutFile install.ps1
+irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1 -OutFile install.ps1
 notepad install.ps1
 .\install.ps1
 ```
@@ -119,7 +121,7 @@ first: `Unblock-File .\install.ps1`.
 Uninstall (keeps `%ProgramData%\SigilDNS`; add `-RemoveData` to delete it too):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1))) -Uninstall
+& ([scriptblock]::Create((irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1))) -Uninstall
 ```
 
 The saved script takes the same switches: `.\install.ps1 -Uninstall -RemoveData`,
@@ -162,12 +164,13 @@ Non-interactive use (skips the menu; `-Quiet` also skips the PATH/GUI prompts):
 If PowerShell refuses to run the script ("not digitally signed"), unblock the
 extracted files first: `Get-ChildItem -Recurse | Unblock-File`.
 
-The installer registers the Windows service and drops a **Start Menu shortcut**
-named Sigil DNS that launches the GUI. After installing it offers to add the
+The installer registers the Windows service, drops a **Start Menu shortcut**
+named Sigil DNS that launches the GUI, and adds a normal **Add/Remove Programs**
+entry (`Settings → Apps → Installed apps`). After installing it offers to add the
 install folder to the system PATH and to open the GUI. Just run it from the Start
-Menu whenever you want to change something. Uninstall keeps
-`%ProgramData%\SigilDNS` (config and state) and removes the PATH entry; pass
-`-RemoveData` to delete the data too.
+Menu whenever you want to change something. Uninstall (from the menu, the script,
+or Add/Remove Programs) keeps `%ProgramData%\SigilDNS` (config and state) and
+removes the PATH entry; pass `-RemoveData` to delete the data too.
 
 ### Option C — manual
 
@@ -251,7 +254,9 @@ sigildns run --upstream https://dns.quad9.net/dns-query
 `sigildns-gui.exe` is the full configuration client, in five pages:
 
 - **Status** — a state hero, Connection Info, Filtering, Filter lists, and
-  Cache & bootstrap cards, plus **Restore now** for a crash-leftover state.
+  Cache & bootstrap cards, session query / blocked counts, a **Pause filtering**
+  control that turns into **Resume filtering** while paused (15 minutes,
+  protection stays on), plus **Restore now** for a crash-leftover state.
 - **Settings** — a Start / Stop control plus service install / remove and state,
   an **Appearance** card with the Auto / Light / Dark picker, a profile list
   with add / rename / delete / set-active, a per-profile editor

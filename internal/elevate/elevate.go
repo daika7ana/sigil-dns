@@ -67,6 +67,14 @@ const (
 	// It does not touch the config; when the service is running it drives the
 	// verified control pipe, else it flushes the OS cache directly.
 	ActionClearCache Action = "clear_cache"
+
+	// ActionPauseFiltering suspends the running service's filter stage for
+	// the fixed pause interval.  It does not touch the config or interception.
+	ActionPauseFiltering Action = "pause_filtering"
+
+	// ActionResumeFiltering turns the running service's filter stage back on
+	// before the pause expires.  It carries no config patch (control pipe).
+	ActionResumeFiltering Action = "resume_filtering"
 )
 
 // valid reports whether a is a known action.
@@ -74,7 +82,7 @@ func (a Action) valid() (ok bool) {
 	switch a {
 	case ActionEnable, ActionRestore, ActionApply,
 		ActionServiceInstall, ActionServiceUninstall, ActionServiceStart, ActionServiceStop,
-		ActionRefreshLists, ActionClearCache:
+		ActionRefreshLists, ActionClearCache, ActionPauseFiltering, ActionResumeFiltering:
 		return true
 	default:
 		return false
@@ -93,10 +101,10 @@ func (a Action) serviceAction() (ok bool) {
 }
 
 // noPatch reports whether a takes no config patch (service actions, enable,
-// restore, and the service-only refresh_lists action).
+// restore, and the service-only refresh_lists/pause/resume actions).
 func (a Action) noPatch() (ok bool) {
 	return a.serviceAction() || a == ActionEnable || a == ActionRestore ||
-		a == ActionRefreshLists || a == ActionClearCache
+		a == ActionRefreshLists || a == ActionClearCache || a == ActionPauseFiltering || a == ActionResumeFiltering
 }
 
 // Patch is the allowlisted set of config fields a request may change.  Only the

@@ -2,7 +2,10 @@
 #
 # One file, two ways to start it:
 #
-#   irm https://raw.githubusercontent.com/daika7ana/sigil-dns/main/install.ps1 | iex
+# The URL below is a release asset (uploaded by the release workflow), so it
+# always serves the latest published release and needs no per-release bump.
+#
+#   irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1 | iex
 #     downloads and verifies the latest release, then shows this menu
 #
 #   .\install.ps1        (in an extracted release, next to sigildns.exe)
@@ -16,7 +19,7 @@
 #     nor -Uninstall is given.  PATH and GUI are opt-in, never implied.
 #
 # Inspect before piping anything into iex:
-#   irm <url> -OutFile install.ps1; notepad install.ps1
+#   irm https://github.com/daika7ana/sigil-dns/releases/latest/download/install.ps1 -OutFile install.ps1; notepad install.ps1
 #
 # Only the install/uninstall step needs admin rights; the download and checksum
 # do not.  Started without elevation the script re-runs itself through UAC.
@@ -275,6 +278,58 @@ function Invoke-WithRetry {
     }
 }
 
+function Copy-InstallerForUninstall {
+    # The Add/Remove Programs entry points at a copy of this script: the
+    # downloaded temp directory is removed when the launcher exits, so the
+    # uninstaller must live in the install directory.
+    $destination = Join-Path $InstallDir 'install.ps1'
+    if (-not $PSCommandPath -or -not (Test-Path -LiteralPath $PSCommandPath)) { return $false }
+    if ([string]::Equals([IO.Path]::GetFullPath($PSCommandPath), [IO.Path]::GetFullPath($destination), [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    try {
+        Invoke-WithRetry { Copy-Item -LiteralPath $PSCommandPath -Destination $destination -Force -ErrorAction Stop }
+        return $true
+    }
+    catch {
+        Write-Warning "Could not copy the installer to '$destination': $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Stop-InstalledGui {
+    param([Parameter(Mandatory)] [string] $GuiExe)
+
+    # A tray host can run in another user's session; Get-Process only sees our
+    # own processes, so enumerate Win32_Process machine-wide and match the path.
+    $processIds = @()
+    try {
+        $processIds = @(Get-CimInstance Win32_Process -Filter "Name='sigildns-gui.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ExecutablePath -and
+                [string]::Equals($_.ExecutablePath, $GuiExe, [StringComparison]::OrdinalIgnoreCase)
+            } |
+            ForEach-Object { $_.ProcessId })
+    }
+    catch {
+        Write-Warning "Could not enumerate sigildns-gui.exe processes: $($_.Exception.Message)"
+        return
+    }
+    if ($processIds.Count -eq 0) { return }
+
+    foreach ($processId in $processIds) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+
+    # Wait (bounded) for the image locks to go away before the caller copies
+    # over or removes the exe.
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+        if (@(Get-Process -Id $processIds -ErrorAction SilentlyContinue).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
 function New-GuiShortcut {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -336,12 +391,10 @@ function Install-SigilDns {
 
     $guiInstalled = Test-Path -LiteralPath $gui
     if ($guiInstalled) {
-        # A running GUI or windowless tray host locks the installed exe.  Wait
-        # for the processes to release the image before copying over it.
-        $guiProcs = @(Get-Process -Name 'sigildns-gui' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -eq $guiExe })
-        $guiProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-        $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+        # A running GUI or windowless tray host (possibly in another user's
+        # session) locks the installed exe.  Wait for it to release the image
+        # before copying over it.
+        Stop-InstalledGui -GuiExe $guiExe
 
         Write-Host "Installing $gui -> $guiExe"
         Invoke-WithRetry { Copy-Item -LiteralPath $gui -Destination $guiExe -Force -ErrorAction Stop }
@@ -379,6 +432,31 @@ function Install-SigilDns {
             New-GuiShortcut -Path $desktop -Target $guiExe
             Write-Host "Created Desktop shortcut: $desktop"
         }
+    }
+
+    # Add/Remove Programs entry.  Register it only once the uninstaller copy
+    # exists; a broken UninstallString is worse than no entry at all.
+    if (Copy-InstallerForUninstall) {
+        try {
+            $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SigilDNS'
+            $icon = if ($guiInstalled) { $guiExe } else { $targetExe }
+            $uninstallString = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' +
+                (Join-Path $InstallDir 'install.ps1') + '" -Uninstall -Quiet'
+            New-Item -Path $uninstallKey -Force | Out-Null
+            Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Sigil DNS'
+            Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'Sigil DNS'
+            Set-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value "$icon,0"
+            Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $InstallDir
+            Set-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallString
+            New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
+        }
+        catch {
+            Write-Warning "Could not register the Add/Remove Programs entry: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Warning 'Skipping the Add/Remove Programs entry: the installer is not available to copy for uninstall.'
     }
 
     Write-Host ''
@@ -437,15 +515,16 @@ function Uninstall-SigilDns {
         # the single-instance lock.
         & $targetExe service stop 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "'$serviceName' service stop returned exit $LASTEXITCODE; relying on the fail-closed 'service uninstall' below to clear interception."
+            Write-Warning "'$serviceName' service stop returned exit $LASTEXITCODE; restoring interception directly."
         }
 
-        # Belt-and-suspenders: clear any dirty/leftover interception from a
-        # crashed run, now that the lock is free.  Best-effort; the fail-closed
-        # uninstall below re-verifies interception is down before it deletes.
+        # Clear any dirty/leftover interception from a crashed run, now that the
+        # lock is free.  This is the authoritative cleanup and is idempotent even
+        # with no state file, so a failure here must abort before anything is
+        # deleted.
         & $targetExe restore 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "'$serviceName' restore returned exit $LASTEXITCODE; relying on the fail-closed 'service uninstall' below to clear interception."
+            throw "'$serviceName' restore failed with exit $LASTEXITCODE; interception could not be proven removed, so the install was left in place."
         }
 
         if ($null -ne $existingService) {
@@ -474,7 +553,19 @@ function Uninstall-SigilDns {
     }
 
     # Remove the logon task the tray autostart registers (ignore if absent).
-    & schtasks.exe /Delete /TN 'SigilDNS' /F 2>$null | Out-Null
+    # The task name is machine-wide (root folder); the cmdlet also reaches a task
+    # owned by another user when this runs elevated.
+    try {
+        Get-ScheduledTask -TaskName 'SigilDNS' -ErrorAction SilentlyContinue |
+            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Warning "Could not remove the 'SigilDNS' logon task: $($_.Exception.Message)"
+    }
+
+    # Remove the Add/Remove Programs entry (absent when the installer copy was
+    # skipped at install time).
+    Remove-Item -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SigilDNS' -Recurse -Force -ErrorAction SilentlyContinue
 
     # Remove the install dir from the system PATH if it was added.
     try {
@@ -487,14 +578,10 @@ function Uninstall-SigilDns {
         Write-Warning "Could not update PATH: $($_.Exception.Message)"
     }
 
-    # Stop the tray host (a windowless sigildns-gui.exe process): it locks the
-    # exe, so the install directory cannot be removed while it runs.  Wait for
-    # the processes to release the image before removing the directory.
-    $guiExe = Join-Path $InstallDir 'sigildns-gui.exe'
-    $guiProcs = @(Get-Process -Name 'sigildns-gui' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -eq $guiExe })
-    $guiProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-    $guiProcs | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    # Stop the tray host (a windowless sigildns-gui.exe process, possibly in
+    # another user's session): it locks the exe, so the install directory cannot
+    # be removed while it runs.  Wait for it to release the image first.
+    Stop-InstalledGui -GuiExe (Join-Path $InstallDir 'sigildns-gui.exe')
 
     if (Test-Path -LiteralPath $InstallDir) {
         Invoke-WithRetry { Remove-Item -Recurse -Force -LiteralPath $InstallDir -ErrorAction Stop }

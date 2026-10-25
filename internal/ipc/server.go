@@ -70,6 +70,28 @@ type ListRefresher interface {
 	RefreshLists(ctx context.Context) (err error)
 }
 
+// Pauser optionally handles the admin pause_filtering method.  It is set on the
+// control pipe only.
+type Pauser interface {
+	// PauseFiltering suspends domain filtering for the fixed interval.
+	PauseFiltering(ctx context.Context) (err error)
+}
+
+// Resumer optionally handles the admin resume_filtering method.  It is set on
+// the control pipe only.
+type Resumer interface {
+	// ResumeFiltering turns domain filtering back on before the pause expires.
+	ResumeFiltering(ctx context.Context) (err error)
+}
+
+// StatsReporter optionally supplies the live resolver counters for the status
+// method.  It is set on the status pipe; a nil reporter omits stats.
+type StatsReporter interface {
+	// RuntimeStats returns the counters and the pause expiry (zero when not
+	// paused).  It must not block.
+	RuntimeStats() (queries, blocked uint64, pausedUntil time.Time)
+}
+
 // CacheClearer optionally handles the admin clear_cache method.  It is set on
 // the control pipe only.
 type CacheClearer interface {
@@ -97,6 +119,9 @@ type Server struct {
 	restorer       Restorer
 	refresher      ListRefresher
 	clearer        CacheClearer
+	pauser         Pauser
+	resumer        Resumer
+	stats          StatsReporter
 	logger         *slog.Logger
 	configPath     string
 	requestTimeout time.Duration
@@ -158,6 +183,28 @@ func (s *Server) SetListRefresher(r ListRefresher) *Server {
 // SetCacheClearer sets the DNS cache reset handler (control pipe only).
 func (s *Server) SetCacheClearer(c CacheClearer) *Server {
 	s.clearer = c
+
+	return s
+}
+
+// SetPauser sets the filtering-pause handler (control pipe only).
+func (s *Server) SetPauser(p Pauser) *Server {
+	s.pauser = p
+
+	return s
+}
+
+// SetResumer sets the filtering-resume handler (control pipe only).
+func (s *Server) SetResumer(r Resumer) *Server {
+	s.resumer = r
+
+	return s
+}
+
+// SetStatsReporter sets the live-counter source attached to sanitized status
+// responses (status pipe).
+func (s *Server) SetStatsReporter(r StatsReporter) *Server {
+	s.stats = r
 
 	return s
 }
@@ -251,6 +298,28 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 
 		return okResponse(nil)
 
+	case MethodPauseFiltering:
+		if s.pauser == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		if err := s.pauser.PauseFiltering(ctx); err != nil {
+			return errorResponse(err)
+		}
+
+		return okResponse(nil)
+
+	case MethodResumeFiltering:
+		if s.resumer == nil {
+			return errorResponse(ErrUnsupported)
+		}
+
+		if err := s.resumer.ResumeFiltering(ctx); err != nil {
+			return errorResponse(err)
+		}
+
+		return okResponse(nil)
+
 	default:
 		return errorResponse(ErrMethod)
 	}
@@ -289,7 +358,17 @@ func (s *Server) handleStatus() (resp Response) {
 	}
 
 	if s.sanitize {
-		return marshalOK(sanitizeStatus(st))
+		dto := sanitizeStatus(st)
+		if s.stats != nil {
+			queries, blocked, until := s.stats.RuntimeStats()
+			dto.Stats = &RuntimeStats{Queries: queries, Blocked: blocked}
+			if !until.IsZero() && until.After(time.Now()) {
+				paused := until.UTC()
+				dto.Stats.PausedUntil = &paused
+			}
+		}
+
+		return marshalOK(dto)
 	}
 
 	data, err := json.Marshal(st)

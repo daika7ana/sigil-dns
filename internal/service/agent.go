@@ -75,6 +75,16 @@ type Lifecycle interface {
 
 	// ClearCache clears the resolver cache and the OS DNS cache.
 	ClearCache(ctx context.Context) (err error)
+
+	// PauseFiltering suspends domain filtering for the fixed pause interval.
+	PauseFiltering(ctx context.Context) (err error)
+
+	// ResumeFiltering turns domain filtering back on before the pause expires.
+	ResumeFiltering(ctx context.Context) (err error)
+
+	// RuntimeStats returns the live resolver counters and the filtering pause
+	// expiry (zero when not paused).  It must not block.
+	RuntimeStats() (queries, blocked uint64, pausedUntil time.Time)
 }
 
 // Agent is the OS-agnostic service core: crash recovery on start, IPC serving,
@@ -230,6 +240,32 @@ func (l *lockedLifecycle) ClearCache(ctx context.Context) (err error) {
 	return l.lc.ClearCache(ctx)
 }
 
+// PauseFiltering implements ipc.Pauser, serialized with the other lifecycle
+// calls.
+func (l *lockedLifecycle) PauseFiltering(ctx context.Context) (err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.lc.PauseFiltering(ctx)
+}
+
+// ResumeFiltering implements ipc.Resumer, serialized with the other lifecycle
+// calls.
+func (l *lockedLifecycle) ResumeFiltering(ctx context.Context) (err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.lc.ResumeFiltering(ctx)
+}
+
+// RuntimeStats implements ipc.StatsReporter.  It deliberately skips the
+// lifecycle mutex: a status read must not block behind a slow reload.  The
+// implementation must therefore publish its current resolver for lock-free
+// reads (a reload swaps it atomically).
+func (l *lockedLifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil time.Time) {
+	return l.lc.RuntimeStats()
+}
+
 // Start binds the IPC listeners, runs crash recovery, then enables
 // interception.  A recovery or enable failure is returned so the service
 // stops: a running service always means protection is on, never a half state.
@@ -351,7 +387,7 @@ func (a *Agent) startIPC() (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc).SetListRefresher(a.lc).SetCacheClearer(a.lc)
+	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc).SetListRefresher(a.lc).SetCacheClearer(a.lc).SetPauser(a.lc).SetResumer(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
 			a.logger.Error("ipc control serve stopped", "err", sErr)
@@ -376,7 +412,7 @@ func (a *Agent) startStatusPipe(ctx context.Context) {
 	}
 	a.sln = sln
 
-	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus().SetConfigPath(a.configPath)
+	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus().SetConfigPath(a.configPath).SetStatsReporter(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, sln, status, ipc.ReadOnlyAuthorizer); sErr != nil {
 			a.logger.Error("ipc status serve stopped", "err", sErr)
