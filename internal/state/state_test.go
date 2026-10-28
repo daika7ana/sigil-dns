@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,11 +135,14 @@ func TestLockIgnoresLeftoverFile(t *testing.T) {
 	}
 	defer func() { _ = l.Release() }()
 
-	// The pid stays diagnostic: the current owner rewrites it.
-	data, err := os.ReadFile(path)
-	if err != nil {
+	// The pid stays diagnostic: the current owner rewrites it.  Read through
+	// the owning handle: Windows blocks a second handle from the locked region.
+	buf := make([]byte, 64)
+	n, err := l.file.ReadAt(buf, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("reading lock: %v", err)
 	}
+	data := buf[:n]
 	if want := strconv.Itoa(os.Getpid()); !strings.Contains(string(data), want) {
 		t.Fatalf("lock pid = %q, want %q", strings.TrimSpace(string(data)), want)
 	}

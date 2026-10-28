@@ -124,6 +124,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	lc.flushDNS = func(context.Context) { *events = append(*events, "flush") }
 
+	// Windows cannot delete a file with an open handle, so a test that leaves a
+	// session enabled must release it before t.TempDir cleanup runs.
+	t.Cleanup(lc.release)
+
 	return &testEnv{lc: lc, store: store, ic: ic, events: events, path: path}
 }
 
