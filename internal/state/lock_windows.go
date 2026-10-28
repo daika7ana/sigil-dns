@@ -2,32 +2,32 @@
 
 package state
 
-import "syscall"
+import (
+	"errors"
+	"os"
 
-// stillActive is the STILL_ACTIVE exit code reported for a running process.
-const stillActive = 259
+	"golang.org/x/sys/windows"
+)
 
-// processAlive reports whether pid is a live process.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
+// lockFile takes a non-blocking exclusive lock on the first byte of f.  The OS
+// releases it when the handle closes or the process exits.
+func lockFile(f *os.File) error {
+	err := windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0, 1, 0, &windows.Overlapped{},
+	)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return errLockHeld
 	}
 
-	// PROCESS_QUERY_LIMITED_INFORMATION is enough to read the exit code and
-	// works across integrity levels more often than PROCESS_QUERY_INFORMATION.
-	const processQueryLimitedInformation = 0x1000
+	return err
+}
 
-	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
-	if err != nil {
-		// Access denied means the process exists but cannot be queried.
-		return err == syscall.ERROR_ACCESS_DENIED
-	}
-	defer func() { _ = syscall.CloseHandle(h) }()
-
-	var code uint32
-	if err = syscall.GetExitCodeProcess(h, &code); err != nil {
-		return false
-	}
-
-	return code == stillActive
+// unlockFile releases the byte-range lock held by lockFile.
+func unlockFile(f *os.File) error {
+	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &windows.Overlapped{})
 }

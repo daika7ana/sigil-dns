@@ -5,9 +5,9 @@
 #   1. start `sigildns.exe enable` as a background resolver
 #   2. wait for the NRPT rule to appear
 #   3. prove the catch-all NRPT rule points at loopback and that resolver answers
-#   4. Force-kill the process (simulated kill -9): leaves dirty marker + stale lock
+#   4. Force-kill the process (simulated kill -9): leaves dirty marker + unowned lock file
 #   5. assert the dirty marker is set
-#   6. `restore` must reclaim the stale lock and remove the NRPT rule
+#   6. `restore` must acquire the released OS lock and remove the NRPT rule
 #   7. finally: always remove our rule / kill our process, even on failure
 #
 # The disruptive part is wrapped in try/finally so the runner's DNS is always
@@ -128,7 +128,7 @@ try {
     }
     Write-Host "resolved example.com -> $($answer.IPAddress) via 127.0.0.1"
 
-    # 4. Simulated kill -9: leaves dirty marker and a stale lockfile behind.
+    # 4. Simulated kill -9: leaves the dirty marker and an unowned lock file behind.
     Stop-Process -Id $proc.Id -Force
     $proc.WaitForExit()
     Write-Host "killed sigildns.exe (pid $($proc.Id))"
@@ -144,7 +144,7 @@ try {
     }
     Write-Host "dirty marker is set as expected"
 
-    # 6. Recovery: restore must reclaim the stale lock and remove the rule.
+    # 6. Recovery: restore must acquire the released OS lock and remove the rule.
     & $exe restore --state $state
     if ($LASTEXITCODE -ne 0) {
         Write-Host "restore failed ($LASTEXITCODE); retrying once..."
@@ -160,7 +160,7 @@ try {
     if ($leftover.Count -ne 0) {
         throw "NRPT rule '$displayName' still present after restore"
     }
-    Write-Host "restore reclaimed the stale lock and removed the NRPT rule"
+    Write-Host "restore acquired the released lock and removed the NRPT rule"
 
     $proc = $null
     Write-Host 'INTEGRATION TEST PASSED'

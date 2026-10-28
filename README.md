@@ -426,7 +426,7 @@ Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
 | `--bootstrap <addr,...>` | Bootstrap resolver address(es), comma-separated. | `76.76.2.11:53` |
 | `--config <path>` | Config file path. | platform default |
 | `--profile <name>` | Config profile to use. | the config's active profile |
-| `--listen <addr,...>` | Loopback listen addresses, comma-separated. | `127.0.0.1:53,[::1]:53` |
+| `--listen <addr,...>` | Loopback listen addresses for `enable` and `run`, comma-separated. `enable` requires port 53; `run` accepts any port. | `127.0.0.1:53,[::1]:53` |
 | `--state <path>` | State file path. | platform default |
 
 > `providers show` uses its own parser and accepts `--id` (prompts with input

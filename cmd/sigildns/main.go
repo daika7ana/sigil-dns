@@ -558,6 +558,17 @@ type svcDaemon interface {
 	Enable(ctx context.Context) (err error)
 	Disable(ctx context.Context) (err error)
 	Restore(ctx context.Context) (err error)
+
+	// DisableKeepLock disables like Disable but retains the session lock so a
+	// reload can hand it to the replacement lifecycle without a gap.
+	DisableKeepLock(ctx context.Context) (err error)
+
+	// TakeLock transfers the held session lock to the caller.
+	TakeLock() (lk *state.Lock)
+
+	// AdoptLock makes the lifecycle hold lk.
+	AdoptLock(lk *state.Lock)
+
 	RefreshLists(ctx context.Context) (err error)
 	ClearCache(ctx context.Context) (err error)
 	PauseFiltering(ctx context.Context) (err error)
@@ -616,8 +627,11 @@ func (s *serviceLifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil 
 func (s *serviceLifecycle) Enable(ctx context.Context) (err error) {
 	if s.enableErr != nil {
 		// Startup retained the single-instance lock; release it so a bad config
-		// cannot collide with the SCM's restart attempt.
-		_ = s.svcDaemon.Disable(ctx)
+		// cannot collide with the SCM's restart attempt.  Nothing was enabled,
+		// so this is a lock hand-back, not a restore.
+		if lk := s.svcDaemon.TakeLock(); lk != nil {
+			_ = lk.Release()
+		}
 
 		return s.enableErr
 	}
@@ -647,13 +661,18 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	newSecrets := logging.Secrets(s.logger)
 	logging.UpdateSecrets(s.logger, append(append([]string{}, oldSecrets...), newSecrets...))
 
-	st, sErr := s.svcDaemon.Status()
+	old := s.svcDaemon
+
+	st, sErr := old.Status()
 	enabled := sErr == nil && st != nil && st.Mode == state.ModeOn
 
 	if !enabled {
-		// Idle: just replace the in-memory config; only the new profile is live.
+		// Idle: replace the in-memory config.  Startup retains the session
+		// lock for the Enable that may still be pending, so hand any held lock
+		// to the replacement rather than abandoning it with the old lifecycle.
 		logging.UpdateSecrets(s.logger, newSecrets)
 
+		newInner.AdoptLock(old.TakeLock())
 		s.setInner(newInner)
 		s.enableErr = nil
 
@@ -661,9 +680,10 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 	}
 
 	// Active: restore, then enable with the new config; roll back to the
-	// last-known-good config on failure.
-	old := s.svcDaemon
-	if err = old.Disable(ctx); err != nil {
+	// last-known-good config on failure.  The session lock is handed from the
+	// old lifecycle to the new one (and back on rollback) so no concurrent CLI
+	// operation can slip into the gap.
+	if err = old.DisableKeepLock(ctx); err != nil {
 		// The swap never happened, so the old profile is still live.
 		logging.UpdateSecrets(s.logger, oldSecrets)
 
@@ -676,10 +696,12 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 
 		return sum, fmt.Errorf("reload: disable: %w", err)
 	}
+	newInner.AdoptLock(old.TakeLock())
 	if err = newInner.Enable(ctx); err != nil {
 		// The old profile is active again after rollback, so restore its seeds
 		// (dropping the new profile's) before re-enabling.
 		logging.UpdateSecrets(s.logger, oldSecrets)
+		old.AdoptLock(newInner.TakeLock())
 
 		if rErr := old.Enable(ctx); rErr != nil {
 			// Leave the dirty marker set for crash recovery.  Stop the service:
@@ -753,7 +775,7 @@ func cmdServiceHost(args []string) (err error) {
 	// lock before opening the log file, so a second --service instance exits
 	// before it can overlap the first instance's file logger.  The lifecycle
 	// re-acquires the lock lazily on its first operation.
-	lock, lockErr := state.AcquireLock(state.LockPath(o.statePath))
+	lock, lockErr := state.AcquireLockSecure(state.LockPath(o.statePath))
 	if lockErr != nil {
 		return lockErr
 	}

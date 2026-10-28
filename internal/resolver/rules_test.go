@@ -130,7 +130,7 @@ func TestRulesRoutingEndToEnd(t *testing.T) {
 	addrDefault, _ := startUpstream(t, ipDefault)
 	addrRule, _ := startUpstream(t, ipRule)
 
-	r, err := New(Config{
+	r, err := New(context.Background(), Config{
 		Logger:    slog.Default(),
 		Upstreams: []string{addrDefault},
 		Rules: []Rule{

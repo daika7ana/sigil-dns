@@ -17,7 +17,7 @@ func buildFilterResponse(req *dns.Msg, res filter.Result, st *filterState) (resp
 	case filter.ActionHosts:
 		return hostsResponse(req, res.Hosts, st.ttl)
 	case filter.ActionRewrite:
-		return rewriteResponse(req, res.Rewrite, st.ttl)
+		return rewriteResponse(req, res.Rewrites, st.ttl)
 	default:
 		return nil
 	}
@@ -63,8 +63,10 @@ func blockResponse(req *dns.Msg, mode string, ttl uint32) (resp *dns.Msg) {
 	return resp
 }
 
-// hostsResponse answers from hosts-rule IPs matching the query family, or nil
-// to forward when nothing matches the family.
+// hostsResponse answers from hosts-rule IPs matching the query family.  A
+// matched hosts rule with no address for this type is still a block: answer
+// empty NOERROR locally instead of forwarding (e.g. 0.0.0.0 for an AAAA or
+// HTTPS query).
 func hostsResponse(req *dns.Msg, hosts []netip.Addr, ttl uint32) (resp *dns.Msg) {
 	resp = newReply(req)
 	q := req.Question[0]
@@ -80,47 +82,52 @@ func hostsResponse(req *dns.Msg, hosts []netip.Addr, ttl uint32) (resp *dns.Msg)
 		}
 	}
 
-	if len(resp.Answer) == 0 {
-		return nil
-	}
-
 	return resp
 }
 
-// rewriteResponse applies a $dnsrewrite rule.
-func rewriteResponse(req *dns.Msg, rw *filter.Rewrite, ttl uint32) (resp *dns.Msg) {
+// rewriteResponse applies every matching $dnsrewrite rule, answering only with
+// records for the question's type.  A rewrite with no record for the query type
+// still suppresses forwarding: the response is an empty NOERROR.
+func rewriteResponse(req *dns.Msg, rws []filter.Rewrite, ttl uint32) (resp *dns.Msg) {
 	resp = newReply(req)
 	resp.Compress = true
 
 	q := req.Question[0]
 
-	if rw.NewCNAME != "" {
-		resp.Answer = []dns.RR{&dns.CNAME{
-			Hdr:    rrHdr(q.Name, dns.TypeCNAME, ttl),
-			Target: dns.Fqdn(rw.NewCNAME),
-		}}
+	// A CNAME rewrite redirects the whole name, so it takes precedence over
+	// address rewrites.
+	for _, rw := range rws {
+		if rw.NewCNAME != "" {
+			resp.Answer = []dns.RR{&dns.CNAME{
+				Hdr:    rrHdr(q.Name, dns.TypeCNAME, ttl),
+				Target: dns.Fqdn(rw.NewCNAME),
+			}}
 
-		return resp
+			return resp
+		}
 	}
 
-	if rw.RCode != dns.RcodeSuccess {
-		resp.Rcode = rw.RCode
+	for _, rw := range rws {
+		if rw.RCode != dns.RcodeSuccess {
+			resp.Rcode = rw.RCode
 
-		return resp
+			return resp
+		}
 	}
 
-	switch rw.RRType {
-	case dns.TypeA:
-		if ip, ok := rw.Value.(netip.Addr); ok && ip.Is4() {
-			resp.Answer = []dns.RR{&dns.A{Hdr: rrHdr(q.Name, dns.TypeA, ttl), A: ip.AsSlice()}}
+	for _, rw := range rws {
+		switch {
+		case q.Qtype == dns.TypeA && rw.RRType == dns.TypeA:
+			if ip, ok := rw.Value.(netip.Addr); ok && ip.Is4() {
+				resp.Answer = append(resp.Answer,
+					&dns.A{Hdr: rrHdr(q.Name, dns.TypeA, ttl), A: ip.AsSlice()})
+			}
+		case q.Qtype == dns.TypeAAAA && rw.RRType == dns.TypeAAAA:
+			if ip, ok := rw.Value.(netip.Addr); ok && ip.Is6() {
+				resp.Answer = append(resp.Answer,
+					&dns.AAAA{Hdr: rrHdr(q.Name, dns.TypeAAAA, ttl), AAAA: ip.AsSlice()})
+			}
 		}
-	case dns.TypeAAAA:
-		if ip, ok := rw.Value.(netip.Addr); ok && ip.Is6() {
-			resp.Answer = []dns.RR{&dns.AAAA{Hdr: rrHdr(q.Name, dns.TypeAAAA, ttl), AAAA: ip.AsSlice()}}
-		}
-	default:
-		// Unsupported rewrite RR types (MX/TXT/SRV/HTTPS) become an empty
-		// NOERROR rather than being silently forwarded.
 	}
 
 	return resp

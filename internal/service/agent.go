@@ -104,6 +104,10 @@ type Agent struct {
 	stopCh    chan struct{}
 	started   atomic.Bool
 	startDone chan struct{}
+
+	// enabled records that this session applied interception.  Cleanup must
+	// restore even if state.json disappears while the service is running.
+	enabled atomic.Bool
 }
 
 // NewAgent returns an Agent.  An empty endpoint uses the platform default.
@@ -300,6 +304,10 @@ func (a *Agent) Start(ctx context.Context) (err error) {
 		return context.Canceled
 	}
 
+	// Record the attempt before Enable: a failed enable may have partially
+	// applied interception, and cleanup must restore even if state.json has
+	// disappeared in the meantime.
+	a.enabled.Store(true)
 	if err = a.lc.Enable(ctx); err != nil {
 		a.logger.ErrorContext(ctx, "enable failed; stopping service", "err", err)
 		a.cleanup(context.Background())
@@ -342,6 +350,16 @@ func (a *Agent) cleanup(ctx context.Context) (err error) {
 	}
 
 	a.stopIPC()
+
+	// This session enabled interception, so restore even when state.json has
+	// vanished; a missing state file means "unknown", not "never enabled".
+	if a.enabled.Load() {
+		if err = a.lc.Disable(ctx); err == nil {
+			a.enabled.Store(false)
+		}
+
+		return err
+	}
 
 	st, sErr := a.lc.Status()
 	if sErr != nil {

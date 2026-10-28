@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,21 +106,37 @@ func (t *logTail) read(path string, interval int, now time.Time) (changed bool) 
 	if err != nil {
 		return false
 	}
-	if info.Size() < t.offset {
+
+	size := info.Size()
+	if size < t.offset {
 		t.offset = 0
 		t.text = ""
 	}
-	if info.Size() == t.offset {
+	if size == t.offset {
 		return false
 	}
 
-	buf := make([]byte, info.Size()-t.offset)
-	n, _ := f.ReadAt(buf, t.offset)
+	// Never allocate the whole file: on a first read, or after a long pause,
+	// start at the newest window and drop a partial leading line.
+	start := t.offset
+	if size-start > maxTailBytes {
+		start = size - maxTailBytes
+		t.text = ""
+	}
+
+	buf := make([]byte, size-start)
+	n, _ := f.ReadAt(buf, start)
 	if n <= 0 {
 		return false
 	}
-	t.offset += int64(n)
-	t.text = capTail(t.text + string(buf[:n]))
+	chunk := buf[:n]
+	if start > t.offset {
+		if i := bytes.IndexByte(chunk, '\n'); i >= 0 {
+			chunk = chunk[i+1:]
+		}
+	}
+	t.offset = start + int64(n)
+	t.text = capTail(t.text + string(chunk))
 
 	return true
 }

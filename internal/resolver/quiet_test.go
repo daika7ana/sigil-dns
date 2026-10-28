@@ -262,7 +262,7 @@ func TestNewQuietsUpstreamErrors(t *testing.T) {
 	var buf bytes.Buffer
 	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	r, err := New(Config{
+	r, err := New(context.Background(), Config{
 		Logger:    base,
 		Upstreams: []string{"1.1.1.1:53"},
 	})

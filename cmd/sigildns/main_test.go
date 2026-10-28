@@ -60,6 +60,7 @@ type fakeDaemon struct {
 	queries      uint64
 	blocked      uint64
 	pausedUntil  time.Time
+	lock         *state.Lock
 }
 
 func (f *fakeDaemon) Status() (st *state.State, err error) { return f.st, nil }
@@ -82,6 +83,17 @@ func (f *fakeDaemon) Disable(context.Context) (err error) {
 }
 
 func (f *fakeDaemon) Restore(context.Context) (err error) { return nil }
+
+func (f *fakeDaemon) DisableKeepLock(ctx context.Context) (err error) { return f.Disable(ctx) }
+
+func (f *fakeDaemon) TakeLock() (lk *state.Lock) {
+	lk = f.lock
+	f.lock = nil
+
+	return lk
+}
+
+func (f *fakeDaemon) AdoptLock(lk *state.Lock) { f.lock = lk }
 
 func (f *fakeDaemon) RefreshLists(context.Context) (err error) { return nil }
 func (f *fakeDaemon) ClearCache(context.Context) (err error)   { return nil }
@@ -174,6 +186,66 @@ func TestReloadRestoresAndReenables(t *testing.T) {
 	}
 	if lc.svcDaemon != svcDaemon(next) {
 		t.Fatal("inner was not swapped after reload")
+	}
+}
+
+// TestReloadHandsOffSessionLock: the reload must keep the lock held across the
+// disable/enable swap; the replacement owns it afterwards.
+func TestReloadHandsOffSessionLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json.lock")
+
+	held, err := state.AcquireLock(path)
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOn}, lock: held}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOn}}
+
+	lc := &serviceLifecycle{
+		svcDaemon: old,
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	if _, err = lc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if next.lock != held {
+		t.Fatal("replacement lifecycle did not receive the session lock")
+	}
+	if old.lock != nil {
+		t.Fatal("old lifecycle kept the session lock after the swap")
+	}
+}
+
+// TestReloadIdleKeepsSessionLock: Startup retains the lock for the Enable that
+// may still be pending; an idle reload must not abandon it in the old lifecycle.
+func TestReloadIdleKeepsSessionLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json.lock")
+
+	held, err := state.AcquireLock(path)
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	old := &fakeDaemon{st: &state.State{Mode: state.ModeOff}, lock: held}
+	next := &fakeDaemon{st: &state.State{Mode: state.ModeOff}}
+
+	lc := &serviceLifecycle{
+		svcDaemon: old,
+		build:     func() (svcDaemon, ipc.ConfigSummary, error) { return next, ipc.ConfigSummary{}, nil },
+	}
+
+	if _, err = lc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if next.lock != held {
+		t.Fatal("replacement lifecycle did not receive the retained session lock")
+	}
+	if old.lock != nil {
+		t.Fatal("old lifecycle kept the session lock after the idle swap")
 	}
 }
 

@@ -145,10 +145,10 @@ sigildns restore    # remove NRPT/interception, flush DNS, clear dirty
 sigildns status     # expect "dirty": false, "mode": "off"
 ```
 
-`restore` is idempotent, can reclaim a stale lock left by a dead process, and
-works even if the config YAML is corrupt (it reads only the state file). On
-partial failure it **keeps** the dirty marker set; fix the underlying problem
-and run `restore` again.
+`restore` is idempotent, uses the OS session lock (a lock file left by a dead
+process carries no ownership), and works even if the config YAML is corrupt (it
+reads only the state file). On partial failure it **keeps** the dirty marker set;
+fix the underlying problem and run `restore` again.
 
 If `enable` finds a dirty state it also restores first, so recovery is implicit
 on the next enable.
@@ -199,13 +199,11 @@ interception on.
 
 ## "another Sigil DNS instance is running"
 
-A single-instance lock (`state.json.lock`) guards the state file. This error means
-a live process holds it. If the holder crashed, a stale lock is reclaimed
-automatically when its recorded pid is dead; `restore` will reclaim it. A lock
-whose pid cannot be read is reclaimed too, after a short wait — the pid is
-written immediately after the lock is created, so an unreadable lock has no live
-writer. If the error still persists, delete `state.json.lock` by hand and check
-for a leftover process:
+A single-instance OS file lock (`state.json.lock`) guards the state file. This
+error means a live process holds it; the OS releases the lock automatically when
+that process exits. A file left behind by a crash is harmless — it carries no
+ownership, so there is no stale lock to reclaim or delete. If the error
+persists, a live process still holds the lock. Check for it:
 
 ```powershell
 Get-Process sigildns

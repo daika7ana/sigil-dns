@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-10-28
+
+### Fixed
+- The single-instance lock is now an OS file lock held for the session, so a crash can no longer let two processes both believe they own protection or let one delete the other's lock.
+- Reloading the profile keeps the session lock across the old/new swap, its rollback, and an idle reload before the first enable; a failed restore no longer releases it.
+- The service state lock file has the same SYSTEM + Administrators ACL as the state file, so its permissions no longer depend on the token that created it.
+- Hosts-list blocks can no longer be bypassed with AAAA or HTTPS queries: a matched hosts name is answered locally, with an empty answer for types that have no matching address.
+- Enabling refuses a listener on any port other than 53 instead of advertising an unreachable address to Windows; custom ports remain available to the resolver-only run command.
+- Stopping the service still restores DNS if its state file was deleted while running, instead of assuming it was never enabled. A failed enable now makes the same attempt even when the state file vanishes while interception is being applied.
+- A filtering pause now flushes the resolver and Windows DNS caches when its 15-minute timer expires, not only on an early resume, so an allowed answer cannot outlive the displayed expiry.
+- All matching DNS rewrites are applied together: multiple addresses are all returned, and an A rewrite is no longer sent back for an AAAA (or other type) query; a rewritten name with no record for the query type gets an empty answer instead of leaking upstream. IPv4-mapped IPv6 rewrite values are returned as AAAA answers instead of being dropped.
+- Filter-list downloads during start and reload use the caller's cancellation, so stopping the service or a timed-out reload no longer waits for the download timeout.
+- The GUI log viewer reads only the newest window of a large log instead of allocating the whole file, so opening a multi-gigabyte log cannot exhaust memory.
+- A failed resolver start closes the upstreams it already built, including the fallback profile and per-domain rule upstreams, instead of leaving them for the garbage collector.
+- A `$dnsrewrite` answer no longer inflates the Status page's blocked count; only actual blocks are counted.
 
 ## [0.6.0] - 2026-10-25
 

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/daika7ana/sigil-dns/internal/filter"
 	"github.com/miekg/dns"
 )
@@ -79,7 +81,7 @@ func query(t *testing.T, addr, name string, qtype uint16) (resp *dns.Msg) {
 func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
 	upstreamAddr, _ := startUpstream(t, "192.0.2.1")
 
-	r, err := New(Config{
+	r, err := New(context.Background(), Config{
 		Logger:    slog.Default(),
 		Upstreams: []string{upstreamAddr},
 		Listen:    []string{"127.0.0.1:0"},
@@ -129,7 +131,7 @@ func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
 func TestResolverFallsBackWhenPrimaryFails(t *testing.T) {
 	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
 
-	r, err := New(Config{
+	r, err := New(context.Background(), Config{
 		Logger:            slog.Default(),
 		Upstreams:         []string{"tcp://127.0.0.1:1"},
 		FallbackUpstreams: []string{fallbackAddr},
@@ -189,7 +191,7 @@ func TestStatsAndFilteringPause(t *testing.T) {
 		t.Fatalf("write list: %v", err)
 	}
 
-	r, err := New(Config{
+	r, err := New(context.Background(), Config{
 		Logger:    slog.Default(),
 		Upstreams: []string{upstreamAddr},
 		Listen:    []string{"127.0.0.1:0"},
@@ -253,5 +255,141 @@ func TestStatsAndFilteringPause(t *testing.T) {
 	}
 	if s := r.Stats(); s.Queries != 3 || s.Blocked != 2 {
 		t.Fatalf("stats after resumed query = %+v", s)
+	}
+}
+
+// trackingUpstream records whether a failed construction closed it.
+type trackingUpstream struct {
+	addr   string
+	closed atomic.Bool
+}
+
+func (u *trackingUpstream) Exchange(context.Context, *dns.Msg) (*dns.Msg, error) {
+	return nil, fmt.Errorf("unexpected exchange on %s", u.addr)
+}
+
+func (u *trackingUpstream) Address() string { return u.addr }
+
+func (u *trackingUpstream) Close() error {
+	u.closed.Store(true)
+
+	return nil
+}
+
+// stubUpstreams replaces the upstream constructor for the duration of a test.
+func stubUpstreams(t *testing.T, ups ...*trackingUpstream) {
+	t.Helper()
+
+	byAddr := make(map[string]*trackingUpstream, len(ups))
+	for _, u := range ups {
+		byAddr[u.addr] = u
+	}
+
+	prev := newUpstream
+	newUpstream = func(addr string, _ *upstream.Options) (upstream.Upstream, error) {
+		u, ok := byAddr[addr]
+		if !ok {
+			return nil, fmt.Errorf("unexpected upstream %q", addr)
+		}
+
+		return u, nil
+	}
+	t.Cleanup(func() { newUpstream = prev })
+}
+
+// stubUpstreamError makes the constructor return u together with err, the
+// partially-built-upstream case that must be closed.
+func stubUpstreamError(t *testing.T, u *trackingUpstream, err error) {
+	t.Helper()
+
+	prev := newUpstream
+	newUpstream = func(addr string, _ *upstream.Options) (upstream.Upstream, error) {
+		if addr == u.addr {
+			return u, err
+		}
+
+		return nil, fmt.Errorf("unexpected upstream %q", addr)
+	}
+	t.Cleanup(func() { newUpstream = prev })
+}
+
+func TestNewClosesUpstreamReturnedWithError(t *testing.T) {
+	u := &trackingUpstream{addr: "bad-main.test"}
+	stubUpstreamError(t, u, fmt.Errorf("partial construction"))
+
+	_, err := New(context.Background(), Config{Upstreams: []string{u.addr}})
+	if err == nil {
+		t.Fatal("New should fail when the upstream constructor returns an error")
+	}
+	if !u.closed.Load() {
+		t.Fatal("upstream returned with an error was not closed")
+	}
+}
+
+func TestNewClosesBootstrapResolverReturnedWithError(t *testing.T) {
+	u := &trackingUpstream{addr: "bad-bootstrap.test"}
+
+	prev := newBootstrapResolver
+	newBootstrapResolver = func(string, *upstream.Options) (*upstream.UpstreamResolver, error) {
+		return &upstream.UpstreamResolver{Upstream: u}, fmt.Errorf("not a bootstrap")
+	}
+	t.Cleanup(func() { newBootstrapResolver = prev })
+
+	_, err := New(context.Background(), Config{Bootstrap: []string{u.addr}})
+	if err == nil {
+		t.Fatal("New should fail when the bootstrap constructor returns an error")
+	}
+	if !u.closed.Load() {
+		t.Fatal("bootstrap resolver returned with an error was not closed")
+	}
+}
+
+// TestNewClosesUpstreamsOnRuleError: a rule-parse failure must not leave the
+// main and fallback upstreams built before it.
+func TestNewClosesUpstreamsOnRuleError(t *testing.T) {
+	mainUp := &trackingUpstream{addr: "main.test"}
+	fallbackUp := &trackingUpstream{addr: "fallback.test"}
+	stubUpstreams(t, mainUp, fallbackUp)
+
+	_, err := New(context.Background(), Config{
+		Upstreams:         []string{mainUp.addr},
+		FallbackUpstreams: []string{fallbackUp.addr},
+		Rules:             []Rule{{Domains: []string{"bad/domain"}, Upstream: "1.1.1.1"}},
+	})
+	if err == nil {
+		t.Fatal("New should fail on a rule domain containing a slash")
+	}
+	if !mainUp.closed.Load() {
+		t.Error("main upstream was not closed")
+	}
+	if !fallbackUp.closed.Load() {
+		t.Error("fallback upstream was not closed")
+	}
+}
+
+// TestNewClosesUpstreamsOnListError: a filter-list load failure must close the
+// main, fallback, and per-domain upstream configurations built before it.
+func TestNewClosesUpstreamsOnListError(t *testing.T) {
+	mainUp := &trackingUpstream{addr: "main.test"}
+	fallbackUp := &trackingUpstream{addr: "fallback.test"}
+	stubUpstreams(t, mainUp, fallbackUp)
+
+	_, err := New(context.Background(), Config{
+		Upstreams:         []string{mainUp.addr},
+		FallbackUpstreams: []string{fallbackUp.addr},
+		Rules:             []Rule{{Domains: []string{"rule.test"}, Upstream: "1.1.1.1"}},
+		Filter: FilterConfig{
+			Enabled: true,
+			Lists:   []filter.List{{Source: filepath.Join(t.TempDir(), "missing.txt")}},
+		},
+	})
+	if err == nil {
+		t.Fatal("New should fail when a filter list cannot be read")
+	}
+	if !mainUp.closed.Load() {
+		t.Error("main upstream was not closed")
+	}
+	if !fallbackUp.closed.Load() {
+		t.Error("fallback upstream was not closed")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -742,6 +743,57 @@ func TestLogTailDisabledAtZero(t *testing.T) {
 	}
 	if tail.text != "" || tail.offset != 0 {
 		t.Fatalf("disabled reader touched the file: text=%q offset=%d", tail.text, tail.offset)
+	}
+}
+
+// TestLogTailSeeksToLargeFileTail: opening a large log must not read or
+// allocate the whole file.  The reader seeks to the newest window first, so a
+// multi-gigabyte log cannot exhaust GUI memory.
+func TestLogTailSeeksToLargeFileTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sigildns.log")
+
+	const size = 16 << 20
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if err = f.Truncate(size); err != nil {
+		t.Fatalf("truncate log: %v", err)
+	}
+
+	// The sparse file is mostly holes; put real line-structured text in the
+	// last window so the tail ends on a line boundary.
+	tail := strings.Repeat("aaaaa\n", maxTailBytes/6) + "newest\n"
+	if _, err = f.WriteAt([]byte(tail), size-int64(len(tail))); err != nil {
+		t.Fatalf("write log tail: %v", err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	reader := &logTail{}
+	if !reader.read(path, 1, time.Now()) {
+		t.Fatal("large-file read reported no change")
+	}
+
+	runtime.ReadMemStats(&after)
+
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+		t.Fatalf("read allocated %d bytes for a %d-byte file; want a bounded tail window", grew, size)
+	}
+	if len(reader.text) > maxTailBytes {
+		t.Fatalf("tail length = %d, want at most %d", len(reader.text), maxTailBytes)
+	}
+	if !strings.HasSuffix(reader.text, "newest\n") {
+		t.Fatalf("tail does not end with the newest line: %q", reader.text[max(0, len(reader.text)-40):])
+	}
+	if reader.offset != size {
+		t.Fatalf("offset = %d, want %d", reader.offset, size)
 	}
 }
 

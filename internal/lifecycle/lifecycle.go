@@ -83,9 +83,19 @@ type Lifecycle struct {
 	// Disable swaps the resolver.
 	resMu sync.RWMutex
 
+	// pauseDuration is the filtering pause length.  It is a field so tests can
+	// shorten it; production keeps FilteringPauseDuration.
+	pauseDuration time.Duration
+
+	// pauseMu guards pauseTimer and pauseSeq.  pauseSeq invalidates a timer
+	// callback that had already started when a pause was replaced or canceled.
+	pauseMu    sync.Mutex
+	pauseTimer *time.Timer
+	pauseSeq   uint64
+
 	// newResolver, checkHealth and flushDNS are the injectable dependencies;
 	// New points them at production and tests replace them to stay hermetic.
-	newResolver func(cfg resolver.Config) (resolverHandle, error)
+	newResolver func(ctx context.Context, cfg resolver.Config) (resolverHandle, error)
 	checkHealth func(ctx context.Context, t health.Target) health.Result
 	flushDNS    func(ctx context.Context)
 }
@@ -98,12 +108,13 @@ func New(cfg Config) (l *Lifecycle) {
 	}
 
 	l = &Lifecycle{
-		cfg:         cfg,
-		store:       state.NewStore(cfg.StatePath),
-		ic:          intercept.New(logger),
-		logger:      logger,
-		newResolver: func(c resolver.Config) (resolverHandle, error) { return resolver.New(c) },
-		checkHealth: health.Check,
+		cfg:           cfg,
+		store:         state.NewStore(cfg.StatePath),
+		ic:            intercept.New(logger),
+		logger:        logger,
+		pauseDuration: FilteringPauseDuration,
+		newResolver:   func(ctx context.Context, c resolver.Config) (resolverHandle, error) { return resolver.New(ctx, c) },
+		checkHealth:   health.Check,
 	}
 	l.flushDNS = l.flush
 
@@ -116,11 +127,14 @@ func New(cfg Config) (l *Lifecycle) {
 // left untouched.  The caller blocks on its signal context and then calls
 // Disable.
 func (l *Lifecycle) Enable(ctx context.Context) (err error) {
+	// A lock adopted for a reload must survive a failed enable: the reload
+	// hands it back to the old session for rollback.
+	adopted := l.lock != nil
 	if err = l.acquire(); err != nil {
 		return err
 	}
 	defer func() {
-		if err != nil {
+		if err != nil && !adopted {
 			l.release()
 		}
 	}()
@@ -148,7 +162,17 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return err
 	}
 
-	// 2. Two-stage health check.
+	// 2. Refuse a listener that interception cannot reach.  The NRPT rule
+	// advertises a bare loopback host (always port 53), so a custom port would
+	// pass the health check and then point system DNS at an unanswered port.
+	servers, err := interceptServers(res)
+	if err != nil {
+		_ = l.stopResolver(ctx)
+
+		return err
+	}
+
+	// 3. Two-stage health check.
 	hr := l.healthCheck(ctx, res)
 	if !hr.OK {
 		_ = l.stopResolver(ctx)
@@ -156,8 +180,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return fmt.Errorf("health check failed: %s", hr.Detail)
 	}
 
-	// 3. Persist the atomic dirty marker.
-	servers := nameServers(res)
+	// 4. Persist the atomic dirty marker.
 	st := &state.State{
 		SchemaVersion: state.SchemaVersion,
 		Mode:          state.ModeOn,
@@ -174,14 +197,14 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return err
 	}
 
-	// 4. Apply interception to the listeners that actually bound.
+	// 5. Apply interception to the listeners that actually bound.
 	if err = l.ic.Enable(ctx, l.cfg.Bypass, servers); err != nil {
 		enableErr := fmt.Errorf("enabling interception: %w", err)
 
 		// A partial apply must not be left pointing at a resolver we are about
 		// to stop.  Restore first; if that fails, leave the resolver running so
 		// DNS still works and the caller can retry.
-		if rErr := l.restore(ctx, true); rErr != nil {
+		if rErr := l.restore(ctx, false); rErr != nil {
 			return errors.Join(enableErr, rErr)
 		}
 		if sErr := l.stopResolver(ctx); sErr != nil {
@@ -191,7 +214,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return enableErr
 	}
 
-	// 5. Flush DNS.
+	// 6. Flush DNS.
 	l.flushDNS(ctx)
 	// Never log upstreams: a DoT/DoQ URL carries the resolver id as a hostname
 	// label, so even redacted scheme+host leaks it.  Log the profile name and
@@ -207,10 +230,37 @@ func (l *Lifecycle) Disable(ctx context.Context) (err error) {
 	if err = l.acquire(); err != nil {
 		return err
 	}
-	defer l.release()
+
+	if err = l.disable(ctx); err != nil {
+		// Keep the lock: a failed restore leaves interception (and possibly the
+		// resolver) alive, so another process must not take over.
+		return err
+	}
+	l.release()
+
+	return nil
+}
+
+// DisableKeepLock is Disable without releasing the session lock.  Reload uses
+// it so the lock is held across the disable/enable swap and its rollback.
+func (l *Lifecycle) DisableKeepLock(ctx context.Context) (err error) {
+	if err = l.acquire(); err != nil {
+		return err
+	}
 
 	return l.disable(ctx)
 }
+
+// TakeLock transfers the held session lock to the caller and forgets it.
+func (l *Lifecycle) TakeLock() (lk *state.Lock) {
+	lk = l.lock
+	l.lock = nil
+
+	return lk
+}
+
+// AdoptLock makes l hold lk, the other half of the reload hand-off.
+func (l *Lifecycle) AdoptLock(lk *state.Lock) { l.lock = lk }
 
 // disable implements Disable without taking the lock.
 func (l *Lifecycle) disable(ctx context.Context) (err error) {
@@ -234,7 +284,7 @@ func (l *Lifecycle) disable(ctx context.Context) (err error) {
 }
 
 // Restore undoes interception from the persisted state.  It is idempotent and
-// keeps the dirty marker set on partial failure.
+// keeps the dirty marker and the session lock set on partial failure.
 func (l *Lifecycle) Restore(ctx context.Context) (err error) {
 	// A running service already holds the lock; only drop it when this call
 	// acquired it, or a concurrent client could race the live session.
@@ -243,7 +293,11 @@ func (l *Lifecycle) Restore(ctx context.Context) (err error) {
 		return err
 	}
 	if acquired {
-		defer l.release()
+		defer func() {
+			if err == nil {
+				l.release()
+			}
+		}()
 	}
 
 	return l.restore(ctx, false)
@@ -376,7 +430,12 @@ func (l *Lifecycle) PauseFiltering(ctx context.Context) (err error) {
 		return ErrNotRunning
 	}
 
-	res.PauseFiltering(FilteringPauseDuration)
+	// Invalidate any previous pause before starting a new one, so an old
+	// expiry callback cannot resume this pause.
+	l.stopPauseTimer()
+
+	res.PauseFiltering(l.pauseDuration)
+	l.schedulePauseExpiry(res)
 	l.flush(ctx)
 
 	return nil
@@ -391,10 +450,51 @@ func (l *Lifecycle) ResumeFiltering(ctx context.Context) (err error) {
 		return ErrNotRunning
 	}
 
+	l.stopPauseTimer()
 	res.ResumeFiltering()
 	l.flush(ctx)
 
 	return nil
+}
+
+// schedulePauseExpiry arranges the cache flush that automatic pause expiry
+// needs.  The resolver stops filtering on its own by deadline; only the caches
+// (the resolver's and the OS DNS cache) would otherwise keep an answer obtained
+// during the pause.
+func (l *Lifecycle) schedulePauseExpiry(res resolverHandle) {
+	l.pauseMu.Lock()
+	defer l.pauseMu.Unlock()
+
+	l.pauseSeq++
+	seq := l.pauseSeq
+	l.pauseTimer = time.AfterFunc(l.pauseDuration, func() { l.expirePause(seq, res) })
+}
+
+// expirePause runs when a pause deadline passes.
+func (l *Lifecycle) expirePause(seq uint64, res resolverHandle) {
+	l.pauseMu.Lock()
+	defer l.pauseMu.Unlock()
+
+	if seq != l.pauseSeq {
+		return
+	}
+	l.pauseTimer = nil
+	res.ResumeFiltering()
+	l.flushDNS(context.Background())
+}
+
+// stopPauseTimer cancels the pending expiry callback and invalidates one that
+// has already started.  It waits for a running callback to finish, so the
+// caller can safely shut the resolver down afterwards.
+func (l *Lifecycle) stopPauseTimer() {
+	l.pauseMu.Lock()
+	defer l.pauseMu.Unlock()
+
+	if l.pauseTimer != nil {
+		l.pauseTimer.Stop()
+		l.pauseTimer = nil
+	}
+	l.pauseSeq++
 }
 
 // RuntimeStats returns the live resolver counters for the sanitized status
@@ -448,6 +548,9 @@ func (l *Lifecycle) stopResolver(ctx context.Context) (err error) {
 		return nil
 	}
 
+	// A pause expiry callback must finish before the resolver is torn down.
+	l.stopPauseTimer()
+
 	err = res.Shutdown(ctx)
 	l.setResolver(nil)
 
@@ -468,7 +571,7 @@ func (l *Lifecycle) markClean() (err error) {
 // startResolver binds and starts the resolver, shutting it down if the bind
 // succeeded but Start failed.  It leaves l.res set on success.
 func (l *Lifecycle) startResolver(ctx context.Context) (res resolverHandle, err error) {
-	res, err = l.newResolver(l.resolverConfig())
+	res, err = l.newResolver(ctx, l.resolverConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +606,7 @@ func (l *Lifecycle) acquire() (err error) {
 		return nil
 	}
 
-	l.lock, err = state.AcquireLock(state.LockPath(l.cfg.StatePath))
+	l.lock, err = state.AcquireLockSecure(state.LockPath(l.cfg.StatePath))
 
 	return err
 }
@@ -542,23 +645,29 @@ func (l *Lifecycle) bootstrapOrDefault() (b []string) {
 	return []string{resolver.DefaultBootstrap}
 }
 
-// nameServers returns the resolver's bound loopback UDP hosts without their
-// port.  Only loopback IP literals may reach Add-DnsClientNrptRule; an
-// unparseable or non-loopback bind address would make the rule invalid.
-func nameServers(res resolverHandle) (servers []string) {
+// interceptServers returns the resolver's bound loopback UDP hosts for the NRPT
+// rule.  The rule has no port field (it always targets 53), so a listener on
+// any other port must be refused instead of silently advertised as :53.
+func interceptServers(res resolverHandle) (servers []string, err error) {
 	for _, addr := range res.UDPAddrs() {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil {
+		host, port, sErr := net.SplitHostPort(addr)
+		if sErr != nil {
 			continue
 		}
-		ip, err := netip.ParseAddr(host)
-		if err != nil || !ip.IsLoopback() {
+		ip, pErr := netip.ParseAddr(host)
+		if pErr != nil || !ip.IsLoopback() {
 			continue
+		}
+		if port != "53" {
+			return nil, fmt.Errorf("listener %s is not on port 53; interception only supports port 53 (use the run command for a resolver-only custom port)", addr)
 		}
 		servers = append(servers, host)
 	}
+	if len(servers) == 0 {
+		return nil, errors.New("no loopback listener on port 53 to intercept")
+	}
 
-	return servers
+	return servers, nil
 }
 
 // toStateHealth converts a health result for persistence.

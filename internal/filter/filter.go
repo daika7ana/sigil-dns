@@ -14,7 +14,6 @@ import (
 	"github.com/AdguardTeam/urlfilter"
 	"github.com/AdguardTeam/urlfilter/filterlist"
 	"github.com/AdguardTeam/urlfilter/rules"
-	"github.com/miekg/dns"
 )
 
 // ErrNoLists is returned by New when no raw lists are provided.
@@ -59,8 +58,10 @@ type Rewrite struct {
 
 // Result is the outcome of Engine.Match.
 type Result struct {
-	// Rewrite is set when Action is ActionRewrite.
-	Rewrite *Rewrite
+	// Rewrites are the matching $dnsrewrite rules (ActionRewrite).  All of
+	// them are kept: a domain may have one rule per address family, and
+	// several addresses of one family.
+	Rewrites []Rewrite
 
 	// Hosts are the IPs from matching hosts rules (ActionHosts).
 	Hosts []netip.Addr
@@ -125,15 +126,20 @@ func (e *Engine) Match(host string, qtype uint16) (r Result) {
 	})
 
 	// DNS rewrites MUST be checked before matched: matched is false when only a
-	// $dnsrewrite (or other special) rule matched.
+	// $dnsrewrite (or other special) rule matched.  DNSRewrites already applies
+	// @@ exception logic; keep every surviving rule so the resolver can answer
+	// with all matching addresses for the requested family.
 	if rewrites := dres.DNSRewrites(); len(rewrites) > 0 {
-		rw := rewrites[0].DNSRewrite
 		r.Action = ActionRewrite
-		r.Rewrite = &Rewrite{
-			Value:    rw.Value,
-			NewCNAME: rw.NewCNAME,
-			RCode:    rw.RCode,
-			RRType:   rw.RRType,
+		r.Rewrites = make([]Rewrite, 0, len(rewrites))
+		for _, nr := range rewrites {
+			rw := nr.DNSRewrite
+			r.Rewrites = append(r.Rewrites, Rewrite{
+				Value:    rw.Value,
+				NewCNAME: rw.NewCNAME,
+				RCode:    rw.RCode,
+				RRType:   rw.RRType,
+			})
 		}
 
 		return r
@@ -149,21 +155,23 @@ func (e *Engine) Match(host string, qtype uint16) (r Result) {
 		return r
 	}
 
-	// Hosts rules are address-family specific.
-	switch {
-	case qtype == dns.TypeA && len(dres.HostRulesV4) > 0:
+	// A hosts rule matches by name regardless of query type: 0.0.0.0 blocks
+	// every record type for the name, not only A.  Keep the matching rules so
+	// the resolver can answer locally for A/AAAA and return an empty NOERROR
+	// for everything else instead of forwarding it upstream.
+	if len(dres.HostRulesV4) > 0 || len(dres.HostRulesV6) > 0 {
 		r.Action = ActionHosts
 		for _, h := range dres.HostRulesV4 {
 			r.Hosts = append(r.Hosts, h.IP)
 		}
-	case qtype == dns.TypeAAAA && len(dres.HostRulesV6) > 0:
-		r.Action = ActionHosts
 		for _, h := range dres.HostRulesV6 {
 			r.Hosts = append(r.Hosts, h.IP)
 		}
-	default:
-		r.Action = ActionNone
+
+		return r
 	}
+
+	r.Action = ActionNone
 
 	return r
 }

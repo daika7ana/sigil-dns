@@ -298,16 +298,14 @@ func TestAgentStatusPipeReadOnly(t *testing.T) {
 	}
 }
 
-// TestAgentStopGated checks Stop does not error or call Disable when nothing was
-// enabled.
+// TestAgentStopGated checks Stop does not error or call Disable when the
+// session never got as far as enabling interception.
 func TestAgentStopGated(t *testing.T) {
 	t.Run("no state", func(t *testing.T) {
-		lc := &fakeAgentLC{stErr: state.ErrNoState}
+		lc := &fakeAgentLC{stErr: state.ErrNoState, startupErr: errors.New("boom")}
 		a := newTestAgent(t, lc)
 
-		if err := a.Start(context.Background()); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
+		_ = a.Start(context.Background())
 		if err := a.Stop(context.Background()); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
@@ -317,12 +315,10 @@ func TestAgentStopGated(t *testing.T) {
 	})
 
 	t.Run("mode off clean", func(t *testing.T) {
-		lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOff}}
+		lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOff}, startupErr: errors.New("boom")}
 		a := newTestAgent(t, lc)
 
-		if err := a.Start(context.Background()); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
+		_ = a.Start(context.Background())
 		if err := a.Stop(context.Background()); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
@@ -330,6 +326,43 @@ func TestAgentStopGated(t *testing.T) {
 			t.Fatalf("disableCalls = %d, want 0", lc.disableCalls)
 		}
 	})
+}
+
+// TestAgentStopRestoresWhenStateVanishes: once this session enabled
+// interception, a deleted state.json must not turn cleanup into a no-op.
+func TestAgentStopRestoresWhenStateVanishes(t *testing.T) {
+	lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
+
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	lc.st = nil
+	lc.stErr = state.ErrNoState
+
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if lc.disableCalls != 1 {
+		t.Fatalf("disableCalls = %d, want 1 after the state file vanished", lc.disableCalls)
+	}
+}
+
+// TestAgentEnableFailureWithMissingStateDisables: an enable attempt may have
+// partially applied interception; cleanup must restore even if state.json is
+// already gone.
+func TestAgentEnableFailureWithMissingStateDisables(t *testing.T) {
+	want := errors.New("enable failed")
+	lc := &fakeAgentLC{stErr: state.ErrNoState, enableErr: want}
+	a := newTestAgent(t, lc)
+
+	if err := a.Start(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Start err = %v, want %v", err, want)
+	}
+	if lc.disableCalls != 1 {
+		t.Fatalf("disableCalls = %d, want 1 after a failed enable with no state", lc.disableCalls)
+	}
 }
 
 // TestAgentShutdownLeavesNoGoroutines uses Go 1.27's goroutineleak profile: a

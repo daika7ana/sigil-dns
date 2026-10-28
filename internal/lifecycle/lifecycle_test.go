@@ -22,6 +22,7 @@ import (
 type testResolver struct {
 	events      *[]string
 	stats       resolver.Stats
+	addrs       []string
 	cacheClears int
 	pauses      int
 	resumes     int
@@ -39,8 +40,14 @@ func (r *testResolver) Shutdown(context.Context) error {
 	return nil
 }
 
-func (r *testResolver) SyntheticName() string              { return "probe.sigildns-test.invalid." }
-func (r *testResolver) UDPAddrs() []string                 { return []string{"127.0.0.1:53"} }
+func (r *testResolver) SyntheticName() string { return "probe.sigildns-test.invalid." }
+func (r *testResolver) UDPAddrs() []string {
+	if r.addrs != nil {
+		return r.addrs
+	}
+
+	return []string{"127.0.0.1:53"}
+}
 func (r *testResolver) RefreshLists(context.Context) error { return nil }
 func (r *testResolver) ClearCache()                        { r.cacheClears++ }
 func (r *testResolver) PauseFiltering(time.Duration)       { r.pauses++ }
@@ -59,6 +66,7 @@ type testIntercept struct {
 	disabled      int
 	servers       []string
 	dirtyAtEnable *bool
+	onEnable      func()
 }
 
 func (i *testIntercept) Enable(_ context.Context, _, servers []string) error {
@@ -68,6 +76,9 @@ func (i *testIntercept) Enable(_ context.Context, _, servers []string) error {
 	if st, err := i.store.Load(); err == nil {
 		dirty := st.Dirty
 		i.dirtyAtEnable = &dirty
+	}
+	if i.onEnable != nil {
+		i.onEnable()
 	}
 
 	return i.enableErr
@@ -103,7 +114,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	ic := &testIntercept{events: events, store: store}
 
 	lc.ic = ic
-	lc.newResolver = func(resolver.Config) (resolverHandle, error) {
+	lc.newResolver = func(context.Context, resolver.Config) (resolverHandle, error) {
 		return &testResolver{events: events}, nil
 	}
 	lc.checkHealth = func(context.Context, health.Target) health.Result {
@@ -143,6 +154,16 @@ func indexOf(events []string, want string) int {
 	}
 
 	return -1
+}
+
+func countEvents(events []string, want string) (n int) {
+	for _, e := range events {
+		if e == want {
+			n++
+		}
+	}
+
+	return n
 }
 
 // TestStartupAlwaysEnables: a running service always intercepts, so Startup
@@ -211,6 +232,46 @@ func TestRestoreKeepsLiveSessionLock(t *testing.T) {
 	if e.lc.lock != nil {
 		t.Fatal("Disable did not release the lock")
 	}
+}
+
+// TestDisableKeepsLockOnRestoreFailure: a failed restore leaves interception on
+// and the resolver running, so the session lock must stay held.
+func TestDisableKeepsLockOnRestoreFailure(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+
+	if err := e.lc.Enable(ctx); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	e.ic.disableErr = errors.New("nrpt failed")
+
+	if err := e.lc.Disable(ctx); !errors.Is(err, ErrRestore) {
+		t.Fatalf("Disable err = %v, want ErrRestore", err)
+	}
+	if e.lc.lock == nil {
+		t.Fatal("failed restore released the session lock")
+	}
+
+	e.lc.release()
+}
+
+// TestDisableKeepLockRetainsLock: reload disables the old session without
+// dropping the lock it is about to hand to the replacement.
+func TestDisableKeepLockRetainsLock(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+
+	if err := e.lc.Enable(ctx); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if err := e.lc.DisableKeepLock(ctx); err != nil {
+		t.Fatalf("DisableKeepLock: %v", err)
+	}
+	if e.lc.lock == nil {
+		t.Fatal("DisableKeepLock released the session lock")
+	}
+
+	e.lc.release()
 }
 
 // TestLifecycleInvariants pins the enable/disable/restore safety invariants with
@@ -356,6 +417,31 @@ func TestLifecycleInvariants(t *testing.T) {
 			},
 		},
 		{
+			name: "enable refuses a non-53 listener",
+			setup: func(t *testing.T, e *testEnv) {
+				t.Helper()
+				e.lc.newResolver = func(context.Context, resolver.Config) (resolverHandle, error) {
+					return &testResolver{events: e.events, addrs: []string{"127.0.0.1:5353"}}, nil
+				}
+			},
+			run: func(ctx context.Context, e *testEnv) error { return e.lc.Enable(ctx) },
+			check: func(t *testing.T, e *testEnv, err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), "port 53") {
+					t.Fatalf("Enable err = %v, want a port-53 refusal", err)
+				}
+				if indexOf(*e.events, "intercept-enable") >= 0 {
+					t.Fatal("interception was applied to a listener on a custom port")
+				}
+				if indexOf(*e.events, "shutdown") < 0 {
+					t.Fatal("resolver was not stopped after the port refusal")
+				}
+				if e.lc.lock != nil {
+					t.Fatal("failed enable released the session lock")
+				}
+			},
+		},
+		{
 			name: "disable when off is a no-op returning nil",
 			run:  func(ctx context.Context, e *testEnv) error { return e.lc.Disable(ctx) },
 			check: func(t *testing.T, e *testEnv, err error) {
@@ -439,6 +525,11 @@ func TestLifecycleInvariants(t *testing.T) {
 				if !st.Dirty {
 					t.Fatalf("state = %+v, want dirty=true kept on failure", st)
 				}
+				if e.lc.lock == nil {
+					t.Fatal("failed restore released the session lock")
+				}
+
+				e.lc.release()
 			},
 		},
 		{
@@ -482,6 +573,29 @@ func TestLifecycleInvariants(t *testing.T) {
 			err := tc.run(context.Background(), env)
 			tc.check(t, env, err)
 		})
+	}
+}
+
+// TestEnableFailureRestoresWhenStateVanishes: a failed interception apply may
+// have already changed Windows DNS; removing state.json must not turn the
+// cleanup into a no-op.
+func TestEnableFailureRestoresWhenStateVanishes(t *testing.T) {
+	env := newTestEnv(t)
+	env.ic.enableErr = errors.New("nrpt failed")
+	env.ic.onEnable = func() { _ = os.Remove(env.path) }
+
+	err := env.lc.Enable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "enabling interception") {
+		t.Fatalf("Enable err = %v, want enabling-interception error", err)
+	}
+	if env.ic.disabled != 1 {
+		t.Fatalf("intercept disable = %d, want 1 after the state file vanished", env.ic.disabled)
+	}
+	if env.lc.res != nil {
+		t.Fatal("resolver should have been stopped after a successful cleanup")
+	}
+	if env.lc.lock != nil {
+		t.Fatal("failed enable released the session lock")
 	}
 }
 
@@ -531,6 +645,90 @@ func TestPauseFilteringAndRuntimeStats(t *testing.T) {
 
 	if err := env.lc.ResumeFiltering(ctx); err != nil {
 		t.Fatalf("ResumeFiltering: %v", err)
+	}
+	if res.resumes != 1 {
+		t.Fatalf("resumes = %d, want 1", res.resumes)
+	}
+}
+
+// TestPauseFilteringExpiryFlushes: when the fixed pause expires on its own, the
+// resolver cache and the OS DNS cache are flushed as they are on an early
+// resume, so an answer allowed during the pause does not outlive it.
+func TestPauseFilteringExpiryFlushes(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	flushes := make(chan struct{}, 8)
+	env.lc.flushDNS = func(context.Context) {
+		*env.events = append(*env.events, "flush")
+		flushes <- struct{}{}
+	}
+
+	if err := env.lc.Enable(ctx); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	<-flushes // enable flush
+
+	env.lc.pauseDuration = 20 * time.Millisecond
+	if err := env.lc.PauseFiltering(ctx); err != nil {
+		t.Fatalf("PauseFiltering: %v", err)
+	}
+
+	// PauseFiltering flushes through l.flush; only the expiry path uses the
+	// injected flushDNS, so the next signal is the automatic expiry flush.
+	select {
+	case <-flushes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic pause expiry did not flush the caches")
+	}
+
+	res, ok := env.lc.resolver().(*testResolver)
+	if !ok {
+		t.Fatal("resolver is not the test resolver")
+	}
+	if res.resumes != 1 {
+		t.Fatalf("resumes = %d, want 1 after automatic expiry", res.resumes)
+	}
+	if n := countEvents(*env.events, "flush"); n != 2 {
+		t.Fatalf("flush count = %d, want 2 (enable, expiry)", n)
+	}
+}
+
+// TestPauseFilteringEarlyResumeCancelsExpiry: resuming before the deadline
+// flushes once and must suppress the scheduled expiry flush.
+func TestPauseFilteringEarlyResumeCancelsExpiry(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	flushes := make(chan struct{}, 8)
+	env.lc.flushDNS = func(context.Context) {
+		*env.events = append(*env.events, "flush")
+		flushes <- struct{}{}
+	}
+
+	if err := env.lc.Enable(ctx); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	<-flushes // enable flush
+
+	env.lc.pauseDuration = 100 * time.Millisecond
+	if err := env.lc.PauseFiltering(ctx); err != nil {
+		t.Fatalf("PauseFiltering: %v", err)
+	}
+
+	if err := env.lc.ResumeFiltering(ctx); err != nil {
+		t.Fatalf("ResumeFiltering: %v", err)
+	}
+
+	select {
+	case <-flushes:
+		t.Fatal("early resume did not cancel the expiry flush")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	res, ok := env.lc.resolver().(*testResolver)
+	if !ok {
+		t.Fatal("resolver is not the test resolver")
 	}
 	if res.resumes != 1 {
 		t.Fatalf("resumes = %d, want 1", res.resumes)

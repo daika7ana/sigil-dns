@@ -36,6 +36,23 @@ func TestHostsRuleBlocks(t *testing.T) {
 	}
 }
 
+func TestHostsRuleBlocksEveryType(t *testing.T) {
+	e := newTestEngine(t, "0.0.0.0 blocked.test\n:: blocked6.test\n")
+
+	// A hosts entry blocks the name for every query type, not only the one that
+	// matches its address family.
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeHTTPS} {
+		if got := e.Match("blocked.test.", qtype); got.Action != ActionHosts {
+			t.Errorf("blocked.test qtype %d: Action = %v, want ActionHosts", qtype, got.Action)
+		}
+	}
+
+	res := e.Match("blocked6.test.", dns.TypeA)
+	if res.Action != ActionHosts || len(res.Hosts) != 1 || !res.Hosts[0].Is6() {
+		t.Fatalf("IPv6-only hosts rule on an A query = %+v", res)
+	}
+}
+
 func TestAdblockRuleBlocks(t *testing.T) {
 	e := newTestEngine(t, "||ads.test^\n")
 
@@ -73,15 +90,49 @@ func TestDNSRewriteAppliedEvenThoughNotMatched(t *testing.T) {
 	if res.Action != ActionRewrite {
 		t.Fatalf("Action = %v, want ActionRewrite", res.Action)
 	}
-	if res.Rewrite == nil || res.Rewrite.RCode != dns.RcodeSuccess {
-		t.Fatalf("Rewrite = %+v", res.Rewrite)
+	if len(res.Rewrites) != 1 {
+		t.Fatalf("Rewrites = %+v, want one", res.Rewrites)
 	}
-	if res.Rewrite.RRType != dns.TypeA {
-		t.Fatalf("RRType = %d, want A", res.Rewrite.RRType)
+	rw := res.Rewrites[0]
+	if rw.RCode != dns.RcodeSuccess {
+		t.Fatalf("RCode = %d, want success", rw.RCode)
 	}
-	ip, ok := res.Rewrite.Value.(netip.Addr)
+	if rw.RRType != dns.TypeA {
+		t.Fatalf("RRType = %d, want A", rw.RRType)
+	}
+	ip, ok := rw.Value.(netip.Addr)
 	if !ok || ip != netip.MustParseAddr("1.2.3.4") {
-		t.Fatalf("Value = %v, want 1.2.3.4", res.Rewrite.Value)
+		t.Fatalf("Value = %v, want 1.2.3.4", rw.Value)
+	}
+}
+
+// TestDNSRewritesKeptTogether: every rewrite for a name survives matching, so
+// the resolver can answer with all addresses of the requested family.
+func TestDNSRewritesKeptTogether(t *testing.T) {
+	e := newTestEngine(t, "||multi.test^$dnsrewrite=1.2.3.4\n"+
+		"||multi.test^$dnsrewrite=1.2.3.5\n"+
+		"||multi.test^$dnsrewrite=2001:db8::1\n")
+
+	res := e.Match("multi.test.", dns.TypeA)
+	if res.Action != ActionRewrite {
+		t.Fatalf("Action = %v, want ActionRewrite", res.Action)
+	}
+	if len(res.Rewrites) != 3 {
+		t.Fatalf("Rewrites = %+v, want three", res.Rewrites)
+	}
+
+	var v4 int
+	var v6 int
+	for _, rw := range res.Rewrites {
+		switch rw.RRType {
+		case dns.TypeA:
+			v4++
+		case dns.TypeAAAA:
+			v6++
+		}
+	}
+	if v4 != 2 || v6 != 1 {
+		t.Fatalf("rewrite types: A=%d AAAA=%d, want 2/1", v4, v6)
 	}
 }
 

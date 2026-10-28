@@ -47,6 +47,13 @@ const (
 // defaultListen is the dual-stack loopback listener set.
 var defaultListen = []string{"127.0.0.1:53", "[::1]:53"}
 
+// newUpstream and newBootstrapResolver are the constructors.  They are variables
+// so tests can observe that a failed construction closes everything it built.
+var (
+	newUpstream          = upstream.AddressToUpstream
+	newBootstrapResolver = upstream.NewUpstreamResolver
+)
+
 // Block-response modes for filtering.
 const (
 	// BlockResponseZero answers blocked A/AAAA queries with 0.0.0.0 and ::.
@@ -119,8 +126,9 @@ type Resolver struct {
 }
 
 // New builds a Resolver.  It creates the upstreams but does not bind anything
-// until Start is called.
-func New(cfg Config) (r *Resolver, err error) {
+// until Start is called.  ctx bounds the initial filter-list download, so a
+// canceled start or reload does not wait for the fetch timeout.
+func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 	r = &Resolver{
 		logger:        quietUpstreamErrors(loggerOrDefault(cfg.Logger)),
 		filterCfg:     cfg.Filter,
@@ -159,8 +167,11 @@ func New(cfg Config) (r *Resolver, err error) {
 
 	var ups []upstream.Upstream
 	for _, addr := range upstreamAddrs {
-		u, uErr := upstream.AddressToUpstream(addr, opts)
+		u, uErr := newUpstream(addr, opts)
 		if uErr != nil {
+			if u != nil {
+				_ = u.Close()
+			}
 			closeUpstreams(ups)
 			_ = r.closeBootstrap()
 
@@ -190,8 +201,11 @@ func New(cfg Config) (r *Resolver, err error) {
 
 		var fUps []upstream.Upstream
 		for _, addr := range cfg.FallbackUpstreams {
-			u, uErr := upstream.AddressToUpstream(addr, fOpts)
+			u, uErr := newUpstream(addr, fOpts)
 			if uErr != nil {
+				if u != nil {
+					_ = u.Close()
+				}
 				closeUpstreams(fUps)
 				closeUpstreams(ups)
 				_ = r.closeBootstrap()
@@ -209,7 +223,7 @@ func New(cfg Config) (r *Resolver, err error) {
 		var rulesConf *proxy.UpstreamConfig
 		rulesConf, err = parseRules(cfg.Rules, opts)
 		if err != nil {
-			closeUpstreams(ups)
+			_ = r.closeBuiltUpstreams()
 			_ = r.closeBootstrap()
 			_ = r.closeFallbackBootstrap()
 
@@ -225,8 +239,8 @@ func New(cfg Config) (r *Resolver, err error) {
 
 	r.handler = &probeHandler{synthetic: SyntheticName(), state: &r.filterState, stats: r.stats}
 	if cfg.Filter.Enabled && len(cfg.Filter.Lists) > 0 {
-		if err = r.reloadFilter(context.Background(), cfg.Filter); err != nil {
-			closeUpstreams(ups)
+		if err = r.reloadFilter(ctx, cfg.Filter); err != nil {
+			_ = r.closeBuiltUpstreams()
 			_ = r.closeBootstrap()
 			_ = r.closeFallbackBootstrap()
 
@@ -300,12 +314,34 @@ func closeUpstreams(ups []upstream.Upstream) {
 	}
 }
 
+// closeBuiltUpstreams closes the upstream configurations New built.  It is used
+// when construction fails, and by Shutdown when no proxy owns them; the proxy
+// path closes them itself.
+func (r *Resolver) closeBuiltUpstreams() (err error) {
+	var errs []error
+	if r.upstreamConf != nil {
+		errs = append(errs, r.upstreamConf.Close())
+		r.upstreamConf = nil
+	}
+	if r.fallbackConf != nil {
+		errs = append(errs, r.fallbackConf.Close())
+		r.fallbackConf = nil
+	}
+
+	return errors.Join(errs...)
+}
+
 // newBootstrapResolvers creates one plain-DNS resolver per bootstrap address,
 // closing any earlier ones on failure.
 func newBootstrapResolvers(addrs []string) (boots []*upstream.UpstreamResolver, err error) {
 	for _, addr := range addrs {
-		boot, bErr := upstream.NewUpstreamResolver(addr, nil)
+		boot, bErr := newBootstrapResolver(addr, nil)
 		if bErr != nil {
+			// A rejected address can still return a usable upstream; dnsproxy
+			// makes closing it the caller's responsibility.
+			if boot != nil {
+				_ = boot.Close()
+			}
 			_ = closeBootstrapResolvers(boots)
 
 			return nil, fmt.Errorf("creating bootstrap resolver %q: %w", addr, bErr)
@@ -534,14 +570,7 @@ func (r *Resolver) Shutdown(ctx context.Context) (err error) {
 		r.upstreamConf = nil
 		r.fallbackConf = nil
 	} else {
-		if r.upstreamConf != nil {
-			errs = append(errs, r.upstreamConf.Close())
-			r.upstreamConf = nil
-		}
-		if r.fallbackConf != nil {
-			errs = append(errs, r.fallbackConf.Close())
-			r.fallbackConf = nil
-		}
+		errs = append(errs, r.closeBuiltUpstreams())
 	}
 	errs = append(errs, r.closeBootstrap(), r.closeFallbackBootstrap())
 	r.setFilterState(nil)
@@ -602,8 +631,13 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 	if len(req.Question) == 1 && !h.stats.paused() {
 		if st := h.state.Load(); st != nil && st.engine != nil {
 			q := req.Question[0]
-			if resp := buildFilterResponse(req, st.engine.Match(q.Name, q.Qtype), st); resp != nil {
-				h.stats.blocked.Add(1)
+			res := st.engine.Match(q.Name, q.Qtype)
+
+			if resp := buildFilterResponse(req, res, st); resp != nil {
+				// A rewrite supplies a real answer; it is not a block.
+				if res.Action != filter.ActionRewrite {
+					h.stats.blocked.Add(1)
+				}
 				dctx.Res = resp
 
 				return nil

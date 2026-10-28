@@ -415,9 +415,10 @@ profiles:
 
 State file (JSON, service-owned, ACL SYSTEM+Admins, atomic, schema-versioned):
 interception mode, dirty marker, active profile/upstream, health result, and
-bypass domains. **Single-instance guard**: `state.json.lock`; a lock left by a
-dead pid is reclaimed, and an unreadable lock is reclaimed after a short wait
-because the pid is written immediately after creation.
+bypass domains. **Single-instance guard**: `state.json.lock`, held as an OS file
+lock for the session and ACLed to SYSTEM+Admins like the state file. The OS
+releases it when the process exits, so a file left behind by a crash carries no
+ownership and is never deleted or "reclaimed" by a second process.
 
 The full field reference, validation rules, and worked examples live in
 docs/CONFIG.md.

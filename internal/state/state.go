@@ -10,10 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/winacl"
@@ -59,18 +58,18 @@ type Health struct {
 
 // State is the persisted state.
 type State struct {
-	Timestamp     time.Time `json:"timestamp"`
-	Mode          Mode      `json:"mode"`
-	Intercept     Mechanism `json:"intercept"`
-	Upstream      string    `json:"active_upstream"`
-	Bypass        []string  `json:"bypass,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Mode      Mode      `json:"mode"`
+	Intercept Mechanism `json:"intercept"`
+	Upstream  string    `json:"active_upstream"`
+	Bypass    []string  `json:"bypass,omitempty"`
 
 	// NameServers are the bound resolver IPs the NRPT catch-all advertises.
 	// Empty on legacy state; the interceptor then uses the dual-stack default.
-	NameServers   []string  `json:"name_servers,omitempty"`
-	Health        *Health   `json:"last_health,omitempty"`
-	SchemaVersion int       `json:"schema_version"`
-	Dirty         bool      `json:"dirty"`
+	NameServers   []string `json:"name_servers,omitempty"`
+	Health        *Health  `json:"last_health,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	Dirty         bool     `json:"dirty"`
 }
 
 // Store reads and writes the state file at a fixed path.
@@ -156,105 +155,68 @@ func (s *Store) MarkClean() (err error) {
 // LockPath returns the single-instance lock path that accompanies statePath.
 func LockPath(statePath string) string { return statePath + ".lock" }
 
-// Lock is a cross-platform single-instance guard backed by an exclusive lock
-// file containing the owning pid.  The lock is the file's existence (O_EXCL
-// create); the handle is closed after the pid is written.
+// errLockHeld marks a non-blocking lock attempt that lost the race.
+var errLockHeld = errors.New("lock held")
+
+// Lock is a cross-platform single-instance guard.  It is an OS file lock on
+// path, held by an open handle for the session; the OS releases it when the
+// process dies, so a leftover file is never mistaken for a live owner.
 type Lock struct {
-	path string
+	file *os.File
 }
 
-// AcquireLock creates path exclusively.  It returns ErrLocked if a live process
-// already holds it.  A lock left behind by a dead process (e.g. after kill -9)
-// is reclaimed so crash recovery can proceed.  The caller must call Release.
+// AcquireLock takes the file lock at path without blocking.  It returns
+// ErrLocked when another process holds it.  The caller must call Release.
 func AcquireLock(path string) (l *Lock, err error) {
-	l, err = tryAcquire(path)
-	if err == nil {
-		return l, nil
-	}
-	if !errors.Is(err, ErrLocked) {
-		return nil, err
-	}
-
-	// Conflict: the owner may be dead.  The pid is written immediately after the
-	// exclusive create, so a lock that cannot be read yet is normally mid-create:
-	// wait for it briefly.  Still unreadable after that, it has no live writer,
-	// and it is reclaimed — refusing would leave a crashed session's lock in
-	// place, and with it interception on and nothing answering (recovery must
-	// never depend on a hand-deleted file).
-	pid, pErr := readOwnerPid(path)
-	for try := 0; try < lockReadTries && pErr != nil && !errors.Is(pErr, fs.ErrNotExist); try++ {
-		time.Sleep(lockReadWait)
-		pid, pErr = readOwnerPid(path)
-	}
-	if pErr == nil && processAlive(pid) {
-		return nil, ErrLocked
-	}
-
-	_ = os.Remove(path)
-
-	l, err = tryAcquire(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening lock: %w", err)
 	}
 
-	return l, nil
-}
-
-// A lock that cannot be read is waited on before it is reclaimed: the owner
-// writes its pid right after creating the file, so this covers the create->
-// write window without mistaking a live lock for a stale one.
-const (
-	lockReadTries = 5
-	lockReadWait  = 20 * time.Millisecond
-)
-
-// tryAcquire performs the exclusive create.
-func tryAcquire(path string) (l *Lock, err error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
+	if err = lockFile(f); err != nil {
+		_ = f.Close()
+		if errors.Is(err, errLockHeld) {
 			return nil, ErrLocked
 		}
 
 		return nil, fmt.Errorf("acquiring lock: %w", err)
 	}
 
-	if _, err = fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
+	// The pid is diagnostic only; the OS lock is authoritative.
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, io.SeekStart)
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 
-		return nil, fmt.Errorf("writing lock: %w", err)
-	}
-
-	if err = f.Close(); err != nil {
-		_ = os.Remove(path)
-
-		return nil, fmt.Errorf("closing lock: %w", err)
-	}
-
-	return &Lock{path: path}, nil
+	return &Lock{file: f}, nil
 }
 
-// readOwnerPid reads the pid recorded in the lock file.
-func readOwnerPid(path string) (pid int, err error) {
-	data, err := os.ReadFile(path)
+// AcquireLockSecure takes the lock at path and, on Windows, restricts the lock
+// file to SYSTEM + Administrators.  It is for the service state lock; the GUI's
+// user-scope lock keeps the user's default ACL.
+func AcquireLockSecure(path string) (l *Lock, err error) {
+	l, err = AcquireLock(path)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	pid, err = strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, fmt.Errorf("parsing lock pid: %w", err)
+	if err = winacl.SecureFile(path); err != nil {
+		_ = l.Release()
+
+		return nil, fmt.Errorf("securing lock: %w", err)
 	}
 
-	return pid, nil
+	return l, nil
 }
 
-// Release removes the lock file.
+// Release unlocks and closes the lock handle.  The file is deliberately left in
+// place: unlinking it after unlocking would let a third process lock a fresh
+// inode while a second still owns the old one.
 func (l *Lock) Release() (err error) {
-	if l == nil {
+	if l == nil || l.file == nil {
 		return nil
 	}
+	f := l.file
+	l.file = nil
 
-	return os.Remove(l.path)
+	return errors.Join(unlockFile(f), f.Close())
 }
