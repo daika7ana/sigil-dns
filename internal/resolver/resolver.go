@@ -33,11 +33,11 @@ const (
 	// DefaultCacheSizeBytes is 64 MiB.
 	DefaultCacheSizeBytes = 64 << 20
 
-	// probeIPv4 is answered for synthetic-name A queries.
-	probeIPv4 = "192.0.2.53"
+	// ProbeIPv4 is answered for synthetic-name A queries.
+	ProbeIPv4 = "192.0.2.53"
 
-	// probeIPv6 is answered for synthetic-name AAAA queries.
-	probeIPv6 = "2001:db8::53"
+	// ProbeIPv6 is answered for synthetic-name AAAA queries.
+	ProbeIPv6 = "2001:db8::53"
 
 	// upstreamTimeout bounds one upstream exchange.  Kept short so a dead or
 	// blackholed primary reaches the fallback promptly.
@@ -663,9 +663,9 @@ func probeResponse(req *dns.Msg) (resp *dns.Msg) {
 
 	switch q.Qtype {
 	case dns.TypeA:
-		resp.Answer = append(resp.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(probeIPv4).To4()})
+		resp.Answer = append(resp.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(ProbeIPv4).To4()})
 	case dns.TypeAAAA:
-		resp.Answer = append(resp.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP(probeIPv6)})
+		resp.Answer = append(resp.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP(ProbeIPv6)})
 	}
 
 	return resp

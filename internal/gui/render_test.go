@@ -241,6 +241,187 @@ func TestStatusTrustGatesCards(t *testing.T) {
 	}
 }
 
+// TestStatusLeakIndicator proves the direct-DNS probe is one ordinary chip in
+// the hero, on its own row under the profile chips: a reachable direct path is a
+// caution (a router or ISP resolver makes it the normal case, and interception
+// is still on, so the headline stays "Protected"), a probe with no answer is a
+// quiet chip, and an unchecked, untrusted or disabled session renders no chip
+// at all.
+func TestStatusLeakIndicator(t *testing.T) {
+	withLeak := func(leak *ipc.LeakSummary) *App {
+		app := statusApp()
+		app.snap.status.Leak = leak
+
+		return app
+	}
+	// assertNoChip proves the hero carries no leak chip and that the retired
+	// Connection Info footnote is gone with it.
+	assertNoChip := func(t *testing.T, w *gogui.Window) {
+		t.Helper()
+
+		for _, id := range []string{"gui:banner:leak", "gui:banner:leak:text",
+			"gui:status:leak", "gui:status:leak:text", "gui:status:leak:closed"} {
+			if n := len(w.ResolveID(id)); n != 0 {
+				t.Errorf("%s rendered %d times; want none", id, n)
+			}
+		}
+	}
+
+	t.Run("open", func(t *testing.T) {
+		app := withLeak(&ipc.LeakSummary{Checked: true, Open: true, Servers: []string{"76.76.2.22"}})
+		w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+
+		hero := mustFindLayout(t, w, root, "gui:banner")
+		chips := mustFindLayout(t, w, root, "gui:banner:chips")
+		pill := mustFindLayout(t, w, root, "gui:banner:leak")
+		if !layoutContains(hero, pill) {
+			t.Error("leak chip is outside the hero")
+		}
+		// Its own row under the profile chips: a fourth chip in that row
+		// overflows the hero body.
+		if layoutContains(chips, pill) {
+			t.Error("leak chip is in the profile chip row")
+		}
+		if pill.Shape.Y < chips.Shape.Y+chips.Shape.Height {
+			t.Errorf("leak chip (y %.0f) is not below the chip row (bottom %.0f)",
+				pill.Shape.Y, chips.Shape.Y+chips.Shape.Height)
+		}
+
+		text := mustFindLayout(t, w, root, "gui:banner:leak:text")
+		const want = "DNS leak path open."
+		if got := text.Shape.TC.Text; got != want {
+			t.Errorf("leak chip = %q, want %q", got, want)
+		}
+		if strings.Contains(text.Shape.TC.Text, "76.76.2.22") {
+			t.Error("leak chip names a server address")
+		}
+
+		// A caution chip, not a leak claim: the warning wash and ink.
+		th := gogui.CurrentTheme()
+		if text.Shape.TC.TextStyle == nil {
+			t.Fatal("leak chip carries no text style")
+		}
+		if got := text.Shape.TC.TextStyle.Color; got != th.TextStyleWarning.Color {
+			t.Errorf("open chip ink = %v, want the warning colour %v", got, th.TextStyleWarning.Color)
+		}
+		if got, want := pill.Shape.Color, th.ColorWarningSubtle.Over(th.ColorPanel); got != want {
+			t.Errorf("open chip fill = %v, want the warning wash %v", got, want)
+		}
+		// A chip, not a second hero pill.
+		if got := pill.Shape.Height; got > chips.Shape.Height+0.5 {
+			t.Errorf("leak chip is %.0f px tall, taller than the %.0f px chip row", got, chips.Shape.Height)
+		}
+
+		// Interception is still on, so the caveat never renames the state.
+		if got := mustFindLayout(t, w, root, "gui:banner:headline").Shape.TC.Text; got != "Protected" {
+			t.Errorf("hero headline = %q, want %q", got, "Protected")
+		}
+
+		// The old footnote must not survive beside the chip.
+		for _, id := range []string{"gui:status:leak", "gui:status:leak:text", "gui:status:leak:closed"} {
+			if n := len(w.ResolveID(id)); n != 0 {
+				t.Errorf("retired footnote %s still rendered %d times", id, n)
+			}
+		}
+	})
+
+	t.Run("open-many-servers", func(t *testing.T) {
+		// The chip says the same thing however long the answering list is: the
+		// addresses stay in the leak DTO.
+		app := withLeak(&ipc.LeakSummary{
+			Checked: true, Open: true,
+			Servers: []string{"76.76.2.22", "1.1.1.1", "9.9.9.9", "2001:db8::1"},
+		})
+		w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+
+		const want = "DNS leak path open."
+		got := mustFindLayout(t, w, root, "gui:banner:leak:text").Shape.TC.Text
+		if got != want {
+			t.Errorf("leak chip = %q, want %q", got, want)
+		}
+		for _, server := range app.snap.status.Leak.Servers {
+			if strings.Contains(got, server) {
+				t.Errorf("leak chip names the server %q", server)
+			}
+		}
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		// A probe that got no answer is a checked verdict: quiet, and it claims
+		// no more than "no leak detected".
+		w, root := layoutFor(t, withLeak(&ipc.LeakSummary{Checked: true}), defaultWidth, defaultHeight)
+
+		text := mustFindLayout(t, w, root, "gui:banner:leak:text")
+		const want = "No DNS leak detected."
+		if got := text.Shape.TC.Text; got != want {
+			t.Errorf("closed chip = %q, want %q", got, want)
+		}
+
+		// Quiet: the plain chip, not the warning tint.
+		th := gogui.CurrentTheme()
+		if got := text.Shape.TC.TextStyle.Color; got == th.TextStyleWarning.Color {
+			t.Error("closed chip uses the warning colour")
+		}
+		if got := mustFindLayout(t, w, root, "gui:banner:leak").Shape.Color; got != th.ColorPanel {
+			t.Errorf("closed chip fill = %v, want the quiet panel fill %v", got, th.ColorPanel)
+		}
+	})
+
+	t.Run("unchecked", func(t *testing.T) {
+		for name, leak := range map[string]*ipc.LeakSummary{
+			"none":    nil,
+			"not run": {Checked: false},
+		} {
+			t.Run(name, func(t *testing.T) {
+				w, _ := layoutFor(t, withLeak(leak), defaultWidth, defaultHeight)
+				assertNoChip(t, w)
+			})
+		}
+
+		// Protection off: the hero already says so, and a probe run for another
+		// mode is stale.
+		off := withLeak(&ipc.LeakSummary{Checked: true, Open: true, Servers: []string{"1.1.1.1"}})
+		off.snap.status.Enabled = false
+
+		w, _ := layoutFor(t, off, defaultWidth, defaultHeight)
+		assertNoChip(t, w)
+
+		// An unverified source renders its hero alone, so its probe data is not
+		// shown either.
+		untrusted := withLeak(&ipc.LeakSummary{Checked: true, Open: true, Servers: []string{"1.1.1.1"}})
+		untrusted.snap.trust = trustUnverified
+
+		uw, _ := layoutFor(t, untrusted, defaultWidth, defaultHeight)
+		assertNoChip(t, uw)
+	})
+
+	t.Run("fits", func(t *testing.T) {
+		// The longest chip under the three profile chips must not widen the
+		// hero in either layout.
+		for _, size := range []struct {
+			name string
+			w, h int
+		}{
+			{"default", defaultWidth, defaultHeight},
+			{"minimum", minWidth, minHeight},
+		} {
+			w, root := layoutFor(t, withLeak(&ipc.LeakSummary{Checked: true}), size.w, size.h)
+
+			page := mustFindLayout(t, w, root, "gui:content")
+			if ov, ok := w.ScrollOverflowX(page.Shape.ID); !ok || ov > 0.5 {
+				t.Errorf("%s: Status page has %.1f px of horizontal overflow (ok=%v); want none", size.name, ov, ok)
+			}
+
+			hero := mustFindLayout(t, w, root, "gui:banner")
+			chips := mustFindLayout(t, w, root, "gui:banner:chips")
+			if chips.Shape.X+chips.Shape.Width > hero.Shape.X+hero.Shape.Width+0.5 {
+				t.Errorf("%s: chip row (%.0f..%.0f) overflows the hero (right %.0f)",
+					size.name, chips.Shape.X, chips.Shape.X+chips.Shape.Width, hero.Shape.X+hero.Shape.Width)
+			}
+		}
+	})
+}
+
 // TestStatusGraphPaintsStateInk proves the hero illustration actually paints
 // ink — not an empty canvas — and that a stopped session never carries the
 // protected green.  It samples the graph's own bounds in the soft render, so

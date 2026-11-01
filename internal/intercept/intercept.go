@@ -7,13 +7,60 @@ package intercept
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/miekg/dns"
 )
 
 // ErrUnsupported is returned by the non-Windows stub.
 var ErrUnsupported = errors.New("dns interception is not supported on this platform")
+
+// LeakResult reports whether plain DNS to the adapters' configured servers is
+// reachable: an app that ignores NRPT can resolve outside Sigil DNS.
+type LeakResult struct {
+	Servers []string // configured, non-loopback servers that answered
+	Open    bool
+}
+
+// probePlainDNS queries each host:port directly over UDP for a random .invalid
+// name.  Any response — including NXDOMAIN or SERVFAIL — proves the plain-DNS
+// path is reachable.  Queries run concurrently; a server that does not answer
+// within the timeout is not listed.
+func probePlainDNS(ctx context.Context, addrs []string) (answering []string) {
+	c := &dns.Client{Net: "udp", Timeout: time.Second}
+
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+	for _, addr := range addrs {
+		wg.Add(1)
+
+		go func(addr string) {
+			defer wg.Done()
+
+			m := new(dns.Msg)
+			m.SetQuestion(rand.Text()+".sigildns-leak.invalid.", dns.TypeA)
+			if _, _, err := c.ExchangeContext(ctx, m, addr); err != nil {
+				return
+			}
+
+			mu.Lock()
+			answering = append(answering, addr)
+			mu.Unlock()
+		}(addr)
+	}
+	wg.Wait()
+	sort.Strings(answering)
+
+	return answering
+}
 
 // Controller applies and removes the DNS interception.
 type Controller interface {
@@ -37,8 +84,14 @@ type NRPTState struct {
 	// A bypass exemption has an empty (nil) list.
 	Servers map[string][]string
 
-	// Conflicts are foreign equal-or-more-specific rules (DisplayName|Namespace).
+	// Conflicts are all foreign rules (DisplayName|Namespace).  Only a
+	// CatchAllConflict can override our root rule; the rest are informational.
 	Conflicts []string
+
+	// CatchAllConflict is true when a foreign rule covers the root namespace
+	// (".", "", or the registry form "{.}").  Windows then routes some or all
+	// names around our catch-all, so an unverified system path is expected.
+	CatchAllConflict bool
 
 	// Ours is true when any of our own rules is present.
 	Ours bool

@@ -56,6 +56,15 @@ type Health struct {
 	IPv6   bool   `json:"ipv6"`
 }
 
+// Leak is the last plain-DNS leak probe: whether the adapters' configured
+// (non-loopback) servers answered a direct query.
+type Leak struct {
+	CheckedAt time.Time `json:"checked_at"`
+	Servers   []string  `json:"servers,omitempty"`
+	Checked   bool      `json:"checked"`
+	Open      bool      `json:"open"`
+}
+
 // State is the persisted state.
 type State struct {
 	Timestamp time.Time `json:"timestamp"`
@@ -68,6 +77,7 @@ type State struct {
 	// Empty on legacy state; the interceptor then uses the dual-stack default.
 	NameServers   []string `json:"name_servers,omitempty"`
 	Health        *Health  `json:"last_health,omitempty"`
+	Leak          *Leak    `json:"leak,omitempty"`
 	SchemaVersion int      `json:"schema_version"`
 	Dirty         bool     `json:"dirty"`
 }
@@ -148,6 +158,9 @@ func (s *Store) MarkClean() (err error) {
 	}
 	st.Mode = ModeOff
 	st.Dirty = false
+	// A leak verdict only means something while interception is on; a disabled
+	// session must not keep reporting one.
+	st.Leak = nil
 
 	return s.Save(st)
 }

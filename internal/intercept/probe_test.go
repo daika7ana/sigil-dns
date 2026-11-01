@@ -14,6 +14,7 @@ func TestParseNRPTProbe(t *testing.T) {
 		wantNS     []string
 		wantServer map[string][]string
 		wantConf   []string
+		wantCatch  bool
 		wantErr    bool
 	}{
 		{
@@ -23,6 +24,16 @@ func TestParseNRPTProbe(t *testing.T) {
 			wantNS:     []string{"", "corp.example"},
 			wantServer: map[string][]string{"": {"127.0.0.1", "::1"}, "corp.example": {}},
 			wantConf:   []string{"VPN|."},
+			wantCatch:  true,
+		},
+		{
+			name:       "specific foreign rule only",
+			out:        "rule=.|127.0.0.1\nforeign=VPN|.corp.example\nok=1\n",
+			wantOurs:   true,
+			wantNS:     []string{""},
+			wantServer: map[string][]string{"": {"127.0.0.1"}},
+			wantConf:   []string{"VPN|.corp.example"},
+			wantCatch:  false,
 		},
 		{
 			name:       "crlf and whitespace",
@@ -73,6 +84,9 @@ func TestParseNRPTProbe(t *testing.T) {
 			}
 			if !slices.Equal(got.Conflicts, tc.wantConf) {
 				t.Errorf("Conflicts = %q, want %q", got.Conflicts, tc.wantConf)
+			}
+			if got.CatchAllConflict != tc.wantCatch {
+				t.Errorf("CatchAllConflict = %v, want %v", got.CatchAllConflict, tc.wantCatch)
 			}
 		})
 	}

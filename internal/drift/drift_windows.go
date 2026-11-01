@@ -121,7 +121,25 @@ func (s *system) Apply(ctx context.Context) (err error) {
 	callCtx, cancel := context.WithTimeout(ctx, interceptTimeout)
 	defer cancel()
 
-	return intercept.New(nil).Enable(callCtx, st.Bypass, st.NameServers)
+	if err = intercept.New(nil).Enable(callCtx, st.Bypass, st.NameServers); err != nil {
+		return err
+	}
+
+	// A successful re-apply is a good moment to refresh the leak verdict.  A
+	// probe that cannot run clears it (unchecked), matching the enable path;
+	// only a state write is fatal.
+	var leak *state.Leak
+	if r, dErr := intercept.DetectLeak(callCtx); dErr == nil {
+		leak = &state.Leak{
+			Checked:   true,
+			Open:      r.Open,
+			Servers:   r.Servers,
+			CheckedAt: time.Now().UTC(),
+		}
+	}
+	st.Leak = leak
+
+	return state.NewStore(s.statePath).Save(st)
 }
 
 // Disable removes interception and clears the state after persistent drift.

@@ -47,6 +47,46 @@ on the Tcpip/Tcpip6 interface keys plus a 45 s reconcile loop re-check our rule
 and re-apply it if it disappeared (for example after a driver reset or a
 policy refresh), but the window between the change and the reconcile is real.
 
+Enabling does not just add the rule: it resolves a private probe name through
+the normal Windows resolver stack and requires our own answer. If Windows is
+not actually using the rule (a broken DNS Client state), enable fails and DNS is
+restored instead of reporting "protected" while the ISP answers. A policy
+outranking ours is the exception: when a foreign **catch-all** NRPT rule (a VPN
+or a Group Policy) is present, the miss is expected and the service warns and
+keeps running instead of refusing to start — the same "detect and warn, never
+fight" rule the drift loop follows.
+
+### Direct plain DNS to the configured servers
+
+An application that sends UDP/TCP 53 straight to the adapter's configured DNS
+server — a hardcoded resolver, its own stub resolver, or a VPN client — never
+asks Windows, so NRPT never sees it. Sigil DNS cannot close that path without a
+firewall rule or a kernel driver (see the bottom of this page).
+
+What it does instead is report it. On enable, and again whenever interception is
+re-applied, it asks each configured non-loopback DNS server directly for a
+random name. If one answers, the status payload carries
+`leak.open: true` with the answering server addresses, and the Status hero shows
+a `DNS leak path open.` chip (a caution chip, not a warning: a reachable adapter
+DNS server is the normal case on almost every machine, so the headline stays
+"Protected"). If none answers, the chip reads `No DNS leak detected.`. The
+limits of that indicator:
+
+- it is **detection, not prevention** — the path stays open until the app is
+  reconfigured or a firewall rule blocks port 53;
+- it probes **UDP only**; a server reachable only over TCP/53 would read closed;
+- a host firewall that drops the probe reads "closed" even if an app is allowed
+  through, which is why the chip says "No DNS leak detected" rather than
+  "the path is closed";
+- it says nothing about **DoH/DoT from an app**, which use 443/853 and never
+  touch port 53.
+
+The result is refreshed only on enable and on a drift re-apply; after a DHCP
+renewal changes the adapter's DNS servers it can stay stale until one of those
+happens. `checked_at` in `status` says when it last ran. A probe that cannot run
+records no verdict rather than repeating the previous one, and disabling drops
+the verdict entirely.
+
 ### VPN that installs NRPT rules
 
 A VPN can install an equal-or-more-specific NRPT rule (for example a catch-all

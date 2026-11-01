@@ -137,8 +137,8 @@ func TestFilterEndToEnd(t *testing.T) {
 
 	// The synthetic probe still short-circuits before filtering.
 	resp = query(t, qaddr, r.SyntheticName(), dns.TypeA)
-	if got := firstA(t, resp); got != probeIPv4 {
-		t.Errorf("synthetic answer = %s, want %s", got, probeIPv4)
+	if got := firstA(t, resp); got != ProbeIPv4 {
+		t.Errorf("synthetic answer = %s, want %s", got, ProbeIPv4)
 	}
 	if n := hits.Load(); n != 1 {
 		t.Fatalf("synthetic probe reached upstream: hits = %d", n)

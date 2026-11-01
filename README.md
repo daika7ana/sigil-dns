@@ -235,11 +235,14 @@ sigildns status
 ```
 
 Starting the service always enables interception (bind → two-stage health check
-→ state + dirty marker → NRPT → flush); the SCM state stays Starting until that finishes, and
+→ leak probe → state + dirty marker → NRPT → flush → verify the system resolver
+actually reaches us); the SCM state stays Starting until that finishes, and
 a running service is never left with protection off. If enabling fails the
 service stops; a bad config exits cleanly so fix it and start again, while other
 failures are retried by the SCM recovery actions. Read status as JSON to confirm
-`"mode": "on"`.
+`"mode": "on"`; `"leak"` reports whether the machine's configured DNS servers
+still answer plain DNS directly (an app could bypass Sigil DNS that way — see
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md)).
 
 Want to try the resolver **without touching the system**? Run it in the
 foreground:

@@ -358,3 +358,32 @@ func TestLockReleasedOnProcessDeath(t *testing.T) {
 	}
 	_ = l.Release()
 }
+
+// TestMarkCleanClearsLeak: a leak verdict belongs to an enabled session and must
+// not survive the transition to off.
+func TestMarkCleanClearsLeak(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s := NewStore(path)
+
+	if err := s.Save(&State{
+		SchemaVersion: SchemaVersion,
+		Mode:          ModeOn,
+		Intercept:     MechanismNRPT,
+		Leak:          &Leak{CheckedAt: time.Now().UTC(), Servers: []string{"192.0.2.1"}, Checked: true, Open: true},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.MarkClean(); err != nil {
+		t.Fatalf("MarkClean: %v", err)
+	}
+	st, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if st.Mode != ModeOff {
+		t.Fatalf("Mode = %q, want off", st.Mode)
+	}
+	if st.Leak != nil {
+		t.Fatalf("Leak survived MarkClean: %+v", st.Leak)
+	}
+}

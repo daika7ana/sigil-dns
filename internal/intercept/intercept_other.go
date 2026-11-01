@@ -20,3 +20,6 @@ func (stub) Disable(context.Context) error { return ErrUnsupported }
 
 // ProbeNRPT is unsupported off Windows.
 func ProbeNRPT(context.Context) (st NRPTState, err error) { return NRPTState{}, ErrUnsupported }
+
+// DetectLeak is unsupported off Windows.
+func DetectLeak(context.Context) (res LeakResult, err error) { return LeakResult{}, ErrUnsupported }

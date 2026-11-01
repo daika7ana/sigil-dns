@@ -154,9 +154,23 @@ Strict order:
    docs/TROUBLESHOOTING.md.
 2. **Two-stage health check** (§9) — prove loopback→us, then prove upstream
    (per family) with an uncached query.
-3. Persist state + write the atomic **dirty marker** (schema-versioned).
-4. Apply interception (NRPT rule).
-5. `ipconfig /flushdns`.
+3. **Plain-DNS leak probe** (best-effort, Windows): ask each adapter's
+   configured non-loopback server directly for a random `.invalid` name. Any
+   answer means an app that ignores NRPT can resolve outside the resolver. The
+   result is persisted with the state; a probe that cannot run is recorded as
+   unchecked, never as "closed".
+4. Persist state + write the atomic **dirty marker** (schema-versioned).
+5. Apply interception (NRPT rule).
+6. `ipconfig /flushdns`.
+7. **Verify the system path end-to-end**: resolve the synthetic probe name
+   through the OS resolver (`getaddrinfo` → Dnscache → NRPT) and require the
+   probe addresses. A successful NRPT apply is not proof that the OS actually
+   sends queries to us; without this step a rule that loses to a GPO/MDM policy
+   leaves "enabled" as a lie while the ISP answers. Failure unwinds exactly like
+   a failed apply (restore, stop the resolver, report the error) — except when a
+   **foreign catch-all NRPT rule** explains it: that is the documented conflict
+   of §4.5 (detect and warn, never fight), so the session keeps running with a
+   warning instead of refusing to start.
 
 Never touch NRPT until the resolver is proven listening *and* forwarding. The
 "keep the user online" guarantee must not depend on rollback succeeding.
@@ -198,6 +212,10 @@ refresh (~90 min), MDM/Intune, VPN, and other DNS tools rewriting servers. Add:
   failed re-applies it auto-disables and stops the service (never leave it
   running unprotected). If the auto-disable itself fails, the resolver stays up
   and the loop keeps retrying, because stopping would point DNS at a dead port.
+  A successful re-apply also refreshes the persisted plain-DNS leak probe, so a
+  changed adapter DNS configuration is reflected the next time interception is
+  re-applied — but only then: a DHCP change alone leaves the rule intact and
+  therefore does not trigger a re-apply.
 
 ### 4.7 Security of the IPC path
 Unelevated→SYSTEM DNS control is a privilege path (any local process could
@@ -465,8 +483,8 @@ profiles:
 ```
 
 State file (JSON, service-owned, ACL SYSTEM+Admins, atomic, schema-versioned):
-interception mode, dirty marker, active profile/upstream, health result, and
-bypass domains. **Single-instance guard**: `state.json.lock`, held as an OS file
+interception mode, dirty marker, active profile/upstream, health result, last
+plain-DNS leak probe, and bypass domains. **Single-instance guard**: `state.json.lock`, held as an OS file
 lock for the session and ACLed to SYSTEM+Admins like the state file. The OS
 releases it when the process exits, so a file left behind by a crash carries no
 ownership and is never deleted or "reclaimed" by a second process.
@@ -487,10 +505,13 @@ docs/CONFIG.md.
   stops rather than keep serving a half state; a failed restore leaves the dirty
   marker for the next start. A configuration error exits cleanly so the SCM does
   not restart a hopeless boot.
-- **Enable**: §4.3 strict order (bind → two-stage health check → state+dirty →
-  apply → flush). If apply fails, restore whatever was partially applied and stop
-  the resolver; if the restore also fails, keep the resolver up (DNS must not
-  point at a dead port) and leave the dirty marker.
+- **Enable**: §4.3 strict order (bind → two-stage health check → leak probe →
+  state+dirty → apply → flush → system-path verify). If apply or the
+  system-path verify fails, restore whatever was partially applied and stop the
+  resolver; if the restore also fails, keep the resolver up (DNS must not point
+  at a dead port) and leave the dirty marker. A **foreign catch-all NRPT rule**
+  is the exception: the unverified path is explained by the §4.5 conflict, not a
+  broken listener, so the service warns and keeps running.
 - **Disable**: restore (delete the NRPT rule) → **flush DNS** → stop resolver →
   clear dirty marker. A failed restore leaves the resolver running so a retry is
   possible.
@@ -502,6 +523,25 @@ docs/CONFIG.md.
   handler answers** (proves loopback→us, not "something on :53"); (b) query a
   random uncached name **per upstream family** (proves upstream, catches
   IPv6-dead-while-IPv4-ok). IPv6 failure alone warns; IPv4 failure aborts.
+- **System-path verification**: the synthetic name is resolved **through the OS
+  resolver** (not directly at our listener) and must return the probe
+  addresses. Three attempts with a cache flush between them; the enable aborts
+  if none succeeds — unless `ProbeNRPT` reports a foreign **catch-all** rule,
+  in which case Windows precedence explains the miss and the service warns and
+  keeps running (§4.5). This is the check that distinguishes "NRPT rule exists"
+  from "Windows actually uses it" — the drift probe only observes the rules.
+- **Leak probe**: on enable and on every drift re-apply, the adapters' configured
+  non-loopback servers are asked directly over UDP/53. An answer is recorded in
+  the state file and surfaced on the status pipe as `leak` (checked/open/
+  servers/checked_at), and the Status hero renders it as a chip: `DNS leak path
+  open.` when a configured server answered, `No DNS leak detected.` when none
+  did. The open chip is a caution tint, not a warning state — a reachable
+  adapter DNS server is the normal case, and the headline stays "Protected"
+  because interception is on. A probe that cannot run records no verdict
+  (cleared, not stale) in both the enable and re-apply paths, and `MarkClean`
+  drops the verdict when interception goes off. It is an indicator, not
+  enforcement: closing the path needs the firewall/WFP option below, and DoH
+  from an app is never visible to it.
 - **Crash/kill**: the dirty marker forces restore on the next start. SCM failure
   actions restart the service (5 s, 10 s, 30 s).
 - **Exit**: always restore; flush.
@@ -664,7 +704,10 @@ not a status viewer.
 
 - **Reads** — the status pipe (`AU`, read-only) carries *sanitized* methods:
   `status` (mode / interception / health plus the session query and blocked
-  counters and the filtering-pause expiry; never ids or upstreams), `info`
+  counters, the filtering-pause expiry, and the last plain-DNS leak probe —
+  checked/open/checked_at plus the adapters' configured DNS addresses that
+  answered; those addresses are ordinary interface configuration, already
+  readable by any local user, not resolver ids; never upstreams or ids), `info`
   (protocol/app version, capability bits) and `config_summary` (active
   provider/variant/protocol **labels**, `id_set` bool, active profile name,
   bootstrap IP literals, rule/list **counts** and list **hosts**, filtering +

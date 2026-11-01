@@ -497,7 +497,7 @@ func statusPage(t gogui.Theme, app *App, windowWidth int) gogui.View {
 	// has not landed yet still renders the cards, whose rows fall back to an em
 	// dash — only an unverified source shows the hero alone.
 	if !canEdit(app.snap) {
-		return pageColumn("gui:content", []gogui.View{statusHero(t, v, nil, false)})
+		return pageColumn("gui:content", []gogui.View{statusHero(t, v, nil, nil, false)})
 	}
 
 	return pageColumn("gui:content", []gogui.View{statusDashboard(t, v, app, windowWidth)})
@@ -515,10 +515,17 @@ func statusDashboard(t gogui.Theme, v statusVisual, app *App, windowWidth int) g
 	gridWidth := statusGridWidth(t, windowWidth)
 	col := statusColumnWidth(t, windowWidth)
 
+	// The probe verdict is a caveat on a protected session: with interception
+	// off the hero already says so, and a probe run for another mode is stale.
+	var leak *ipc.LeakSummary
+	if enabled(app.snap) {
+		leak = app.snap.status.Leak
+	}
+
 	// On a wide row both cards fill the row height, so hero and connection
 	// share one baseline even when one of them has more content.  The paired
 	// bottom cards always fill; the full-width cache card does not need to.
-	hero := statusHero(t, v, sum, !stacked)
+	hero := statusHero(t, v, sum, leak, !stacked)
 	connection := connectionSection(sum, t, !stacked)
 	filtering := filteringSection(app, sum, t, true)
 	lists := filterListsSection(sum, t, true)
@@ -601,10 +608,11 @@ func fixedWidth(width float32, content gogui.View) gogui.View {
 }
 
 // statusHero is the active-state surface: a soft state-tinted gradient, the
-// headline pill, one calm sentence, the profile chips, and a shield
-// illustration.  It carries every state's messaging; the tint and pill follow
-// the state's semantic colour, and the content is centred vertically.
-func statusHero(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, fill bool) gogui.View {
+// headline pill, one calm sentence, the profile chips with the DNS-leak verdict
+// under them, and a shield illustration.  It carries every state's messaging;
+// the tint and pill follow the state's semantic colour, and the content is
+// centred vertically.
+func statusHero(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, leak *ipc.LeakSummary, fill bool) gogui.View {
 	body := []gogui.View{
 		caption(t, "Active status"),
 		statusPill(t, v),
@@ -618,6 +626,11 @@ func statusHero(t gogui.Theme, v statusVisual, sum *ipc.ConfigSummary, fill bool
 	}
 	if chips := heroChips(t, sum); chips != nil {
 		body = append(body, chips)
+	}
+	// The probe verdict takes its own row: a fourth chip beside the profile
+	// chips overflows the hero body at the default width.
+	if pill := leakChip(t, leak); pill != nil {
+		body = append(body, pill)
 	}
 
 	return gogui.Column(gogui.ContainerCfg{
@@ -733,19 +746,17 @@ func statusIndicator(v statusVisual) gogui.View {
 // heroChips shows the active provider, variant, and transport as small pills.
 // They are display-only labels from the sanitized summary, never a control.
 func heroChips(t gogui.Theme, sum *ipc.ConfigSummary) gogui.View {
-	if sum == nil {
-		return nil
-	}
-
-	labels := []string{
-		providerLabel(sum.Provider),
-		variantNameLabel(sum.Provider, sum.Variant),
-		protocolChip(sum.Protocol),
-	}
-	chips := make([]gogui.View, 0, len(labels))
-	for _, label := range labels {
-		if label = strings.TrimSpace(label); label != "" {
-			chips = append(chips, chip(t, label))
+	chips := []gogui.View{}
+	if sum != nil {
+		labels := []string{
+			providerLabel(sum.Provider),
+			variantNameLabel(sum.Provider, sum.Variant),
+			protocolChip(sum.Protocol),
+		}
+		for _, label := range labels {
+			if label = strings.TrimSpace(label); label != "" {
+				chips = append(chips, chip(t, label))
+			}
 		}
 	}
 	if len(chips) == 0 {
@@ -760,17 +771,54 @@ func heroChips(t gogui.Theme, sum *ipc.ConfigSummary) gogui.View {
 	})
 }
 
+// leakChip is the direct-DNS probe verdict as an ordinary chip on its own row
+// under the profile chips.  Open only means a configured server answered a
+// direct UDP/53 probe, which a router or ISP resolver makes the normal case, so
+// it is a caution chip and not a leak claim: interception is on, so the hero
+// headline stays "Protected".  Server addresses stay in the leak DTO — they are
+// too long for a chip.
+func leakChip(t gogui.Theme, leak *ipc.LeakSummary) gogui.View {
+	if leak == nil || !leak.Checked {
+		return nil
+	}
+	if !leak.Open {
+		return chipTint(t, "gui:banner:leak", "No DNS leak detected.",
+			t.ColorPanel, t.ColorBorder, t.TextStyleCaption)
+	}
+
+	// Caption-sized, but in the warning ink: TextStyleWarning is a body-title
+	// rung, so recolour the chip style instead of borrowing its size.
+	ink := t.TextStyleCaption
+	ink.Color = t.TextStyleWarning.Color
+
+	return chipTint(t, "gui:banner:leak", "DNS leak path open.",
+		overPanel(t, t.ColorWarningSubtle), t.TextStyleWarning.Color.WithOpacity(0.35), ink)
+}
+
 // chip is one quiet label pill on the hero gradient.
 func chip(t gogui.Theme, label string) gogui.View {
+	return chipTint(t, "", label, t.ColorPanel, t.ColorBorder, t.TextStyleCaption)
+}
+
+// chipTint is chip in a state tint: the same 26 px pill with a chosen fill,
+// hairline edge and ink, so a caveat reads as a chip rather than a second hero
+// pill.  A non-empty id is the pill's widget ID, and its label is id+":text".
+func chipTint(t gogui.Theme, id, label string, fill, edge gogui.Color, ink gogui.TextStyle) gogui.View {
+	textID := ""
+	if id != "" {
+		textID = id + ":text"
+	}
+
 	return gogui.Row(gogui.ContainerCfg{
-		Sizing: gogui.FitFit, MinHeight: 26,
-		Color: t.ColorPanel, ColorBorder: t.ColorBorder, SizeBorder: gogui.BorderThin,
+		ID: id, Sizing: gogui.FitFit, MinHeight: 26,
+		Color: fill, ColorBorder: edge, SizeBorder: gogui.BorderThin,
 		Radius: gogui.RadiusPx(13), Padding: gogui.PaddingSmall,
 		VAlign: gogui.VAlignMiddle,
 		Content: []gogui.View{
 			gogui.Text(gogui.TextCfg{
+				ID:        textID,
 				Text:      label,
-				TextStyle: t.TextStyleCaption,
+				TextStyle: ink,
 				Sizing:    gogui.FitFit,
 				Clip:      true,
 			}),
