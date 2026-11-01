@@ -167,12 +167,39 @@ func pagePadding() gogui.Padding {
 }
 
 // pageColumn wraps a page's content in the shared scrollable, inset column.
+//
+// The column also owns the wheel while a dropdown is open.  A select's popup is
+// a float inside this column, so the toolkit's cascade-on-unhandled walk — an
+// inner scrollable that reaches its limit releases the event to the encloser —
+// would scroll the page behind the open menu as soon as the menu's list hit its
+// end.  An open dropdown is a layer above the page, so the page consumes there
+// instead, and the menu keeps the wheel to itself.
 func pageColumn(id string, content []gogui.View) gogui.View {
 	return gogui.Column(gogui.ContainerCfg{
 		ID: id, Sizing: gogui.FillFill, MaxWidth: contentMaxWidth,
 		Padding: pagePadding(), Spacing: gogui.SpacingMedium,
-		SizeBorder: gogui.NoBorder, Scrollable: true, Content: content,
+		SizeBorder: gogui.NoBorder, Scrollable: true,
+		OnMouseScroll: func(ctx gogui.EventCtx) {
+			if dropDownOpen(ctx.Window) {
+				ctx.Consume()
+			}
+		},
+		Content: content,
 	})
+}
+
+// dropDownOpen reports whether a select popup is open somewhere in the window.
+// The toolkit exposes no open-state query, but an open select holds focus and
+// its popup is laid out under the focused ID with the ":dropdown" suffix, so
+// one ID scan answers it.  A closed select that merely holds focus has no such
+// shape and does not block the wheel.
+func dropDownOpen(w *gogui.Window) bool {
+	id := w.FocusID()
+	if id == "" {
+		return false
+	}
+
+	return len(w.ResolveID(id+":dropdown")) > 0
 }
 
 // withEditNotice prepends the trust/offline banner to an editor page's content.

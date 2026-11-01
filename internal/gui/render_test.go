@@ -2245,11 +2245,13 @@ func TestProfileButtonsAlign(t *testing.T) {
 	}
 }
 
-// TestDropdownPopupsWide proves the Settings dropdown popups share one width
-// at the default window — a short list (Profile) no longer collapses to a tiny
-// box — and that the shared floor does not push the closed field past its card
-// at the minimum window.  The Block response select moved to the Rules page, so
-// it is measured there against the same floor.
+// TestDropdownPopupsWide proves each Settings dropdown popup is exactly as wide
+// as the closed field it belongs to, and starts at the same x — at the default
+// window a short list (Profile) no longer collapses to a tiny box, nor to a
+// menu that is a slice narrower than the box it drops from — and that the
+// shared floor does not push the closed field past its card at the minimum
+// window.  The Block response select moved to the Rules page, so it is measured
+// there against the same floor.
 func TestDropdownPopupsWide(t *testing.T) {
 	ids := []string{"gui:profile:select", "gui:edit:provider", "gui:edit:variant"}
 
@@ -2271,6 +2273,18 @@ func TestDropdownPopupsWide(t *testing.T) {
 		if ly.Shape.Width <= 200 {
 			t.Errorf("%s popup width %.0f is still a tiny box", id, ly.Shape.Width)
 		}
+
+		// The menu must line up with the box it drops from, not merely be wide.
+		field := mustFindLayout(t, w, root, id)
+		if absF(ly.Shape.Width-field.Shape.Width) > 0.5 {
+			t.Errorf("%s popup width %.1f is not its field width %.1f",
+				id, ly.Shape.Width, field.Shape.Width)
+		}
+		if absF(ly.Shape.X-field.Shape.X) > 0.5 {
+			t.Errorf("%s popup x %.1f is not its field x %.1f",
+				id, ly.Shape.X, field.Shape.X)
+		}
+
 		if i == 0 {
 			first = ly.Shape.Width
 			continue
@@ -2311,6 +2325,45 @@ func TestDropdownPopupsWide(t *testing.T) {
 	field := mustFindLayout(t, narrow, nroot, "gui:edit:provider")
 	if right := field.Shape.X + field.Shape.Width; right > float32(minWidth) {
 		t.Errorf("field right %.0f overflows the min window width %d", right, minWidth)
+	}
+}
+
+// TestDropdownTakesTheWheel proves an open dropdown keeps the wheel to itself.
+// The toolkit cascades an unhandled wheel from an inner scrollable to the
+// enclosing one, and a select's popup is a float inside the page column, so at
+// the end of the menu's list the page behind it used to scroll as well.  A
+// closed select that merely holds focus must not block the page.
+func TestDropdownTakesTheWheel(t *testing.T) {
+	w := gogui.NewTestWindow(t, gogui.WindowCfg{
+		Width: defaultWidth, Height: 700, State: settingsApp(),
+	})
+	w.SetView(view)
+	w.TestRender(nil)
+
+	const page, list = "gui:settings", "gui:edit:provider:dropdown"
+	if err := w.TestKey("gui:edit:provider", gogui.KeyEnter, 0); err != nil {
+		t.Fatalf("open gui:edit:provider: %v", err)
+	}
+	w.TestRender(nil)
+
+	// Far more wheel than the short provider list holds: it bottoms out and the
+	// rest must go nowhere rather than to the page behind the menu.
+	for range 5 {
+		_ = w.TestScroll(list, 0, -40)
+	}
+	if _, y, err := w.TestScrollOffset(page); err != nil || y != 0 {
+		t.Errorf("page offset %v (err %v) with a dropdown open, want 0", y, err)
+	}
+
+	if err := w.TestKey("gui:edit:provider", gogui.KeyEscape, 0); err != nil {
+		t.Fatalf("close gui:edit:provider: %v", err)
+	}
+	w.TestRender(nil)
+	if err := w.TestScroll(page, 0, -40); err != nil {
+		t.Fatalf("wheel the page after the dropdown closed: %v", err)
+	}
+	if _, y, _ := w.TestScrollOffset(page); y == 0 {
+		t.Error("page did not scroll after the dropdown closed")
 	}
 }
 

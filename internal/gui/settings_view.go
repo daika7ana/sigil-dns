@@ -315,25 +315,21 @@ func serviceBadge(s snapshot) gogui.View {
 	})
 }
 
-// selectFloor is the shared width floor for every Settings dropdown.  The
+// selectFloor is the width every Settings dropdown is given as MinWidth.  The
 // pinned toolkit sizes an open popup from MinWidth/MaxWidth plus its own
-// content and has no "fill to the field" lever; MinWidth is also applied to the
-// closed field, but only as a floor, so a value below the field's own width
-// leaves the filling field untouched while lifting every popup close to it.
+// content and has no "fill to the field" lever, so this value is how a popup
+// comes to match the closed field: it is the field's own fill width, and
+// MinWidth is applied to the closed field only as a floor, so the field keeps
+// the width it already fills and the popup is lifted to exactly the same one.
 //
 // It mirrors the content column's geometry: the contentArea inset, the page
 // column's own padding (with its scrollbar gutter), and the card inset.  The
 // column is capped at contentMaxWidth, so the floor tracks the window until the
-// cap binds.  The ratio keeps it just under the field to avoid ever growing the
-// field past its card.  Long-content lists (Provider, Variant) may still exceed
-// the floor — the toolkit gives no way to cap the popup without also capping
-// the field.
+// cap binds.  TestDropdownPopupsWide pins popup width == field width, so a
+// geometry drift fails a test instead of quietly narrowing the menu.
 func selectFloor(windowWidth int) float32 {
 	t := gogui.CurrentTheme()
-	const (
-		ratio    float32 = 0.92
-		minFloor float32 = 200
-	)
+	const minFloor float32 = 200
 
 	navTotal := navRailWidth + 2*navRailPad
 
@@ -346,7 +342,7 @@ func selectFloor(windowWidth int) float32 {
 	pageInner := pageCol - (2*contentPad + scrollbarGutter)
 	cardInner := pageInner - t.PaddingLarge.Width() - 2*t.SizeBorder
 
-	floor := cardInner * ratio
+	floor := cardInner
 	if floor < minFloor {
 		floor = minFloor
 	}
