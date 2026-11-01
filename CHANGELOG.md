@@ -7,21 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-02
+
 ### Added
-- **Leak guard.** Enabling now resolves a private probe name through the normal
-  Windows resolver stack and requires our own answer, so "protected" is a
-  verified fact instead of an assumption; a rule that loses to Group Policy,
-  MDM, or a broken DNS Client state makes the enable fail and restores DNS. A
-  foreign catch-all NRPT rule is the exception (SPEC §4.5): the miss is
-  explained, so the service warns and keeps running instead of refusing to
-  start.
-- **Leak indicator.** On enable (and on every drift re-apply) Sigil DNS asks the
-  adapters' configured DNS servers directly whether they still answer plain DNS.
-  If they do, an app that ignores the system resolver can bypass Sigil DNS; the
-  result is exposed as `leak` on the status payload and shown as a chip in the
-  Status hero (`DNS leak path open.` / `No DNS leak detected.`); it is the
-  normal case, not a warning, so the headline stays "Protected". The verdict is
-  cleared when a probe cannot run and when interception is disabled.
+- **Leak guard.** Enabling now resolves a private probe name through the normal Windows resolver stack and requires our own answer, so "protected" is a verified fact instead of an assumption; a rule that loses to Group Policy, MDM, or a broken DNS Client state makes the enable fail and restores DNS. A foreign catch-all NRPT rule is the exception (SPEC §4.5): the miss is explained, so the service warns and keeps running instead of refusing to start.
+- **Leak indicator.** On enable (and on every drift re-apply) Sigil DNS asks the adapters' configured DNS servers directly whether they still answer plain DNS. If they do, an app that ignores the system resolver can bypass Sigil DNS; the result is exposed as `leak` on the status payload and shown as a chip in the Status hero (`DNS leak path open.` / `No DNS leak detected.`); it is the normal case, not a warning, so the headline stays "Protected". The verdict is cleared when a probe cannot run and when interception is disabled.
 - Four more preset providers: AdGuard DNS (`adguard`: default, family, unfiltered), Google Public DNS (`google`: unfiltered, DoH/DoH3/DoT), OpenBLD (`openbld`: ada, ric over DoH/DoT, no bootstrap), and uBlockDNS (`ublockdns`: per-profile DoH/DoH3 endpoint that requires an id).
 - A provider now advertises the transports it publishes, and an unsupported selection is rejected instead of expanding to an undocumented endpoint (uBlockDNS is DoH/DoH3, OpenBLD DoH/DoT).
 - DoH3 was checked against every provider that offers DoH: Quad9, Cloudflare, AdGuard DNS, Google Public DNS, NextDNS, ControlD, and uBlockDNS answer over HTTP/3; OpenBLD does not.
