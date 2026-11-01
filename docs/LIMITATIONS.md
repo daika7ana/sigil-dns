@@ -28,8 +28,8 @@ honest version of that boundary.
 
 DNSSEC validation is delegated to the upstream resolver. With the cache enabled
 (the default), queries carry the DO bit, so validating presets (Quad9,
-Cloudflare, NextDNS, ControlD) return authenticated answers and signatures are
-cached.
+Cloudflare, AdGuard DNS, Google Public DNS, NextDNS, ControlD, OpenBLD) return authenticated
+answers and signatures are cached.
 
 Sigil DNS does not validate DNSSEC itself, and cannot without a validating
 recursor: block, hosts and rewrite answers are synthesized locally and can never

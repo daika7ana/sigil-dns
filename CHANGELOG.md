@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Four more preset providers: AdGuard DNS (`adguard`: default, family, unfiltered), Google Public DNS (`google`: unfiltered, DoH/DoH3/DoT), OpenBLD (`openbld`: ada, ric over DoH/DoT, no bootstrap), and uBlockDNS (`ublockdns`: per-profile DoH/DoH3 endpoint that requires an id).
+- A provider now advertises the transports it publishes, and an unsupported selection is rejected instead of expanding to an undocumented endpoint (uBlockDNS is DoH/DoH3, OpenBLD DoH/DoT).
+- DoH3 was checked against every provider that offers DoH: Quad9, Cloudflare, AdGuard DNS, Google Public DNS, NextDNS, ControlD, and uBlockDNS answer over HTTP/3; OpenBLD does not.
+- The profile editor offers only the transports the selected provider serves, clamps an unsupported current pick when the provider changes, and clears the stored bootstrap when the provider has none (OpenBLD, NextDNS `ultralow`).
+
 ## [0.6.1] - 2026-10-28
 
 ### Fixed

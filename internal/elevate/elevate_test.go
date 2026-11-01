@@ -459,6 +459,27 @@ func TestApplyRequestCustomReplaceOnly(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit empty bootstrap clears the list", func(t *testing.T) {
+		cfg := config.Default()
+		p := cfg.Profiles[def]
+		p.Upstreams = []string{secret}
+		p.Bootstrap = []string{"1.1.1.1"}
+		cfg.Profiles[def] = p
+
+		req := Request{Action: ActionApply, UUID: "u", Patch: Patch{Profiles: map[string]ProfilePatch{
+			def: {Provider: ptr(providers.Custom), Bootstrap: &[]string{}},
+		}}}
+
+		if err := applyRequest(cfg, req, "rev"); err != nil {
+			t.Fatalf("applyRequest: %v", err)
+		}
+		// Must stay empty, not fall back to the default bootstrap: a provider
+		// with no bootstrap has to stay bootstrap-free.
+		if got := cfg.Profiles[def]; got.Bootstrap == nil || len(got.Bootstrap) != 0 {
+			t.Fatalf("bootstrap = %v, want an explicit empty list", got.Bootstrap)
+		}
+	})
+
 	t.Run("blank url with no upstreams is a static error", func(t *testing.T) {
 		cfg := config.Default()
 		p := cfg.Profiles[def]

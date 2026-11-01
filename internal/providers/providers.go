@@ -36,8 +36,12 @@ func (p Protocol) Valid() bool {
 const (
 	Quad9      = "quad9"
 	Cloudflare = "cloudflare"
+	AdGuard    = "adguard"
+	Google     = "google"
 	NextDNS    = "nextdns"
 	ControlD   = "controld"
+	OpenBLD    = "openbld"
+	UBlockDNS  = "ublockdns"
 	Custom     = "custom"
 )
 
@@ -141,6 +145,28 @@ func Registry() (ps []Provider) {
 		},
 	}
 
+	adguard := Provider{
+		Name:           AdGuard,
+		Description:    "AdGuard DNS (ads/trackers, family, unfiltered)",
+		DefaultVariant: "default",
+		Protocols:      Protocols(),
+		Variants: []Variant{
+			{Name: "default", Description: "ads, trackers, and malware blocked"},
+			{Name: "family", Description: "default + adult content blocked + safe search"},
+			{Name: "unfiltered", Description: "no filtering"},
+		},
+	}
+
+	google := Provider{
+		Name:           Google,
+		Description:    "Google Public DNS (unfiltered, dual-stack)",
+		DefaultVariant: "standard",
+		Protocols:      []Protocol{DoH, DoH3, DoT},
+		Variants: []Variant{
+			{Name: "standard", Description: "no filtering"},
+		},
+	}
+
 	nextdns := Provider{
 		Name:           NextDNS,
 		Description:    "NextDNS (requires --id)",
@@ -167,6 +193,27 @@ func Registry() (ps []Provider) {
 		Variant{Name: "free", Description: "arbitrary free preset name (pass as --id)", NeedsID: true},
 	)
 
+	openbld := Provider{
+		Name:           OpenBLD,
+		Description:    "OpenBLD.net (adaptive or strict filtering)",
+		DefaultVariant: "ada",
+		Protocols:      []Protocol{DoH, DoT},
+		Variants: []Variant{
+			{Name: "ada", Description: "adaptive filtering (recommended)"},
+			{Name: "ric", Description: "strict filtering"},
+		},
+	}
+
+	ublockdns := Provider{
+		Name:           UBlockDNS,
+		Description:    "uBlockDNS (per-profile filtering, requires --id)",
+		DefaultVariant: "profile",
+		Protocols:      []Protocol{DoH, DoH3},
+		Variants: []Variant{
+			{Name: "profile", Description: "filter lists and custom rules from your profile (requires --id)", NeedsID: true},
+		},
+	}
+
 	custom := Provider{
 		Name:           Custom,
 		Description:    "raw user-entered upstream URL + optional bootstrap",
@@ -175,7 +222,7 @@ func Registry() (ps []Provider) {
 		Variants:       []Variant{{Name: "custom", Description: "raw DoH/DoT/DoQ URL"}},
 	}
 
-	return []Provider{quad9, cloudflare, nextdns, controld, custom}
+	return []Provider{quad9, cloudflare, adguard, google, nextdns, controld, openbld, ublockdns, custom}
 }
 
 // Lookup finds a provider by name.
@@ -208,15 +255,31 @@ func Expand(sel Selection) (ep Endpoints, err error) {
 		return Endpoints{}, fmt.Errorf("%w: %q", ErrUnknownProtocol, sel.Protocol)
 	}
 
+	pr, ok := Lookup(sel.Provider)
+	if !ok {
+		return Endpoints{}, fmt.Errorf("%w: %q", ErrUnknownProvider, sel.Provider)
+	}
+	if !slices.Contains(pr.Protocols, proto) {
+		return Endpoints{}, fmt.Errorf("%w: %s does not support %s", ErrUnknownProtocol, sel.Provider, proto)
+	}
+
 	switch sel.Provider {
 	case Quad9:
 		return expandQuad9(sel.Variant, proto)
 	case Cloudflare:
 		return expandCloudflare(sel.Variant, proto)
+	case AdGuard:
+		return expandAdGuard(sel.Variant, proto)
+	case Google:
+		return expandGoogle(sel.Variant, proto)
 	case NextDNS:
 		return expandNextDNS(sel.Variant, proto, sel.ID)
 	case ControlD:
 		return expandControlD(sel.Variant, proto, sel.ID)
+	case OpenBLD:
+		return expandOpenBLD(sel.Variant, proto)
+	case UBlockDNS:
+		return expandUBlockDNS(sel.Variant, proto, sel.ID)
 	case Custom:
 		if strings.TrimSpace(sel.URL) == "" {
 			return Endpoints{}, ErrURLRequired
@@ -323,7 +386,65 @@ func expandCloudflare(variant string, proto Protocol) (ep Endpoints, err error) 
 	return ep, nil
 }
 
-// expandNextDNS implements §7.2.  Ultralow is hostname-only with no bootstrap;
+// expandAdGuard implements the §7.5 matrix.
+func expandAdGuard(variant string, proto Protocol) (ep Endpoints, err error) {
+	type adguardVariant struct {
+		host string
+		v4   []string
+		v6   []string
+	}
+
+	matrix := map[string]adguardVariant{
+		"default": {
+			host: "dns.adguard-dns.com",
+			v4:   []string{"94.140.14.14", "94.140.15.15"},
+			v6:   []string{"2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"},
+		},
+		"family": {
+			host: "family.adguard-dns.com",
+			v4:   []string{"94.140.14.15", "94.140.15.16"},
+			v6:   []string{"2a10:50c0::bad1:ff", "2a10:50c0::bad2:ff"},
+		},
+		"unfiltered": {
+			host: "unfiltered.adguard-dns.com",
+			v4:   []string{"94.140.14.140", "94.140.14.141"},
+			v6:   []string{"2a10:50c0::1:ff", "2a10:50c0::2:ff"},
+		},
+	}
+	if variant == "" {
+		variant = "default"
+	}
+
+	m, ok := matrix[variant]
+	if !ok {
+		return Endpoints{}, fmt.Errorf("%w: adguard/%s", ErrUnknownVariant, variant)
+	}
+
+	ep.Upstreams = []string{hostURL(proto, m.host)}
+	ep.Bootstrap = append(append([]string{}, m.v4...), m.v6...)
+
+	return ep, nil
+}
+
+// expandGoogle implements the §7.8 single unfiltered preset.  DoQ is not
+// published; DoH3 reuses the DoH host and path.
+func expandGoogle(variant string, proto Protocol) (ep Endpoints, err error) {
+	switch variant {
+	case "", "standard":
+	default:
+		return Endpoints{}, fmt.Errorf("%w: google/%s", ErrUnknownVariant, variant)
+	}
+
+	ep.Upstreams = []string{hostURL(proto, "dns.google")}
+	ep.Bootstrap = []string{
+		"8.8.8.8", "8.8.4.4",
+		"2001:4860:4860::8888", "2001:4860:4860::8844",
+	}
+
+	return ep, nil
+}
+
+// expandNextDNS implements §7.3.  Ultralow is hostname-only with no bootstrap;
 // anycast pins the documented anycast IPs.
 func expandNextDNS(variant string, proto Protocol, id string) (ep Endpoints, err error) {
 	switch variant {
@@ -366,7 +487,7 @@ var controlDFreeBootstrap = []string{
 	"2606:1a40::11", "2606:1a40:1::11",
 }
 
-// expandControlD implements §7.3.  custom uses dns.controld.com/<id>; free
+// expandControlD implements §7.4.  custom uses dns.controld.com/<id>; free
 // presets use freedns.controld.com/<name>.
 func expandControlD(variant string, proto Protocol, id string) (ep Endpoints, err error) {
 	switch variant {
@@ -402,6 +523,52 @@ func expandControlD(variant string, proto Protocol, id string) (ep Endpoints, er
 	}
 
 	return Endpoints{}, fmt.Errorf("%w: controld/%s", ErrUnknownVariant, variant)
+}
+
+// expandOpenBLD implements the §7.6 ADA/RIC matrix.  Only DoH and DoT are published,
+// and no bootstrap is set: OpenBLD publishes no resolver IPs, so its hostname
+// needs the system resolver once (like NextDNS Ultralow).
+func expandOpenBLD(variant string, proto Protocol) (ep Endpoints, err error) {
+	switch variant {
+	case "", "ada":
+		variant = "ada"
+	case "ric":
+	default:
+		return Endpoints{}, fmt.Errorf("%w: openbld/%s", ErrUnknownVariant, variant)
+	}
+
+	ep.Upstreams = []string{hostURL(proto, variant+".openbld.net")}
+
+	return ep, nil
+}
+
+// uBlockDNSBootstrap is Quad9: the uBlockDNS hostname sits behind Cloudflare
+// with rotating IPs, and uBlockDNS recommends a public resolver for bootstrap.
+var uBlockDNSBootstrap = []string{
+	"9.9.9.9", "149.112.112.112",
+	"2620:fe::fe", "2620:fe::9",
+}
+
+// expandUBlockDNS implements the §7.7 per-profile DoH/DoH3 endpoint.  The
+// profile id is the URL path segment; DoT and DoQ are not published.
+func expandUBlockDNS(variant string, proto Protocol, id string) (ep Endpoints, err error) {
+	switch variant {
+	case "", "profile":
+	default:
+		return Endpoints{}, fmt.Errorf("%w: ublockdns/%s", ErrUnknownVariant, variant)
+	}
+	if strings.TrimSpace(id) == "" {
+		return Endpoints{}, fmt.Errorf("%w: ublockdns requires a profile id", ErrIDRequired)
+	}
+
+	scheme := "https://"
+	if proto == DoH3 {
+		scheme = "h3://"
+	}
+	ep.Upstreams = []string{scheme + "my.ublockdns.com/" + id}
+	ep.Bootstrap = append([]string{}, uBlockDNSBootstrap...)
+
+	return ep, nil
 }
 
 // dohURL returns a DoH URL for host.
@@ -565,6 +732,8 @@ func providerForHost(host string) (provider string) {
 		return NextDNS
 	case host == "controld.com" || strings.HasSuffix(host, ".controld.com"):
 		return ControlD
+	case host == "my.ublockdns.com":
+		return UBlockDNS
 	default:
 		return ""
 	}
@@ -695,9 +864,15 @@ func extractOne(provider string, proto Protocol, upstream string) (id string, ok
 		}
 
 		return firstHostLabel(host, "dns.controld.com")
+	case UBlockDNS:
+		if !isDoH(proto) || host != "my.ublockdns.com" {
+			return "", false
+		}
+
+		return decodePathID(u.EscapedPath())
 	default:
-		// Cloudflare and Quad9 are public, id-less providers: an id is neither
-		// required nor extractable.
+		// Cloudflare, AdGuard, Quad9 and OpenBLD are public, id-less providers:
+		// an id is neither required nor extractable.
 		return "", false
 	}
 }

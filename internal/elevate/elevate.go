@@ -643,7 +643,9 @@ func applyProfilePatch(p *config.Profile, pp ProfilePatch) (err error) {
 	}
 
 	if pp.Bootstrap != nil {
-		p.Bootstrap = append([]string(nil), (*pp.Bootstrap)...)
+		// Clone keeps an explicit empty list empty: normalize() only fills an
+		// absent (nil) list, so a provider with no bootstrap stays bootstrap-free.
+		p.Bootstrap = slices.Clone(*pp.Bootstrap)
 	}
 
 	if pp.FallbackProfile != nil {

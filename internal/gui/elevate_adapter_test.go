@@ -7,6 +7,7 @@ import (
 
 	"github.com/daika7ana/sigil-dns/internal/elevate"
 	"github.com/daika7ana/sigil-dns/internal/ipc"
+	"github.com/daika7ana/sigil-dns/internal/providers"
 )
 
 // TestElevateActionFor covers the full GUI-action -> elevate.Action mapping.
@@ -116,6 +117,29 @@ func TestSavePatchMapping(t *testing.T) {
 		}
 		if pp.Cache.SizeBytes == nil || *pp.Cache.SizeBytes != 32<<20 {
 			t.Errorf("cache size = %v", pp.Cache.SizeBytes)
+		}
+	})
+
+	t.Run("bootstrap-free provider clears the list", func(t *testing.T) {
+		// The editor blanked the box for a provider that has no bootstrap; the
+		// previous provider's addresses must not survive on disk.
+		req := saveRequest(t, profileDraft{
+			name: "work", provider: providers.OpenBLD, variant: "ada", protocol: "doh",
+		})
+		pp := req.Patch.Profiles["work"]
+		if pp.Bootstrap == nil || len(*pp.Bootstrap) != 0 {
+			t.Fatalf("bootstrap = %v, want an explicit empty list", ptrSlice(pp.Bootstrap))
+		}
+	})
+
+	t.Run("unexpandable selection leaves the list alone", func(t *testing.T) {
+		// No id yet: the editor cannot know the endpoints, so keep (SPEC §15.2).
+		req := saveRequest(t, profileDraft{
+			name: "work", provider: providers.NextDNS, variant: "ultralow", protocol: "doh",
+		})
+		pp := req.Patch.Profiles["work"]
+		if pp.Bootstrap != nil {
+			t.Fatalf("bootstrap = %v, want nil (keep)", ptrSlice(pp.Bootstrap))
 		}
 	})
 

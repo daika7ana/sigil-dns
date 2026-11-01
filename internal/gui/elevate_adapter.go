@@ -190,7 +190,16 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 		}
 	}
 
-	if bs := parseBootstrap(d.bootstrap); len(bs) > 0 {
+	// Bootstrap is omitted only when the editor cannot say what it should be
+	// (custom, or a selection that does not expand yet).  An empty box for a
+	// provider that legitimately has no bootstrap (OpenBLD, NextDNS ultralow)
+	// must clear the stored list instead of keeping the previous provider's
+	// addresses.
+	bs := parseBootstrap(d.bootstrap)
+	if len(bs) > 0 {
+		pp.Bootstrap = &bs
+	} else if ep, ok := expansion(&d); ok && len(ep.Bootstrap) == 0 {
+		bs = []string{} // non-nil, so it clears the list instead of marshalling null
 		pp.Bootstrap = &bs
 	}
 

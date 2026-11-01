@@ -146,6 +146,165 @@ func TestExpandCloudflare(t *testing.T) {
 	}
 }
 
+func TestExpandAdGuard(t *testing.T) {
+	defaultBoot := []string{"94.140.14.14", "94.140.15.15", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"}
+	familyBoot := []string{"94.140.14.15", "94.140.15.16", "2a10:50c0::bad1:ff", "2a10:50c0::bad2:ff"}
+	unfilteredBoot := []string{"94.140.14.140", "94.140.14.141", "2a10:50c0::1:ff", "2a10:50c0::2:ff"}
+
+	cases := []struct {
+		name      string
+		variant   string
+		proto     Protocol
+		upstreams []string
+		bootstrap []string
+	}{
+		{"default_doh", "default", DoH, []string{"https://dns.adguard-dns.com/dns-query"}, defaultBoot},
+		{"default_dot", "default", DoT, []string{"tls://dns.adguard-dns.com:853"}, defaultBoot},
+		{"default_doq", "default", DoQ, []string{"quic://dns.adguard-dns.com:853"}, defaultBoot},
+		{"default_doh3", "default", DoH3, []string{"h3://dns.adguard-dns.com/dns-query"}, defaultBoot},
+		{"family_doh", "family", DoH, []string{"https://family.adguard-dns.com/dns-query"}, familyBoot},
+		{"unfiltered_doh", "unfiltered", DoH, []string{"https://unfiltered.adguard-dns.com/dns-query"}, unfilteredBoot},
+		{"empty_variant_defaults_default", "", DoH, []string{"https://dns.adguard-dns.com/dns-query"}, defaultBoot},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, err := Expand(Selection{Provider: AdGuard, Variant: tc.variant, Protocol: tc.proto})
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if !slices.Equal(ep.Upstreams, tc.upstreams) {
+				t.Errorf("upstreams = %v, want %v", ep.Upstreams, tc.upstreams)
+			}
+			if !slices.Equal(ep.Bootstrap, tc.bootstrap) {
+				t.Errorf("bootstrap = %v, want %v", ep.Bootstrap, tc.bootstrap)
+			}
+		})
+	}
+
+	if _, err := Expand(Selection{Provider: AdGuard, Variant: "bogus"}); !errors.Is(err, ErrUnknownVariant) {
+		t.Errorf("unknown adguard variant: got %v, want ErrUnknownVariant", err)
+	}
+}
+
+func TestExpandGoogle(t *testing.T) {
+	boot := []string{"8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"}
+
+	cases := []struct {
+		name      string
+		variant   string
+		proto     Protocol
+		upstreams []string
+	}{
+		{"standard_doh", "standard", DoH, []string{"https://dns.google/dns-query"}},
+		{"standard_doh3", "standard", DoH3, []string{"h3://dns.google/dns-query"}},
+		{"standard_dot", "standard", DoT, []string{"tls://dns.google:853"}},
+		{"empty_variant_defaults_standard", "", DoH, []string{"https://dns.google/dns-query"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, err := Expand(Selection{Provider: Google, Variant: tc.variant, Protocol: tc.proto})
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if !slices.Equal(ep.Upstreams, tc.upstreams) {
+				t.Errorf("upstreams = %v, want %v", ep.Upstreams, tc.upstreams)
+			}
+			if !slices.Equal(ep.Bootstrap, boot) {
+				t.Errorf("bootstrap = %v, want %v", ep.Bootstrap, boot)
+			}
+		})
+	}
+
+	if _, err := Expand(Selection{Provider: Google, Variant: "bogus"}); !errors.Is(err, ErrUnknownVariant) {
+		t.Errorf("unknown google variant: got %v, want ErrUnknownVariant", err)
+	}
+	if _, err := Expand(Selection{Provider: Google, Protocol: DoQ}); !errors.Is(err, ErrUnknownProtocol) {
+		t.Errorf("google doq: got %v, want ErrUnknownProtocol", err)
+	}
+}
+
+func TestExpandOpenBLD(t *testing.T) {
+	cases := []struct {
+		name      string
+		variant   string
+		proto     Protocol
+		upstreams []string
+	}{
+		{"ada_doh", "ada", DoH, []string{"https://ada.openbld.net/dns-query"}},
+		{"ada_dot", "ada", DoT, []string{"tls://ada.openbld.net:853"}},
+		{"ric_doh", "ric", DoH, []string{"https://ric.openbld.net/dns-query"}},
+		{"ric_dot", "ric", DoT, []string{"tls://ric.openbld.net:853"}},
+		{"empty_variant_defaults_ada", "", DoH, []string{"https://ada.openbld.net/dns-query"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, err := Expand(Selection{Provider: OpenBLD, Variant: tc.variant, Protocol: tc.proto})
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if !slices.Equal(ep.Upstreams, tc.upstreams) {
+				t.Errorf("upstreams = %v, want %v", ep.Upstreams, tc.upstreams)
+			}
+			if len(ep.Bootstrap) != 0 {
+				t.Errorf("bootstrap = %v, want none", ep.Bootstrap)
+			}
+		})
+	}
+
+	if _, err := Expand(Selection{Provider: OpenBLD, Variant: "bogus"}); !errors.Is(err, ErrUnknownVariant) {
+		t.Errorf("unknown openbld variant: got %v, want ErrUnknownVariant", err)
+	}
+	for _, proto := range []Protocol{DoQ, DoH3} {
+		if _, err := Expand(Selection{Provider: OpenBLD, Protocol: proto}); !errors.Is(err, ErrUnknownProtocol) {
+			t.Errorf("openbld %s: got %v, want ErrUnknownProtocol", proto, err)
+		}
+	}
+}
+
+func TestExpandUBlockDNS(t *testing.T) {
+	const id = "abcd1234"
+	wantBoot := []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"}
+
+	cases := []struct {
+		name      string
+		proto     Protocol
+		upstreams []string
+	}{
+		{"doh", DoH, []string{"https://my.ublockdns.com/" + id}},
+		{"doh3", DoH3, []string{"h3://my.ublockdns.com/" + id}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, err := Expand(Selection{Provider: UBlockDNS, Variant: "profile", Protocol: tc.proto, ID: id})
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if !slices.Equal(ep.Upstreams, tc.upstreams) {
+				t.Errorf("upstreams = %v, want %v", ep.Upstreams, tc.upstreams)
+			}
+			if !slices.Equal(ep.Bootstrap, wantBoot) {
+				t.Errorf("bootstrap = %v, want %v", ep.Bootstrap, wantBoot)
+			}
+		})
+	}
+
+	if _, err := Expand(Selection{Provider: UBlockDNS, Variant: "profile"}); !errors.Is(err, ErrIDRequired) {
+		t.Errorf("missing id: got %v, want ErrIDRequired", err)
+	}
+	if _, err := Expand(Selection{Provider: UBlockDNS, Variant: "bogus", ID: id}); !errors.Is(err, ErrUnknownVariant) {
+		t.Errorf("unknown variant: got %v, want ErrUnknownVariant", err)
+	}
+	for _, proto := range []Protocol{DoT, DoQ} {
+		if _, err := Expand(Selection{Provider: UBlockDNS, Protocol: proto, ID: id}); !errors.Is(err, ErrUnknownProtocol) {
+			t.Errorf("ublockdns %s: got %v, want ErrUnknownProtocol", proto, err)
+		}
+	}
+}
+
 func TestExpandNextDNS(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -379,6 +538,11 @@ func TestExtractID(t *testing.T) {
 		{"cloudflare_dot", Cloudflare, DoT, []string{"tls://1dot1dot1dot1.cloudflare-dns.com:853"}, "", ErrNoID},
 		{"cloudflare_doq", Cloudflare, DoQ, []string{"quic://cloudflare-dns.com:853"}, "", ErrNoID},
 		{"cloudflare_security", Cloudflare, DoH, []string{"https://security.cloudflare-dns.com/dns-query"}, "", ErrNoID},
+		{"ublockdns_doh", UBlockDNS, DoH, []string{"https://my.ublockdns.com/abc123"}, "abc123", nil},
+		{"ublockdns_dot", UBlockDNS, DoT, []string{"tls://my.ublockdns.com:853"}, "", ErrNoID},
+		{"adguard", AdGuard, DoH, []string{"https://dns.adguard-dns.com/dns-query"}, "", ErrNoID},
+		{"google", Google, DoH, []string{"https://dns.google/dns-query"}, "", ErrNoID},
+		{"openbld", OpenBLD, DoH, []string{"https://ada.openbld.net/dns-query"}, "", ErrNoID},
 		{"empty", NextDNS, DoH, nil, "", ErrNoID},
 	}
 
@@ -422,6 +586,9 @@ func TestExtractIDs(t *testing.T) {
 		{"metadata absent doh", "", "", []string{"https://dns.nextdns.io/abc123"}, []string{"abc123"}},
 		{"metadata absent h3", "", "", []string{"h3://dns.nextdns.io/abc123"}, []string{"abc123"}},
 		{"metadata absent dot", "", "", []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
+		{"ublockdns metadata absent", "", "", []string{"https://my.ublockdns.com/abc123"}, []string{"abc123"}},
+		{"adguard not seeded", "", "", []string{"https://dns.adguard-dns.com/dns-query"}, nil},
+		{"openbld not seeded", "", "", []string{"https://ada.openbld.net/dns-query"}, nil},
 		{"scheme overrides wrong proto", NextDNS, DoH, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
 		{"custom provider known dot host", Custom, DoT, []string{"tls://abc123.dns.nextdns.io:853"}, []string{"abc123"}},
 		{"mismatched provider cross dot host", NextDNS, DoT, []string{"tls://xyz789.dns.controld.com:853"}, []string{"xyz789"}},
@@ -495,5 +662,40 @@ func TestRegistryECSMarked(t *testing.T) {
 	}
 	if ecs["secure"] || ecs["noblock"] {
 		t.Error("non-ECS variants incorrectly marked as leaking")
+	}
+}
+
+// TestRegistryProtocolsExpand proves the advertised transport list and the
+// expanders cannot drift: every protocol a provider publishes must expand to a
+// URL of that transport.  A provider listing a transport it cannot build would
+// otherwise ship a profile that silently resolves nothing.
+func TestRegistryProtocolsExpand(t *testing.T) {
+	for _, p := range Registry() {
+		if p.Name == Custom {
+			// The custom provider takes its transport from the user's URL, so
+			// its list is only the set of accepted protocol metadata values.
+			continue
+		}
+		for _, proto := range p.Protocols {
+			ep, err := Expand(Selection{
+				Provider: p.Name,
+				Variant:  p.DefaultVariant,
+				Protocol: proto,
+				ID:       "abcd1234",
+			})
+			if err != nil {
+				t.Errorf("%s/%s: %v", p.Name, proto, err)
+
+				continue
+			}
+			if len(ep.Upstreams) != 1 {
+				t.Errorf("%s/%s: upstreams = %v, want one", p.Name, proto, ep.Upstreams)
+
+				continue
+			}
+			if got, ok := ProtocolForURL(ep.Upstreams[0]); !ok || got != proto {
+				t.Errorf("%s/%s: upstream %q is %q", p.Name, proto, ep.Upstreams[0], got)
+			}
+		}
 	}
 }

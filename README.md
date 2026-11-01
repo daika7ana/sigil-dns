@@ -31,8 +31,9 @@ terminal? Every command is there too.
 - **Encrypts your DNS system-wide.** A catch-all NRPT rule covers all namespaces
   (per-domain bypass rules add more-specific no-nameserver exemptions), so
   normal apps get encrypted lookups without any per-app or per-adapter setup.
-- **Lets you choose the resolver.** Quad9, Cloudflare, NextDNS, ControlD, or any
-  custom DoH / DoT / DoQ URL.
+- **Lets you choose the resolver.** Quad9, Cloudflare, AdGuard DNS, Google
+  Public DNS, NextDNS, ControlD, OpenBLD, uBlockDNS, or any custom
+  DoH / DoT / DoQ URL.
 - **Routes by domain.** dnsmasq-style rules — send `corp.example` to an internal
   resolver while everything else goes to your provider.
 - **Blocks locally.** hosts-format and AdGuard/ABP lists via
@@ -46,8 +47,8 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 
 ## Features
 
-- **Providers** — Quad9, Cloudflare, NextDNS, ControlD, or any custom
-  DoH/DoH3/DoT/DoQ URL.
+- **Providers** — Quad9, Cloudflare, AdGuard DNS, Google Public DNS, NextDNS,
+  ControlD, OpenBLD, uBlockDNS, or any custom DoH/DoH3/DoT/DoQ URL.
 - **Encrypted upstreams** — DoH, DoH3 (HTTP/3, `h3://host/dns-query`), DoT, and
   DoQ (`quic://host:853`).
 - **Per-domain routing** — dnsmasq-style rules, applied before the upstream:
@@ -306,15 +307,20 @@ Run `sigildns providers list` for the live catalog.
 |---|---|---|
 | `quad9` | `secure` (default), `noblock`, `secure-ecs`, `noblock-ecs` | `*-ecs` variants send EDNS Client Subnet and leak a network prefix. |
 | `cloudflare` | `standard` (default), `security`, `family` | 1.1.1.1 / 1.1.1.2 (malware) / 1.1.1.3 (malware + adult). No id. |
+| `adguard` | `default` (default), `family`, `unfiltered` | Ads/trackers, family + safe search, or no filtering. No id. |
+| `google` | `standard` | Unfiltered Google Public DNS. No id, no DoQ. |
 | `nextdns` | `ultralow` (default), `anycast` | Requires an id (`--id` prompt or `--id-file`). `ultralow` uses no bootstrap (best routing); `anycast` pins anycast IPs. |
 | `controld` | `custom` (default), `p0`–`p3`, `x-oisd`, `x-stevenblack`, `x-adguard`, `family`, `uncensored`, `x-hagezi`, `free` | `custom`, `x-hagezi`, and `free` require an id (`--id` prompt or `--id-file`). Free presets share bootstrap IPs. |
+| `openbld` | `ada` (default), `ric` | Adaptive or strict filtering. DoH/DoT only, and no bootstrap (OpenBLD publishes no resolver IPs). |
+| `ublockdns` | `profile` | Requires a profile id (`--id` prompt or `--id-file`). DoH/DoH3 only: `https://my.ublockdns.com/<id>`. |
 | `custom` | `custom` | Raw user-entered `--upstream` URL + optional `--bootstrap`. |
 
-Every preset offers **DoH, DoH3, DoT, and DoQ** (DoH3 is HTTP/3-only over
-UDP/443, and needs the provider to serve HTTP/3), and every preset that uses a
-bootstrap configures **both IPv4 and IPv6** addresses — including Cloudflare
-`security` and `family`. The one exception is NextDNS `ultralow`, which
-deliberately uses no bootstrap so it can pick the closest anycast node.
+Most presets offer **DoH, DoH3, DoT, and DoQ** (DoH3 is HTTP/3-only over
+UDP/443, and needs the provider to serve HTTP/3); Google Public DNS offers
+DoH/DoH3/DoT, OpenBLD DoH/DoT, and uBlockDNS DoH/DoH3. Every preset that uses a bootstrap configures **both IPv4
+and IPv6** addresses — including Cloudflare `security` and `family`. NextDNS
+`ultralow` and OpenBLD deliberately use no bootstrap: `ultralow` can then pick
+the closest anycast node, and OpenBLD publishes no stable resolver IPs.
 
 ---
 

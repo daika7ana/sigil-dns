@@ -1136,8 +1136,34 @@ func setDraftProvider(vals []string, ctx gogui.EventCtx) {
 	updateDraft(ctx, func(d *profileDraft) {
 		d.provider = name
 		d.variant = defaultVariant(name)
+		d.protocol = supportedProtocol(name, d.protocol)
 		syncBootstrap(d)
 	})
+}
+
+// supportedProtocol clamps the draft transport to one the provider publishes,
+// so switching from a DoQ profile to a DoH-only provider cannot leave an
+// impossible combination selected.
+func supportedProtocol(provider, protocol string) (out string) {
+	// Blank means "the provider default" everywhere else in the app, so it is
+	// left alone rather than pinned to the first published transport.
+	if protocol == "" {
+		return ""
+	}
+
+	p, ok := providers.Lookup(provider)
+	if !ok {
+		return protocol
+	}
+
+	if slices.Contains(p.Protocols, providers.Protocol(protocol)) {
+		return protocol
+	}
+	if len(p.Protocols) > 0 {
+		return string(p.Protocols[0])
+	}
+
+	return protocol
 }
 
 // setSelectedProfile switches which profile the editor shows, seeding the
@@ -1424,6 +1450,14 @@ func providerLabel(name string) (label string) {
 		return "Quad9"
 	case providers.Cloudflare:
 		return "Cloudflare"
+	case providers.AdGuard:
+		return "AdGuard DNS"
+	case providers.Google:
+		return "Google Public DNS"
+	case providers.OpenBLD:
+		return "OpenBLD"
+	case providers.UBlockDNS:
+		return "uBlockDNS"
 	case providers.NextDNS:
 		return "NextDNS"
 	case providers.ControlD:
@@ -1465,6 +1499,8 @@ func resolverIDHint(provider, variant string) (hint string) {
 		return "Enter the Hagezi list name, for example x-hagezi-pro or x-hagezi-pro-plus."
 	case provider == providers.ControlD && variant == "free":
 		return "Enter the ControlD free preset name."
+	case provider == providers.UBlockDNS:
+		return "Enter your uBlockDNS profile ID."
 	}
 
 	return "Leave blank to keep the current Resolver ID."
@@ -1482,6 +1518,13 @@ var variantLabels = map[string]string{
 	"cloudflare/standard":    "Unfiltered",
 	"cloudflare/security":    "Malware blocking",
 	"cloudflare/family":      "Malware and adult-content blocking",
+	"adguard/default":        "Ads, trackers, and malware blocked",
+	"adguard/family":         "Adult content and safe search",
+	"adguard/unfiltered":     "No filtering",
+	"google/standard":        "No filtering",
+	"openbld/ada":            "Adaptive filtering, recommended",
+	"openbld/ric":            "Strict filtering",
+	"ublockdns/profile":      "Filtering from your profile",
 	"nextdns/ultralow":       "Fastest routing, uses system DNS once",
 	"nextdns/anycast":        "Fixed anycast addresses, slower routing",
 	"controld/p0":            "Unfiltered",
@@ -1529,9 +1572,14 @@ func variantOptions(provider string) (opts []gogui.SelectOption) {
 	return opts
 }
 
-// protocolOptions lists the supported transports.
-func protocolOptions() (opts []gogui.SelectOption) {
-	for _, p := range providers.Protocols() {
+// protocolOptions lists the transports the selected provider publishes.
+func protocolOptions(provider string) (opts []gogui.SelectOption) {
+	list := providers.Protocols()
+	if p, ok := providers.Lookup(provider); ok {
+		list = p.Protocols
+	}
+
+	for _, p := range list {
 		opts = append(opts, gogui.NewSelectOption(protocolLabel(p), string(p)))
 	}
 
@@ -1544,7 +1592,7 @@ func protocolOptions() (opts []gogui.SelectOption) {
 func protocolSelect(d profileDraft, disabled bool, floor float32) gogui.View {
 	return formSelect(gogui.SelectCfg{
 		ID: "gui:edit:protocol", Label: "Protocol",
-		Options: protocolOptions(), Selected: one(d.protocol),
+		Options: protocolOptions(d.provider), Selected: one(d.protocol),
 		Disabled: disabled,
 		OnSelect: func(vals []string, ctx gogui.EventCtx) {
 			updateDraft(ctx, func(d *profileDraft) {

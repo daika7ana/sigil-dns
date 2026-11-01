@@ -741,6 +741,52 @@ func TestProtocolSelectCarriesProtocol(t *testing.T) {
 	}
 }
 
+// TestProtocolOptionsFollowProvider proves the Protocol menu offers exactly the
+// transports the selected provider publishes, so the editor can never present
+// a choice the helper would then reject.
+func TestProtocolOptionsFollowProvider(t *testing.T) {
+	for _, p := range providers.Registry() {
+		if p.Name == providers.Custom {
+			continue // every transport is accepted metadata for a raw URL
+		}
+
+		var got, want []string
+		for _, opt := range protocolOptions(p.Name) {
+			got = append(got, opt.Value)
+		}
+		for _, proto := range p.Protocols {
+			want = append(want, string(proto))
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s protocols = %v, want %v", p.Name, got, want)
+		}
+	}
+}
+
+// TestProviderSwitchClampsProtocol proves switching to a provider that does not
+// serve the current transport moves the draft to one it does, and that a
+// supported pick survives the switch.
+func TestProviderSwitchClampsProtocol(t *testing.T) {
+	app := settingsApp()
+	app.draft = profileDraft{
+		name: "default", provider: providers.Quad9, variant: "secure", protocol: "doq",
+	}
+	app.seeded = true // keep the hand-built draft
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+
+	setDraftProvider([]string{providers.Cloudflare}, gogui.EventCtx{Window: w})
+	if app.draft.protocol != "doq" {
+		t.Fatalf("cloudflare kept protocol = %q, want doq", app.draft.protocol)
+	}
+
+	setDraftProvider([]string{providers.UBlockDNS}, gogui.EventCtx{Window: w})
+	if app.draft.protocol != "doh" {
+		t.Fatalf("ublockdns protocol = %q, want doh", app.draft.protocol)
+	}
+}
+
 // TestBootstrapSync proves the editor recomputes the bootstrap list when the
 // provider changes, and leaves it alone when the selection cannot be expanded.
 // This is the reported bug: the ControlD default 76.76.2.11:53 stuck in the box
@@ -895,6 +941,7 @@ func TestResolverIDHint(t *testing.T) {
 		{"controld custom", "controld", "custom", "Enter the profile ID from your ControlD dashboard."},
 		{"controld hagezi", "controld", "x-hagezi", "Enter the Hagezi list name, for example x-hagezi-pro or x-hagezi-pro-plus."},
 		{"controld free", "controld", "free", "Enter the ControlD free preset name."},
+		{"ublockdns", providers.UBlockDNS, "profile", "Enter your uBlockDNS profile ID."},
 		{"unknown fails neutral", "mystery", "whatever", "Leave blank to keep the current Resolver ID."},
 	}
 
@@ -929,8 +976,12 @@ func TestProviderOptionsUseHumanNames(t *testing.T) {
 	want := map[string]string{
 		providers.Quad9:      "Quad9",
 		providers.Cloudflare: "Cloudflare",
+		providers.AdGuard:    "AdGuard DNS",
+		providers.Google:     "Google Public DNS",
 		providers.NextDNS:    "NextDNS",
 		providers.ControlD:   "ControlD",
+		providers.OpenBLD:    "OpenBLD",
+		providers.UBlockDNS:  "uBlockDNS",
 		providers.Custom:     "Custom",
 	}
 

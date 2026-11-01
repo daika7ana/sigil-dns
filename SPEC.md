@@ -13,7 +13,8 @@ separates what exists from what is deliberately deferred.
 ## 1. Goal
 
 A Windows app giving the user system-wide encrypted DNS (DoH/DoT/DoQ) to a
-chosen provider (Quad9, Cloudflare, NextDNS, ControlD, custom), with per-domain
+chosen provider (Quad9, Cloudflare, AdGuard DNS, Google Public DNS, NextDNS,
+ControlD, OpenBLD, uBlockDNS, custom), with per-domain
 routing rules and blocklists — the practical feature set of YogaDNS, without a
 kernel driver.
 
@@ -305,7 +306,9 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
 ## 7. Providers (presets)
 
 Presets are **dual-stack** (IPv4 + IPv6) and each exposes: filtering variant,
-protocol (DoH/DoH3/DoT/**DoQ**), bootstrap mode, and profile/client id. Endpoints were
+protocol (from DoH, DoH3, DoT, **DoQ**), bootstrap mode, and profile/client id.
+Some providers publish only a subset (OpenBLD: DoH/DoT; uBlockDNS: DoH/DoH3), and an
+unsupported protocol is rejected rather than expanded. Endpoints were
 verified against provider documentation (2026-10).
 
 ### 7.1 Quad9 — 4 variants (all validate DNSSEC since 2026-06-15)
@@ -367,16 +370,64 @@ verified against provider documentation (2026-10).
   **Never ship a shared/preset id as the user's own.** The custom DoQ hostname
   is inferred (`<id>.dns.controld.com`), not documented.
 
-### 7.5 Dual-stack requirement (all presets)
+### 7.5 AdGuard DNS — 3 variants (id-less)
+| Variant | Filtering | Host | IPv4 | IPv6 |
+|---|---|---|---|---|
+| Default | ads, trackers, malware | `dns.adguard-dns.com` | `94.140.14.14`, `94.140.15.15` | `2a10:50c0::ad1:ff`, `2a10:50c0::ad2:ff` |
+| Family | default + adult + safe search | `family.adguard-dns.com` | `94.140.14.15`, `94.140.15.16` | `2a10:50c0::bad1:ff`, `2a10:50c0::bad2:ff` |
+| Unfiltered | none | `unfiltered.adguard-dns.com` | `94.140.14.140`, `94.140.14.141` | `2a10:50c0::1:ff`, `2a10:50c0::2:ff` |
+
+- DoH `https://<host>/dns-query`, DoT `tls://<host>:853`, DoQ
+  `quic://<host>:853`, DoH3 `h3://<host>/dns-query`.
+- No resolver id (public preset). A device-specific profile from the AdGuard
+  dashboard remains available through the custom provider.
+
+### 7.6 OpenBLD — 2 variants (no bootstrap)
+| Variant | Filtering | DoH | DoT |
+|---|---|---|---|
+| ADA (default) | adaptive, allows most services | `https://ada.openbld.net/dns-query` | `ada.openbld.net:853` |
+| RIC | strict | `https://ric.openbld.net/dns-query` | `ric.openbld.net:853` |
+
+- Only DoH and DoT are published (`ada`/`ric`); no DoQ or DoH3.
+- OpenBLD publishes **no resolver IPs** (its IPv4/IPv6 service is listed as
+  under maintenance and addresses may change), so there is no bootstrap: the
+  hostname needs the system resolver once, exactly like NextDNS `ultralow`.
+  Prefer DoH/DoT and do not pin an IP.
+- Free for private use; rate-limited to ~100 queries/s per IP.
+
+### 7.7 uBlockDNS — 1 variant (requires an id)
+- DoH `https://my.ublockdns.com/<profile-id>`; DoH3
+  `h3://my.ublockdns.com/<profile-id>` (same endpoint over HTTP/3). The profile
+  id is the URL path segment; filter lists and custom rules are configured in
+  the uBlockDNS dashboard. Allowed id characters: `A–Z a–z 0–9 - _`, up to 64;
+  dashboard ids are 8 characters, and a non-profile path returns the website
+  instead of a DNS answer.
+- `my.ublockdns.com` sits behind Cloudflare with rotating edge IPs, so the
+  entry is bootstrapped with Quad9 (`9.9.9.9`, `149.112.112.112`;
+  `2620:fe::fe`, `2620:fe::9`) rather than a pinned uBlockDNS address.
+- DoT and DoQ are not published (port 853 is not served), so both are rejected
+  for this provider.
+
+### 7.8 Google Public DNS — 1 variant (id-less)
+- DoH `https://dns.google/dns-query`, DoH3 `h3://dns.google/dns-query`,
+  DoT `tls://dns.google:853`. DoQ is not published.
+- IPv4 `8.8.8.8`/`8.8.4.4`, IPv6 `2001:4860:4860::8888`/`2001:4860:4860::8844`;
+  these are also the bootstrap addresses.
+- One unfiltered preset, no resolver id. Google is a logging resolver
+  (anonymized retention), unlike the no-log presets above; it is offered as the
+  common DoH baseline, not as a privacy recommendation.
+
+### 7.9 Dual-stack requirement (all presets)
 - The resolver listens on `127.0.0.1:53` **and** `[::1]:53`.
 - Every preset configures **both** IPv4 and IPv6 endpoints and **both** bootstrap
-  families. (NextDNS `ultralow` is the deliberate no-bootstrap exception.)
+  families. (NextDNS `ultralow` and OpenBLD are the deliberate no-bootstrap
+  exceptions: neither provider publishes stable resolver IPs.)
 - The health check runs **per family** (§9); an IPv6-disabled host must not abort
   enable (skip v6, warn).
 - `EnableEDNSClientSubnet` is **off** by default (only explicit `*ECS` Quad9
   variants enable it).
 
-### 7.6 Custom
+### 7.10 Custom
 User-entered DoH/DoH3/DoT URL plus optional bootstrap (v4/v6). Raw upstream escape
 hatch for power users.
 

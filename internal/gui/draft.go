@@ -78,7 +78,7 @@ func draftForProfile(p ipc.ProfileSummary) profileDraft {
 		name:        p.Name,
 		provider:    p.Provider,
 		variant:     p.Variant,
-		protocol:    p.Protocol,
+		protocol:    supportedProtocol(p.Provider, p.Protocol),
 		id:          "",
 		url:         "",
 		bootstrap:   strings.Join(p.Bootstrap, ", "),
@@ -104,7 +104,7 @@ func draftFromActiveProfile(sum *ipc.ConfigSummary) profileDraft {
 		name:        sum.Profile,
 		provider:    sum.Provider,
 		variant:     sum.Variant,
-		protocol:    sum.Protocol,
+		protocol:    supportedProtocol(sum.Provider, sum.Protocol),
 		id:          "",
 		url:         "",
 		bootstrap:   strings.Join(sum.Bootstrap, ", "),
@@ -255,17 +255,14 @@ func parseBootstrap(s string) (out []string) {
 	return out
 }
 
-// syncBootstrap refreshes the editor's bootstrap list from the expansion of the
-// current provider/variant/protocol selection.  Switching provider, variant,
-// protocol, or typing a resolver id recomputes it, so the box never keeps the
-// previous profile's addresses (the ControlD default used to stick there for
-// every selection).  A selection that cannot be expanded — an id-requiring
-// provider with no id yet, or the custom provider, whose bootstrap the user
-// enters by hand — leaves the current value untouched.
-func syncBootstrap(d *profileDraft) {
+// expansion generates the endpoints for the draft's selection.  ok is false for
+// the custom provider (whose bootstrap the user enters by hand) and for a
+// selection that cannot be expanded yet, e.g. an id-requiring provider with an
+// empty id.
+func expansion(d *profileDraft) (ep providers.Endpoints, ok bool) {
 	provider := strings.TrimSpace(d.provider)
 	if provider == "" || provider == providers.Custom {
-		return
+		return providers.Endpoints{}, false
 	}
 
 	ep, err := providers.Expand(providers.Selection{
@@ -275,10 +272,22 @@ func syncBootstrap(d *profileDraft) {
 		ID:       strings.TrimSpace(d.id),
 	})
 	if err != nil {
-		return
+		return providers.Endpoints{}, false
 	}
 
-	d.bootstrap = strings.Join(ep.Bootstrap, ", ")
+	return ep, true
+}
+
+// syncBootstrap refreshes the editor's bootstrap list from the expansion of the
+// current provider/variant/protocol selection.  Switching provider, variant,
+// protocol, or typing a resolver id recomputes it, so the box never keeps the
+// previous profile's addresses (the ControlD default used to stick there for
+// every selection).  A selection that cannot be expanded leaves the current
+// value untouched.
+func syncBootstrap(d *profileDraft) {
+	if ep, ok := expansion(d); ok {
+		d.bootstrap = strings.Join(ep.Bootstrap, ", ")
+	}
 }
 
 // parseMiB reads a cache size in MiB.  A blank or invalid value is 0, which

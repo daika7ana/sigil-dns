@@ -39,7 +39,7 @@ To turn protection off, stop the service (`sigildns service stop` or the GUI
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `upstreams` | list of strings | `["https://freedns.controld.com/p0"]` | Required, non-empty; each entry non-empty. |
-| `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow); an omitted list gets the default. |
+| `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow, OpenBLD); an omitted list gets the default. |
 | `fallback_profile` | string | empty | Optional name of another profile; see below. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
