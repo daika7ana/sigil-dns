@@ -98,6 +98,13 @@ type Lifecycle struct {
 	newResolver func(ctx context.Context, cfg resolver.Config) (resolverHandle, error)
 	checkHealth func(ctx context.Context, t health.Target) health.Result
 	flushDNS    func(ctx context.Context)
+
+	// lookupHost proves the system resolver path reaches our listener; leakProbe
+	// checks whether the adapters' plain-DNS servers still answer directly;
+	// probeNRPT supplies the foreign-rule context for an unverified path.
+	lookupHost func(ctx context.Context, host string) ([]string, error)
+	leakProbe  func(ctx context.Context) (lk state.Leak)
+	probeNRPT  func(ctx context.Context) (st intercept.NRPTState, err error)
 }
 
 // New returns a Lifecycle for cfg.
@@ -115,10 +122,35 @@ func New(cfg Config) (l *Lifecycle) {
 		pauseDuration: FilteringPauseDuration,
 		newResolver:   func(ctx context.Context, c resolver.Config) (resolverHandle, error) { return resolver.New(ctx, c) },
 		checkHealth:   health.Check,
+		lookupHost:    net.DefaultResolver.LookupHost,
+		probeNRPT:     intercept.ProbeNRPT,
 	}
 	l.flushDNS = l.flush
+	l.leakProbe = l.detectLeak
 
 	return l
+}
+
+// detectLeak probes the adapters' plain-DNS servers with a bounded timeout.  A
+// failed probe is a warning, not an enable failure: it yields an unchecked
+// result, so the status simply carries no leak claim.
+func (l *Lifecycle) detectLeak(ctx context.Context) (lk state.Leak) {
+	c, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	r, err := intercept.DetectLeak(c)
+	if err != nil {
+		l.logger.WarnContext(ctx, "plain-DNS leak probe failed", "err", err)
+
+		return state.Leak{}
+	}
+
+	return state.Leak{
+		Checked:   true,
+		Open:      r.Open,
+		Servers:   r.Servers,
+		CheckedAt: time.Now().UTC(),
+	}
 }
 
 // Enable binds the resolver, runs the health check, snapshots state, and
@@ -181,6 +213,8 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 4. Persist the atomic dirty marker.
+	lk := l.leakProbe(ctx)
+
 	st := &state.State{
 		SchemaVersion: state.SchemaVersion,
 		Mode:          state.ModeOn,
@@ -190,6 +224,9 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		Health:        toStateHealth(hr),
 		Bypass:        l.cfg.Bypass,
 		NameServers:   servers,
+	}
+	if lk.Checked {
+		st.Leak = &lk
 	}
 	if err = l.store.Save(st); err != nil {
 		_ = l.stopResolver(ctx)
@@ -216,12 +253,73 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 	// 6. Flush DNS.
 	l.flushDNS(ctx)
+
+	// 7. Prove the OS resolver (getaddrinfo → Dnscache → NRPT) actually reaches
+	// our listener.  A listener that only loopback clients can reach would leave
+	// "enabled" meaning "silently leaking".
+	if vErr := l.verifySystemPath(ctx, res.SyntheticName()); vErr != nil {
+		verifyErr := fmt.Errorf("verifying system DNS interception: %w", vErr)
+
+		// A foreign catch-all NRPT rule takes precedence on Windows.  SPEC §4.5
+		// says detect and warn, never fight it, and never refuse to run: the
+		// unverified path is explained, not a broken listener.
+		if obs, pErr := l.probeNRPT(ctx); pErr == nil && obs.CatchAllConflict {
+			l.logger.WarnContext(ctx,
+				"system DNS path answered outside Sigil DNS; a conflicting catch-all NRPT rule is present",
+				"err", vErr, "rules", obs.Conflicts,
+			)
+		} else {
+			l.logger.ErrorContext(ctx, "system DNS path unverified", "err", vErr)
+
+			// Same unwind as a failed interception apply: never leave
+			// interception pointing at a resolver we are about to stop.
+			if rErr := l.restore(ctx, false); rErr != nil {
+				return errors.Join(verifyErr, rErr)
+			}
+			if sErr := l.stopResolver(ctx); sErr != nil {
+				return errors.Join(verifyErr, sErr)
+			}
+
+			return verifyErr
+		}
+	}
+
 	// Never log upstreams: a DoT/DoQ URL carries the resolver id as a hostname
 	// label, so even redacted scheme+host leaks it.  Log the profile name and
 	// the upstream count instead.
 	l.logger.InfoContext(ctx, "enabled", "profile", l.cfg.ProfileName, "upstreams", len(l.upstreamsOrDefault()), "health", hr.Detail)
 
 	return nil
+}
+
+// verifySystemPath resolves name through the OS resolver until it returns one of
+// our synthetic answers, flushing the cache between attempts.  It proves the
+// whole system path — not just a direct loopback query — reaches Sigil DNS.
+func (l *Lifecycle) verifySystemPath(ctx context.Context, name string) (err error) {
+	const attempts = 3
+	for i := 0; i < attempts; i++ {
+		addrs, lErr := l.lookupHost(ctx, name)
+		if lErr == nil {
+			for _, a := range addrs {
+				if a == resolver.ProbeIPv4 || a == resolver.ProbeIPv6 {
+					return nil
+				}
+			}
+		}
+
+		if i == attempts-1 {
+			break
+		}
+
+		l.flushDNS(ctx)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+
+	return fmt.Errorf("system resolver did not return the loopback probe answer for %s after %d attempts", name, attempts)
 }
 
 // Disable restores interception, flushes, stops the resolver, and clears the

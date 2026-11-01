@@ -419,6 +419,16 @@ func sanitizeStatus(st *state.State) (dto StatusDTO) {
 		}
 	}
 
+	if st.Leak != nil {
+		dto.Leak = &LeakSummary{
+			Checked: st.Leak.Checked, Open: st.Leak.Open, Servers: st.Leak.Servers,
+		}
+		if !st.Leak.CheckedAt.IsZero() {
+			at := st.Leak.CheckedAt
+			dto.Leak.CheckedAt = &at
+		}
+	}
+
 	return dto
 }
 

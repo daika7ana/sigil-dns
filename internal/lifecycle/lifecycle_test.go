@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/health"
+	"github.com/daika7ana/sigil-dns/internal/intercept"
 	"github.com/daika7ana/sigil-dns/internal/resolver"
 	"github.com/daika7ana/sigil-dns/internal/state"
 )
@@ -123,6 +124,18 @@ func newTestEnv(t *testing.T) *testEnv {
 		return health.Result{OK: true, Ours: true, IPv4: true, Detail: "ok"}
 	}
 	lc.flushDNS = func(context.Context) { *events = append(*events, "flush") }
+
+	// The OS-resolver verification and the plain-DNS probe are hermetic: the
+	// probe name resolves to our synthetic answer and the leak verdict is fixed.
+	lc.lookupHost = func(context.Context, string) ([]string, error) {
+		return []string{resolver.ProbeIPv4}, nil
+	}
+	lc.leakProbe = func(context.Context) state.Leak {
+		return state.Leak{Checked: true, Open: true, Servers: []string{"203.0.113.1"}, CheckedAt: time.Now().UTC()}
+	}
+	lc.probeNRPT = func(context.Context) (intercept.NRPTState, error) {
+		return intercept.NRPTState{}, nil
+	}
 
 	// Windows cannot delete a file with an open handle, so a test that leaves a
 	// session enabled must release it before t.TempDir cleanup runs.
@@ -315,6 +328,11 @@ func TestLifecycleInvariants(t *testing.T) {
 				// NRPT must advertise only the addresses that actually bound.
 				if !reflect.DeepEqual(st.NameServers, []string{"127.0.0.1"}) {
 					t.Fatalf("NameServers = %v, want [127.0.0.1]", st.NameServers)
+				}
+				// The leak probe result is persisted so the status pipe can
+				// expose it.
+				if st.Leak == nil || !st.Leak.Checked || !st.Leak.Open || !reflect.DeepEqual(st.Leak.Servers, []string{"203.0.113.1"}) {
+					t.Fatalf("Leak = %+v, want checked+open+[203.0.113.1]", st.Leak)
 				}
 				if !reflect.DeepEqual(e.ic.servers, st.NameServers) {
 					t.Fatalf("intercept servers = %v, want %v", e.ic.servers, st.NameServers)
@@ -603,6 +621,38 @@ func TestEnableFailureRestoresWhenStateVanishes(t *testing.T) {
 	}
 }
 
+// TestEnableAbortsWhenSystemPathUnverified: a listener only loopback can reach
+// must not be reported as enabled.  The unwind is the same as a failed
+// interception apply: restore, stop the resolver, and leave a clean off state.
+func TestEnableAbortsWhenSystemPathUnverified(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.lookupHost = func(context.Context, string) ([]string, error) {
+		return []string{"203.0.113.9"}, nil
+	}
+
+	err := env.lc.Enable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "verifying system DNS interception") {
+		t.Fatalf("Enable err = %v, want a system-path verification error", err)
+	}
+	if env.ic.disabled != 1 {
+		t.Fatalf("intercept disable = %d, want 1", env.ic.disabled)
+	}
+	if env.lc.res != nil {
+		t.Fatal("resolver should have been stopped after the failed verification")
+	}
+	if env.lc.lock != nil {
+		t.Fatal("failed enable released the session lock")
+	}
+
+	st, lErr := env.store.Load()
+	if lErr != nil {
+		t.Fatalf("Load: %v", lErr)
+	}
+	if st.Mode != state.ModeOff || st.Dirty {
+		t.Fatalf("state = %+v, want mode=off dirty=false", st)
+	}
+}
+
 // TestClearCacheClearsResolver proves the cache action reaches the running
 // resolver, not only the OS cache.
 func TestClearCacheClearsResolver(t *testing.T) {
@@ -736,5 +786,60 @@ func TestPauseFilteringEarlyResumeCancelsExpiry(t *testing.T) {
 	}
 	if res.resumes != 1 {
 		t.Fatalf("resumes = %d, want 1", res.resumes)
+	}
+}
+
+// TestEnableToleratesCatchAllConflict: a foreign catch-all NRPT rule explains an
+// unverified system path (SPEC §4.5), so enable must warn and keep running
+// instead of stopping the service.
+func TestEnableToleratesCatchAllConflict(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.lookupHost = func(context.Context, string) ([]string, error) {
+		return []string{"203.0.113.9"}, nil
+	}
+	env.lc.probeNRPT = func(context.Context) (intercept.NRPTState, error) {
+		return intercept.NRPTState{CatchAllConflict: true, Conflicts: []string{"VPN|."}}, nil
+	}
+
+	if err := env.lc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if env.ic.disabled != 0 {
+		t.Fatalf("intercept disable = %d, want 0", env.ic.disabled)
+	}
+	if env.lc.resolver() == nil {
+		t.Fatal("resolver should stay up")
+	}
+	st, err := env.store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if st.Mode != state.ModeOn {
+		t.Fatalf("Mode = %q, want on", st.Mode)
+	}
+}
+
+// TestEnableRetriesSystemPath: a first lookup that misses is retried after a
+// flush, and an IPv6 probe answer is accepted.
+func TestEnableRetriesSystemPath(t *testing.T) {
+	env := newTestEnv(t)
+	calls := 0
+	env.lc.lookupHost = func(context.Context, string) ([]string, error) {
+		calls++
+		if calls == 1 {
+			return []string{"203.0.113.9"}, nil
+		}
+
+		return []string{resolver.ProbeIPv6}, nil
+	}
+
+	if err := env.lc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("lookup calls = %d, want 2", calls)
+	}
+	if n := countEvents(*env.events, "flush"); n != 2 {
+		t.Fatalf("flush events = %d, want 2 (initial + retry)", n)
 	}
 }

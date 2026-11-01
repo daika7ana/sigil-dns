@@ -116,7 +116,7 @@ func TestResolverBindsEphemeralAndAnswers(t *testing.T) {
 		t.Fatalf("synthetic probe: rcode=%s answers=%d", dns.RcodeToString[resp.Rcode], len(resp.Answer))
 	}
 	a, ok := resp.Answer[0].(*dns.A)
-	if !ok || a.A.String() != probeIPv4 {
+	if !ok || a.A.String() != ProbeIPv4 {
 		t.Fatalf("synthetic probe was not answered by the local handler: %v", resp.Answer)
 	}
 

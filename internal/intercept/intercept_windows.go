@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -96,9 +97,17 @@ func normalizeBypass(bypass []string) (namespaces []string) {
 // currentDNSServers returns every distinct non-loopback DNS server configured on
 // any interface.
 func currentDNSServers(ctx context.Context) (servers []string) {
+	servers, _ = detectServers(ctx)
+
+	return servers
+}
+
+// detectServers returns every distinct non-loopback DNS server configured on
+// any interface.  An enumeration failure is returned, never swallowed.
+func detectServers(ctx context.Context) (servers []string, err error) {
 	entries, err := snapshotAdapters(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	seen := map[string]bool{}
@@ -113,7 +122,25 @@ func currentDNSServers(ctx context.Context) (servers []string) {
 		}
 	}
 
-	return servers
+	return servers, nil
+}
+
+// DetectLeak reports whether the adapters' configured non-loopback DNS servers
+// answer plain DNS directly.  Enumeration failure is an error, never a false
+// "closed" result.
+func DetectLeak(ctx context.Context) (res LeakResult, err error) {
+	servers, err := detectServers(ctx)
+	if err != nil {
+		return LeakResult{}, err
+	}
+
+	addrs := make([]string, len(servers))
+	for i, s := range servers {
+		addrs[i] = net.JoinHostPort(s, "53")
+	}
+	answering := probePlainDNS(ctx, addrs)
+
+	return LeakResult{Servers: answering, Open: len(answering) > 0}, nil
 }
 
 // Disable implements Controller.  It removes only our rules and is idempotent.

@@ -481,11 +481,18 @@ func TestServeRequiresAuthorizer(t *testing.T) {
 }
 
 func TestStatusSanitized(t *testing.T) {
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	lc := &fakeLifecycle{st: &state.State{
 		Mode:      state.ModeOn,
 		Intercept: state.MechanismNRPT,
 		Upstream:  "https://dns.nextdns.io/SECRETID",
 		Dirty:     true,
+		Leak: &state.Leak{
+			CheckedAt: at,
+			Servers:   []string{"203.0.113.1"},
+			Checked:   true,
+			Open:      true,
+		},
 	}}
 	srv := NewServer(lc, nil).SanitizeStatus()
 
@@ -503,6 +510,12 @@ func TestStatusSanitized(t *testing.T) {
 	}
 	if !dto.Enabled || dto.Mode != string(state.ModeOn) || dto.Mechanism != string(state.MechanismNRPT) || !dto.Dirty {
 		t.Fatalf("DTO = %+v", dto)
+	}
+	if dto.Leak == nil || !dto.Leak.Checked || !dto.Leak.Open || len(dto.Leak.Servers) != 1 || dto.Leak.Servers[0] != "203.0.113.1" {
+		t.Fatalf("Leak = %+v, want checked+open+[203.0.113.1]", dto.Leak)
+	}
+	if dto.Leak.CheckedAt == nil || !dto.Leak.CheckedAt.Equal(at) {
+		t.Fatalf("Leak.CheckedAt = %v, want %v", dto.Leak.CheckedAt, at)
 	}
 }
 

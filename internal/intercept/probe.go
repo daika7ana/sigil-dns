@@ -5,6 +5,15 @@ import (
 	"strings"
 )
 
+// isCatchAllNamespace reports whether an NRPT namespace covers the root: ".",
+// the empty string, or the registry form "{.}".
+func isCatchAllNamespace(ns string) bool {
+	ns = strings.TrimSpace(ns)
+	ns = strings.Trim(ns, "{}")
+
+	return strings.Trim(ns, ".") == ""
+}
+
 // errProbeIncomplete means the probe did not finish enumerating rules.
 var errProbeIncomplete = errors.New("nrpt probe did not confirm enumeration")
 
@@ -34,7 +43,18 @@ func parseNRPTProbe(out string) (st NRPTState, err error) {
 			}
 			st.Servers[ns] = servers
 		case strings.HasPrefix(line, "foreign="):
-			st.Conflicts = append(st.Conflicts, strings.TrimPrefix(line, "foreign="))
+			foreign := strings.TrimPrefix(line, "foreign=")
+			st.Conflicts = append(st.Conflicts, foreign)
+
+			// foreign=<display>|<namespace list>; a catch-all there can outrank
+			// our root rule.
+			if _, nsList, ok := strings.Cut(foreign, "|"); ok {
+				for _, ns := range strings.Split(nsList, ",") {
+					if isCatchAllNamespace(ns) {
+						st.CatchAllConflict = true
+					}
+				}
+			}
 		case line == "ok=1":
 			sentinel = true
 		}
