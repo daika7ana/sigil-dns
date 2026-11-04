@@ -53,6 +53,13 @@ type Config struct {
 	// FallbackUpstreams/FallbackBootstrap answer when the upstreams above fail.
 	FallbackUpstreams []string
 	FallbackBootstrap []string
+
+	// FailoverAfter bounds the profile's own exchange, retries included;
+	// FallbackTimeout bounds the fallback profile's exchange.  FallbackProfile
+	// is the fallback profile's name, used only for the "fallback used" log.
+	FailoverAfter   time.Duration
+	FallbackTimeout time.Duration
+	FallbackProfile string
 }
 
 // resolverHandle is the lifecycle's view of the running resolver.  The
@@ -623,6 +630,9 @@ func (l *Lifecycle) resolverConfig() (cfg resolver.Config) {
 
 		FallbackUpstreams: l.cfg.FallbackUpstreams,
 		FallbackBootstrap: l.cfg.FallbackBootstrap,
+		FallbackProfile:   l.cfg.FallbackProfile,
+		FailoverAfter:     l.cfg.FailoverAfter,
+		FallbackTimeout:   l.cfg.FallbackTimeout,
 	}
 }
 

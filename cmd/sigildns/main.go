@@ -311,6 +311,9 @@ func (o options) lifecycleFor(r config.Resolved, l *slog.Logger) (lc *lifecycle.
 
 		FallbackUpstreams: r.FallbackUpstreams,
 		FallbackBootstrap: r.FallbackBootstrap,
+		FallbackProfile:   r.FallbackProfileName,
+		FailoverAfter:     r.FailoverAfter,
+		FallbackTimeout:   r.FallbackTimeout,
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/config"
 	"github.com/daika7ana/sigil-dns/internal/logging"
@@ -90,6 +91,14 @@ type ProfileSummary struct {
 	// FallbackProfile is the name of the profile used when this profile's
 	// upstreams fail.  A profile name is not a secret.
 	FallbackProfile string `json:"fallback_profile,omitempty"`
+
+	// FailoverAfterSeconds is how long this profile's upstreams get in total
+	// before the fallback profile is used.  The resolved default is reported.
+	FailoverAfterSeconds int `json:"failover_after_seconds"`
+
+	// FallbackTimeoutSeconds is how long the fallback profile's upstreams get
+	// in total.  The resolved default is reported.
+	FallbackTimeoutSeconds int `json:"fallback_timeout_seconds"`
 
 	// Lists is the per-list (host only) summary in config order, so the editor
 	// can address a list by index without its URL ever crossing the pipe.
@@ -241,16 +250,18 @@ func summarizeProfiles(cfg *config.Config) (out []ProfileSummary) {
 // summarizeProfile reduces one profile to its non-secret fields.
 func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSummary) {
 	s = ProfileSummary{
-		Name:             name,
-		Active:           active,
-		Provider:         p.Provider,
-		Variant:          p.Variant,
-		Protocol:         p.Protocol,
-		FilteringEnabled: p.Filtering.Enabled,
-		BlockResponse:    p.Filtering.BlockResponse,
-		ListCount:        len(p.Filtering.Lists),
-		PerDomainCount:   len(p.PerDomain),
-		FallbackProfile:  p.FallbackProfile,
+		Name:                   name,
+		Active:                 active,
+		Provider:               p.Provider,
+		Variant:                p.Variant,
+		Protocol:               p.Protocol,
+		FilteringEnabled:       p.Filtering.Enabled,
+		BlockResponse:          p.Filtering.BlockResponse,
+		ListCount:              len(p.Filtering.Lists),
+		PerDomainCount:         len(p.PerDomain),
+		FallbackProfile:        p.FallbackProfile,
+		FailoverAfterSeconds:   int(p.FailoverAfter() / time.Second),
+		FallbackTimeoutSeconds: int(p.FallbackTimeout() / time.Second),
 	}
 
 	if p.Cache != nil {

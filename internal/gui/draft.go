@@ -19,18 +19,22 @@ import (
 // A blank name/id/url means "keep" — the editor never reads the existing
 // resolver id, and only a typed value travels onward (SPEC §15.2).
 type profileDraft struct {
-	name        string
-	provider    string
-	variant     string
-	protocol    string
-	id          string // typed new resolver id; blank = keep existing
-	url         string // custom provider only; blank = keep
-	bootstrap   string // comma-separated IP literals
-	fallback    string // fallback profile name; "" = none
-	filtering   bool
-	blockResp   string // "0.0.0.0" or "nxdomain"
-	cache       bool
-	cacheSizeMB string // MiB, as typed
+	name      string
+	provider  string
+	variant   string
+	protocol  string
+	id        string // typed new resolver id; blank = keep existing
+	url       string // custom provider only; blank = keep
+	bootstrap string // comma-separated IP literals
+	fallback  string // fallback profile name; "" = none
+	// failoverAfter and fallbackTimeout are the two failover budgets in
+	// seconds, as typed; blank or invalid leaves the stored value alone.
+	failoverAfter   string
+	fallbackTimeout string
+	filtering       bool
+	blockResp       string // "0.0.0.0" or "nxdomain"
+	cache           bool
+	cacheSizeMB     string // MiB, as typed
 
 	// lists are the editable filter-list rows in config order.  A seeded row
 	// carries an existing list's redacted host and its original config index;
@@ -75,14 +79,18 @@ func draftForProfile(p ipc.ProfileSummary) profileDraft {
 	seeded := append([]ipc.ListSummary(nil), p.Lists...)
 
 	return profileDraft{
-		name:        p.Name,
-		provider:    p.Provider,
-		variant:     p.Variant,
-		protocol:    supportedProtocol(p.Provider, p.Protocol),
-		id:          "",
-		url:         "",
-		bootstrap:   strings.Join(p.Bootstrap, ", "),
-		fallback:    p.FallbackProfile,
+		name:      p.Name,
+		provider:  p.Provider,
+		variant:   p.Variant,
+		protocol:  supportedProtocol(p.Provider, p.Protocol),
+		id:        "",
+		url:       "",
+		bootstrap: strings.Join(p.Bootstrap, ", "),
+		fallback:  p.FallbackProfile,
+
+		failoverAfter:   secondsString(p.FailoverAfterSeconds, config.DefaultFailoverAfterSeconds),
+		fallbackTimeout: secondsString(p.FallbackTimeoutSeconds, config.DefaultFallbackTimeoutSeconds),
+
 		filtering:   p.FilteringEnabled,
 		blockResp:   p.BlockResponse,
 		cache:       p.CacheEnabled,
@@ -101,13 +109,17 @@ func draftFromActiveProfile(sum *ipc.ConfigSummary) profileDraft {
 	seeded := append([]ipc.ListSummary(nil), sum.Lists...)
 
 	return profileDraft{
-		name:        sum.Profile,
-		provider:    sum.Provider,
-		variant:     sum.Variant,
-		protocol:    supportedProtocol(sum.Provider, sum.Protocol),
-		id:          "",
-		url:         "",
-		bootstrap:   strings.Join(sum.Bootstrap, ", "),
+		name:      sum.Profile,
+		provider:  sum.Provider,
+		variant:   sum.Variant,
+		protocol:  supportedProtocol(sum.Provider, sum.Protocol),
+		id:        "",
+		url:       "",
+		bootstrap: strings.Join(sum.Bootstrap, ", "),
+
+		failoverAfter:   strconv.Itoa(config.DefaultFailoverAfterSeconds),
+		fallbackTimeout: strconv.Itoa(config.DefaultFallbackTimeoutSeconds),
+
 		filtering:   sum.FilteringEnabled,
 		blockResp:   sum.BlockResponse,
 		cache:       sum.CacheEnabled,
@@ -174,18 +186,20 @@ func draftFromSummary(sum *ipc.ConfigSummary, name string) (d profileDraft) {
 // never invent one.  The rule set is empty and known (a new profile has none).
 func defaultDraft() profileDraft {
 	return profileDraft{
-		name:        config.DefaultProfileName,
-		provider:    providers.ControlD,
-		variant:     "p0",
-		protocol:    string(providers.DoH),
-		id:          "",
-		url:         "",
-		bootstrap:   "",
-		filtering:   false,
-		blockResp:   "",
-		cache:       true,
-		cacheSizeMB: strconv.Itoa(config.DefaultCacheSizeBytes >> 20),
-		rulesKnown:  true,
+		name:            config.DefaultProfileName,
+		provider:        providers.ControlD,
+		variant:         "p0",
+		protocol:        string(providers.DoH),
+		id:              "",
+		url:             "",
+		bootstrap:       "",
+		failoverAfter:   strconv.Itoa(config.DefaultFailoverAfterSeconds),
+		fallbackTimeout: strconv.Itoa(config.DefaultFallbackTimeoutSeconds),
+		filtering:       false,
+		blockResp:       "",
+		cache:           true,
+		cacheSizeMB:     strconv.Itoa(config.DefaultCacheSizeBytes >> 20),
+		rulesKnown:      true,
 	}
 }
 
@@ -295,6 +309,28 @@ func syncBootstrap(d *profileDraft) {
 func parseMiB(s string) (n int) {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil || n < 0 {
+		return 0
+	}
+
+	return n
+}
+
+// secondsString renders a whole-second budget, falling back to the default when
+// the stored value is unset (a legacy summary carries no value).
+func secondsString(n, def int) string {
+	if n <= 0 {
+		n = def
+	}
+
+	return strconv.Itoa(n)
+}
+
+// parseSeconds reads a failover budget in seconds.  A blank, invalid,
+// non-positive, or out-of-range value is 0, which the applier reads as "leave
+// the stored value alone".
+func parseSeconds(s string) (n int) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 || n > config.MaxFailoverSeconds {
 		return 0
 	}
 

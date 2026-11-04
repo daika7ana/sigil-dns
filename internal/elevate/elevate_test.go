@@ -1095,6 +1095,37 @@ func TestApplyFilteringBlockTTL(t *testing.T) {
 	}
 }
 
+// TestApplyProfileFailoverBudgets covers the allowlisted failover timing
+// fields: nil keeps the stored value, set replaces it, and zero survives as the
+// "use the default" marker.
+func TestApplyProfileFailoverBudgets(t *testing.T) {
+	p := config.Profile{Upstreams: []string{"https://x"}, Cache: &config.Cache{Enabled: true, SizeBytes: 1024}}
+
+	if err := applyProfilePatch(&p, ProfilePatch{}); err != nil {
+		t.Fatalf("nil patch: %v", err)
+	}
+	if p.FailoverAfterSeconds != 0 || p.FallbackTimeoutSeconds != 0 {
+		t.Fatalf("nil patch set budgets = %d/%d", p.FailoverAfterSeconds, p.FallbackTimeoutSeconds)
+	}
+
+	if err := applyProfilePatch(&p, ProfilePatch{
+		FailoverAfterSeconds:   ptr(2),
+		FallbackTimeoutSeconds: ptr(3),
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if p.FailoverAfterSeconds != 2 || p.FallbackTimeoutSeconds != 3 {
+		t.Fatalf("budgets = %d/%d, want 2/3", p.FailoverAfterSeconds, p.FallbackTimeoutSeconds)
+	}
+
+	if err := applyProfilePatch(&p, ProfilePatch{FailoverAfterSeconds: ptr(0)}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if p.FailoverAfterSeconds != 0 {
+		t.Fatalf("budget not reset: %d", p.FailoverAfterSeconds)
+	}
+}
+
 // TestApplyProfileFallbackPatch covers the allowlisted fallback_profile field:
 // it trims on set, clears on an explicit empty value, and a nil patch leaves it
 // untouched.

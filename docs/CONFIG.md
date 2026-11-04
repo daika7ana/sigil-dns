@@ -41,6 +41,8 @@ To turn protection off, stop the service (`sigildns service stop` or the GUI
 | `upstreams` | list of strings | `["https://freedns.controld.com/p0"]` | Required, non-empty; each entry non-empty. |
 | `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow, OpenBLD); an omitted list gets the default. |
 | `fallback_profile` | string | empty | Optional name of another profile; see below. |
+| `failover_after_seconds` | int | `10` | Total seconds the active profile's servers get, dnsproxy retries included, before the fallback is used. `0` = default; max `120`. |
+| `fallback_timeout_seconds` | int | `5` | Total seconds the fallback profile's servers get. `0` = default; max `120`. Set on the profile that names the fallback. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
 | `filtering` | block | disabled | See below. |
@@ -75,6 +77,25 @@ still shows the primary profile. Only the fallback's `upstreams` and `bootstrap`
 are used; its `per_domain`, `filtering`, and `cache` blocks are ignored, while
 the primary profile's per-domain rules and filtering still apply. Chains are not
 followed — the fallback profile's own `fallback_profile` is ignored.
+
+`failover_after_seconds` (default 10) bounds the primary's whole exchange,
+dnsproxy's internal retries included; the fallback is used when that budget
+expires or the primary fails outright. `fallback_timeout_seconds` (default 5)
+bounds the fallback's whole exchange. Both are set on the profile that names
+the fallback: `fallback_timeout_seconds` on the fallback profile itself is used
+only while that profile is active. `0` means the default. A shorter
+`failover_after_seconds` makes failover kick in sooner (it
+also cuts a slow-but-working primary off). dnsproxy's retry count itself is not
+configurable, so the budget bounds retries by time instead.
+
+When the fallback answers, the log gets a `fallback used` line at `info` level
+naming the fallback profile and the exchange duration, rate-limited to one per
+profile per 30 s (the next window reports how many lines it suppressed). No
+resolver ids, upstream URLs, or query names are logged.
+
+A fallback query costs the primary's budget plus the fallback's time, so prefer
+a fallback on a different transport (for example a `doh` fallback for a `doh3`
+profile) — otherwise both share the same broken path.
 
 The name must exist in `profiles`; self-reference is rejected. Renaming a profile
 updates references, and deleting one that is another profile's fallback is

@@ -217,6 +217,37 @@ func TestFallbackProfileMapping(t *testing.T) {
 	})
 }
 
+// TestFailoverBudgetMapping checks the two per-profile budgets reach the patch
+// as whole seconds, and that a blank, invalid, or out-of-range box is simply
+// not sent (the stored value is kept).
+func TestFailoverBudgetMapping(t *testing.T) {
+	t.Run("set", func(t *testing.T) {
+		pp := saveRequest(t, profileDraft{
+			name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+			fallback: "backup", failoverAfter: " 20 ", fallbackTimeout: "3",
+		}).Patch.Profiles["w"]
+		if pp.FailoverAfterSeconds == nil || *pp.FailoverAfterSeconds != 20 {
+			t.Fatalf("failover after = %v, want 20", pp.FailoverAfterSeconds)
+		}
+		if pp.FallbackTimeoutSeconds == nil || *pp.FallbackTimeoutSeconds != 3 {
+			t.Fatalf("fallback timeout = %v, want 3", pp.FallbackTimeoutSeconds)
+		}
+	})
+
+	t.Run("blank, invalid, or out of range is not sent", func(t *testing.T) {
+		for _, v := range []string{"", "  ", "oops", "0", "-1", "300"} {
+			pp := saveRequest(t, profileDraft{
+				name: "w", provider: "quad9", variant: "secure", protocol: "doh",
+				fallback: "backup", failoverAfter: v, fallbackTimeout: v,
+			}).Patch.Profiles["w"]
+			if pp.FailoverAfterSeconds != nil || pp.FallbackTimeoutSeconds != nil {
+				t.Errorf("%q: budgets = %v/%v, want both omitted",
+					v, pp.FailoverAfterSeconds, pp.FallbackTimeoutSeconds)
+			}
+		}
+	})
+}
+
 // TestListDiffMapping checks the seeded-list vs editor-list diff: a changed
 // toggle is SetEnabled by original index, a deleted row is Remove by index, a
 // new row travels as Add with its URL, and an unchanged seed sends no list

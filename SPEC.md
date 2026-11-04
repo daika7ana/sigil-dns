@@ -275,6 +275,12 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
   `proxy.UpstreamConfig` wired to `proxy.Config.Fallbacks`; dnsproxy tries it per
   query only after every primary upstream fails. Only that profile's
   `upstreams`/`bootstrap` are used, and fallback chains are not followed.
+  `failover_after_seconds` (default 10) bounds the primary exchange, retries
+  included, and `fallback_timeout_seconds` (default 5) bounds the fallback; both
+  are set on the profile that names the fallback and `0` means the default. A
+  successful fallback logs one
+  rate-limited `fallback used` record at info level (profile name and duration
+  only — never an id, URL, or query name).
 - **Integration pitfalls (verified against pinned dnsproxy v0.86.0):**
   - There is no `BeforeRequestHandler`. `Config.RequestHandler` **replaces**
     `DefaultHandler`; the handler must call `p.Resolve` exactly once
@@ -466,6 +472,8 @@ profiles:
     upstreams: ["https://dns.quad9.net/dns-query"]
     bootstrap: [9.9.9.9, 149.112.112.112]
     fallback_profile: backup   # optional; tried only if all upstreams fail
+    failover_after_seconds: 10   # primary budget before the fallback; 0 = default
+    fallback_timeout_seconds: 5  # fallback budget; 0 = default
     per_domain:
       - domains: ["corp.example"]   # exact or *.wildcard; dnsmasq semantics (§5)
         upstream: "tls://10.0.0.1"
@@ -714,9 +722,9 @@ not a status viewer.
   cache settings, `config_valid` with a secret-free error, a revision token, and
   a `profiles` list — one sanitized `ProfileSummary` per profile: name, active
   flag, provider/variant/protocol labels, `id_set`, filtering/cache flags,
-  cache size, counts, bootstrap IP literals, fallback profile name, per-list
-  **hosts** (+ enabled) and per-domain rule **domains** (+ enabled, `bypass`
-  flag); never ids or upstream URLs). `id_set` is provider-aware
+  cache size, counts, bootstrap IP literals, fallback profile name, failover
+  budgets, per-list **hosts** (+ enabled) and per-domain rule **domains** (+
+  enabled, `bypass` flag); never ids or upstream URLs). `id_set` is provider-aware
   (`providers.ExtractID`), so DoT/DoQ ids are detected too, not only the DoH-path
   heuristic. The provider catalog is rendered **locally** from
   `internal/providers` (no IPC, no secrets).
@@ -728,7 +736,8 @@ not a status viewer.
   `clear_cache` / `pause_filtering` / `resume_filtering`).
   The allowlist is the **whole config surface**: `ActiveProfile`, per-profile
   `Profiles` patches (provider / variant / protocol / id / custom URL /
-  bootstrap / fallback profile / filtering / cache, plus **per-list operations**
+  bootstrap / fallback profile + failover budgets / filtering / cache, plus
+  **per-list operations**
   — toggle/add/remove existing lists by index — and **per-domain rules** with a
   per-rule `enabled` flag and a kind: an upstream rule, or a **bypass** rule that
   carries no upstream), the structural `AddProfile` / `RenameProfile` /
@@ -764,7 +773,8 @@ not a status viewer.
     state is the header badge) plus install / remove — an **Appearance** card
     with the Auto / Light / Dark theme picker, a profile list with add /
     rename / delete / set-active, and a per-profile editor (provider / variant /
-    protocol, masked id, custom URL, bootstrap, fallback profile, cache + size).
+    protocol, masked id, custom URL, bootstrap, fallback profile + failover
+    budgets, cache + size).
   - **Rules**: the filtering toggle and block response beside the filter-list
     editor, and the per-domain routing rules, in one **scrollable** column —
     per-list and per-rule enable toggles, add / remove, a `*.` wildcard hint, and

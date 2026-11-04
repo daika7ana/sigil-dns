@@ -571,6 +571,8 @@ func fallbackFields(t gogui.Theme, app *App, d profileDraft, disabled bool, floo
 		}
 	}
 
+	budgetDisabled := disabled || d.fallback == ""
+
 	return []gogui.View{
 		formSelect(gogui.SelectCfg{
 			ID: "gui:edit:fallback", Label: "Fallback profile",
@@ -580,7 +582,24 @@ func fallbackFields(t gogui.Theme, app *App, d profileDraft, disabled bool, floo
 				updateDraft(ctx, func(d *profileDraft) { d.fallback = first(vals) })
 			},
 		}, floor),
+		gogui.Input(gogui.InputCfg{
+			ID: "gui:edit:failoverafter", Label: "Failover after, s",
+			Sizing: gogui.FillFit,
+			Text:   d.failoverAfter, Disabled: budgetDisabled,
+			OnTextChanged: func(text string, ctx gogui.EventCtx) {
+				updateDraft(ctx, func(d *profileDraft) { d.failoverAfter = text })
+			},
+		}),
+		gogui.Input(gogui.InputCfg{
+			ID: "gui:edit:fallbacktimeout", Label: "Fallback timeout, s",
+			Sizing: gogui.FillFit,
+			Text:   d.fallbackTimeout, Disabled: budgetDisabled,
+			OnTextChanged: func(text string, ctx gogui.EventCtx) {
+				updateDraft(ctx, func(d *profileDraft) { d.fallbackTimeout = text })
+			},
+		}),
 		caption(t, "Used when this profile's DNS servers time out or fail. It uses the fallback profile's servers and bootstrap addresses."),
+		caption(t, "How long this profile's servers get, retries included, before the fallback is used; the fallback servers then get their own total."),
 	}
 }
 

@@ -162,6 +162,8 @@ profiles:
   beta:
     upstreams: [https://freedns.controld.com/p0]
     fallback_profile: alpha
+    failover_after_seconds: 15
+    fallback_timeout_seconds: 4
     cache: { enabled: true, size_bytes: 1048576 }
 `
 	path := writeConfigFile(t, body)
@@ -195,6 +197,24 @@ profiles:
 	}
 	if got := sum.Profiles[1].FallbackProfile; got != "alpha" {
 		t.Errorf("beta fallback = %q, want alpha", got)
+	}
+	if got := sum.Profiles[1].FailoverAfterSeconds; got != 15 {
+		t.Errorf("beta failover_after_seconds = %d, want 15", got)
+	}
+	if got := sum.Profiles[1].FallbackTimeoutSeconds; got != 4 {
+		t.Errorf("beta fallback_timeout_seconds = %d, want 4", got)
+	}
+	// An unset budget reports the resolved default, not zero.
+	if got := sum.Profiles[0].FailoverAfterSeconds; got != config.DefaultFailoverAfterSeconds {
+		t.Errorf("alpha failover_after_seconds = %d, want the default", got)
+	}
+	if got := sum.Profiles[0].FallbackTimeoutSeconds; got != config.DefaultFallbackTimeoutSeconds {
+		t.Errorf("alpha fallback_timeout_seconds = %d, want the default", got)
+	}
+	for _, key := range []string{`"failover_after_seconds":15`, `"fallback_timeout_seconds":4`} {
+		if !strings.Contains(raw, key) {
+			t.Errorf("summary JSON missing %s", key)
+		}
 	}
 
 	alpha := sum.Profiles[0]

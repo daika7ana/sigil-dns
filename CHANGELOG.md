@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per-profile failover budgets: `failover_after_seconds` (default 10) caps the active profile's exchange, dnsproxy's own retries included, before the fallback profile is used; `fallback_timeout_seconds` (default 5) caps the fallback's whole exchange. Both sit next to the fallback selector in the profile editor, so a slow primary can be made to fail over sooner.
+- A rate-limited `fallback used` line at info level when the fallback answers a query, naming the fallback profile and its duration. It never carries a resolver id, upstream URL, or query name.
+
 ## [0.7.0] - 2026-11-02
 
 ### Added

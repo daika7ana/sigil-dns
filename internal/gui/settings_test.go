@@ -46,6 +46,36 @@ func TestDraftFromSnapshot(t *testing.T) {
 	if !d.cache || d.cacheSizeMB != "4" {
 		t.Errorf("cache = %v sizeMiB = %q, want true/4", d.cache, d.cacheSizeMB)
 	}
+	// A legacy summary carries no budgets, so the editor shows the defaults.
+	if d.failoverAfter != "10" || d.fallbackTimeout != "5" {
+		t.Errorf("budgets = %q/%q, want 10/5", d.failoverAfter, d.fallbackTimeout)
+	}
+}
+
+// TestFailoverBudgetSeeding proves the two per-profile budgets are seeded from
+// the sanitized summary, and that an unset value falls back to the default.
+func TestFailoverBudgetSeeding(t *testing.T) {
+	d := draftForProfile(ipc.ProfileSummary{
+		Name: "default", FailoverAfterSeconds: 20, FallbackTimeoutSeconds: 3,
+	})
+	if d.failoverAfter != "20" || d.fallbackTimeout != "3" {
+		t.Errorf("budgets = %q/%q, want 20/3", d.failoverAfter, d.fallbackTimeout)
+	}
+
+	// 0 (a legacy cached summary with no such keys) or a negative value is
+	// "unknown": show the default, never "0".
+	for _, n := range []int{0, -1} {
+		d = draftForProfile(ipc.ProfileSummary{
+			Name: "default", FailoverAfterSeconds: n, FallbackTimeoutSeconds: n,
+		})
+		if d.failoverAfter != "10" || d.fallbackTimeout != "5" {
+			t.Errorf("%d: defaults = %q/%q, want 10/5", n, d.failoverAfter, d.fallbackTimeout)
+		}
+	}
+
+	if d := defaultDraft(); d.failoverAfter != "10" || d.fallbackTimeout != "5" {
+		t.Errorf("default draft budgets = %q/%q, want 10/5", d.failoverAfter, d.fallbackTimeout)
+	}
 }
 
 // TestRuleDraftSeedsEnabled proves the editor's rule rows take their enable
@@ -195,12 +225,19 @@ func TestSettingsPageRenders(t *testing.T) {
 		"gui:profile:select", "gui:profile:add", "gui:profile:rename", "gui:profile:delete",
 		"gui:edit:provider", "gui:edit:variant", "gui:edit:protocol", "gui:edit:id",
 		"gui:edit:bootstrap", "gui:edit:cache",
-		"gui:edit:cachesize", "gui:profile:save",
+		"gui:edit:cachesize", "gui:edit:fallback",
+		"gui:edit:failoverafter", "gui:edit:fallbacktimeout", "gui:profile:save",
 	} {
 		if len(w.ResolveID(id)) == 0 {
 			t.Errorf("expected %q to be rendered", id)
 		}
 	}
+
+	// No fallback is chosen in this summary, so the budget fields are present
+	// but inert.
+	root := w.TestRender(nil)
+	assertDisabled(t, root, w, "gui:edit:failoverafter", true)
+	assertDisabled(t, root, w, "gui:edit:fallbacktimeout", true)
 
 	// Running service: the Stop control and Uninstall show; Install and Start
 	// do not.
@@ -568,11 +605,13 @@ func profilesSnapshot() snapshot {
 		{
 			Name: "home", Provider: "nextdns", Variant: "ultralow", Protocol: "doh",
 			IDSet: true, FilteringEnabled: true, BlockResponse: "0.0.0.0",
+			FailoverAfterSeconds: 20, FallbackTimeoutSeconds: 3,
 		},
 		{
 			Name: "work", Active: true, Provider: "quad9", Variant: "secure", Protocol: "doh",
 			FilteringEnabled: true, BlockResponse: "nxdomain", CacheEnabled: true,
-			CacheSizeBytes: 8 << 20,
+			CacheSizeBytes:       8 << 20,
+			FailoverAfterSeconds: 10, FallbackTimeoutSeconds: 5,
 		},
 	}
 

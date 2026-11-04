@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -33,6 +34,14 @@ const DefaultCacheSizeBytes = resolver.DefaultCacheSizeBytes
 
 // DefaultProfileName is the name of the default profile.
 const DefaultProfileName = "default"
+
+// Failover timing defaults and bounds.  Zero in the config file means the
+// default; both values cap the whole exchange, retries included.
+const (
+	DefaultFailoverAfterSeconds   = 10
+	DefaultFallbackTimeoutSeconds = 5
+	MaxFailoverSeconds            = 120
+)
 
 // Logging levels.
 const (
@@ -203,6 +212,16 @@ type Profile struct {
 	// Only that profile's upstreams and bootstrap are used; its per-domain
 	// rules, filtering and cache are not.  Fallback chains are not followed.
 	FallbackProfile string `yaml:"fallback_profile,omitempty"`
+
+	// FailoverAfterSeconds is how long this profile's own upstreams may take
+	// in total, retries included, before the fallback profile is used.  Zero
+	// means DefaultFailoverAfterSeconds.
+	FailoverAfterSeconds int `yaml:"failover_after_seconds,omitempty"`
+
+	// FallbackTimeoutSeconds is how long the fallback profile's upstreams may
+	// take in total.  Zero means DefaultFallbackTimeoutSeconds.  It is only
+	// meaningful together with FallbackProfile.
+	FallbackTimeoutSeconds int `yaml:"fallback_timeout_seconds,omitempty"`
 }
 
 // Config is the top-level configuration.
@@ -375,8 +394,36 @@ func (c *Config) normalize() {
 		p.Protocol = strings.TrimSpace(p.Protocol)
 		p.FallbackProfile = strings.TrimSpace(p.FallbackProfile)
 
+		if p.FailoverAfterSeconds == 0 {
+			p.FailoverAfterSeconds = DefaultFailoverAfterSeconds
+		}
+		if p.FallbackTimeoutSeconds == 0 {
+			p.FallbackTimeoutSeconds = DefaultFallbackTimeoutSeconds
+		}
+
 		c.Profiles[name] = p
 	}
+}
+
+// FailoverAfter returns how long this profile's own upstreams may take in
+// total, retries included, before the fallback profile is used.
+func (p Profile) FailoverAfter() time.Duration {
+	return secondsOr(p.FailoverAfterSeconds, DefaultFailoverAfterSeconds)
+}
+
+// FallbackTimeout returns how long the fallback profile's upstreams may take
+// in total.
+func (p Profile) FallbackTimeout() time.Duration {
+	return secondsOr(p.FallbackTimeoutSeconds, DefaultFallbackTimeoutSeconds)
+}
+
+// secondsOr converts n seconds, falling back to def when n is unset.
+func secondsOr(n, def int) time.Duration {
+	if n <= 0 {
+		n = def
+	}
+
+	return time.Duration(n) * time.Second
 }
 
 // filteringDefaults fills in the filtering defaults.
@@ -477,6 +524,19 @@ func (p Profile) validate(name string) (err error) {
 		return fmt.Errorf(
 			"profile %q: invalid block_response %q (want %q or %q)",
 			name, p.Filtering.BlockResponse, resolver.BlockResponseZero, resolver.BlockResponseNXDOMAIN,
+		)
+	}
+
+	if p.FailoverAfterSeconds < 0 || p.FailoverAfterSeconds > MaxFailoverSeconds {
+		return fmt.Errorf(
+			"profile %q: failover_after_seconds %d out of range 0-%d",
+			name, p.FailoverAfterSeconds, MaxFailoverSeconds,
+		)
+	}
+	if p.FallbackTimeoutSeconds < 0 || p.FallbackTimeoutSeconds > MaxFailoverSeconds {
+		return fmt.Errorf(
+			"profile %q: fallback_timeout_seconds %d out of range 0-%d",
+			name, p.FallbackTimeoutSeconds, MaxFailoverSeconds,
 		)
 	}
 
@@ -764,6 +824,14 @@ type Resolved struct {
 	FallbackBootstrap []string
 	FallbackProvider  string
 	FallbackProtocol  string
+
+	// FallbackProfileName is the fallback profile's name (never a secret).
+	FallbackProfileName string
+
+	// FailoverAfter bounds the active profile's own upstreams, retries
+	// included; FallbackTimeout bounds the fallback profile's.
+	FailoverAfter   time.Duration
+	FallbackTimeout time.Duration
 }
 
 // Resolve applies the precedence flags > config > defaults.  A nil cfg means no
@@ -794,12 +862,15 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 	r.Filtering = p.Filtering
 	r.Provider = strings.TrimSpace(p.Provider)
 	r.Protocol = strings.TrimSpace(p.Protocol)
+	r.FailoverAfter = p.FailoverAfter()
+	r.FallbackTimeout = p.FallbackTimeout()
 
 	if fb := strings.TrimSpace(p.FallbackProfile); fb != "" {
 		fp, ok := cfg.Profiles[fb]
 		if !ok {
 			return Resolved{}, fmt.Errorf("fallback profile %q not found in config", fb)
 		}
+		r.FallbackProfileName = fb
 		r.FallbackUpstreams = fp.Upstreams
 		r.FallbackBootstrap = fp.Bootstrap
 		r.FallbackProvider = strings.TrimSpace(fp.Provider)

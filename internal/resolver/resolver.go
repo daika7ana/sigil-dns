@@ -99,6 +99,16 @@ type Config struct {
 	// fail.  They use FallbackBootstrap for hostname resolution.
 	FallbackUpstreams []string
 	FallbackBootstrap []string
+
+	// FallbackProfile is the fallback profile's name, used only in the log
+	// line.
+	FallbackProfile string
+	// FailoverAfter bounds the active profile's exchange, retries included; 0
+	// means no deadline.
+	FailoverAfter time.Duration
+	// FallbackTimeout bounds the fallback profile's exchange in total; 0 means
+	// the existing upstreamTimeout (5s).
+	FallbackTimeout time.Duration
 }
 
 // filterState is the atomically-swappable filtering state.
@@ -123,6 +133,7 @@ type Resolver struct {
 	stats             *stats
 	cacheSize         int
 	cacheDisabled     bool
+	fallbackLim       *upstreamLimiter
 }
 
 // New builds a Resolver.  It creates the upstreams but does not bind anything
@@ -136,6 +147,7 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 		stats:         &stats{},
 		cacheSize:     cfg.CacheSizeBytes,
 		cacheDisabled: cfg.CacheDisabled,
+		fallbackLim:   newUpstreamLimiter(time.Now),
 	}
 	if len(r.listen) == 0 {
 		r.listen = defaultListen
@@ -166,6 +178,10 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 	}
 
 	var ups []upstream.Upstream
+	// A configured fallback makes FailoverAfter a per-query deadline on the
+	// shared handler context; the wrapper is what makes a plain upstream honor
+	// it, since dnsproxy retries a timed-out exchange with a fresh timeout.
+	wrapFailover := len(cfg.FallbackUpstreams) > 0 && cfg.FailoverAfter > 0
 	for _, addr := range upstreamAddrs {
 		u, uErr := newUpstream(addr, opts)
 		if uErr != nil {
@@ -176,6 +192,9 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 			_ = r.closeBootstrap()
 
 			return nil, fmt.Errorf("creating upstream %q: %w", addr, uErr)
+		}
+		if wrapFailover {
+			u = &boundedUpstream{Upstream: u}
 		}
 		ups = append(ups, u)
 	}
@@ -195,11 +214,26 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 		r.fallbackBootstrap = fBoots
 
 		fOpts := &upstream.Options{Logger: r.logger, Timeout: upstreamTimeout}
+		if cfg.FallbackTimeout > 0 {
+			fOpts.Timeout = cfg.FallbackTimeout
+		}
 		if len(fBoots) > 0 {
 			fOpts.Bootstrap = parallelResolvers(fBoots)
 		}
 
 		var fUps []upstream.Upstream
+		// Key by profile only; the URL, resolver id and query name never reach
+		// the log (SPEC §15.2/§15.3).
+		onFallback := func(d time.Duration) {
+			key := "fallback used\x00" + cfg.FallbackProfile
+			if suppressed, emit := r.fallbackLim.allow(key); emit {
+				attrs := []any{"fallback_profile", cfg.FallbackProfile, "duration", d}
+				if suppressed > 0 {
+					attrs = append(attrs, slog.Int64("suppressed", suppressed))
+				}
+				r.logger.Info("fallback used", attrs...)
+			}
+		}
 		for _, addr := range cfg.FallbackUpstreams {
 			u, uErr := newUpstream(addr, fOpts)
 			if uErr != nil {
@@ -213,7 +247,11 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 
 				return nil, fmt.Errorf("fallback: creating upstream %q: %w", addr, uErr)
 			}
-			fUps = append(fUps, u)
+			fUps = append(fUps, &boundedUpstream{
+				Upstream:  u,
+				timeout:   cfg.FallbackTimeout,
+				onSuccess: onFallback,
+			})
 		}
 
 		r.fallbackConf = &proxy.UpstreamConfig{Upstreams: fUps}
@@ -230,6 +268,22 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 			return nil, err
 		}
 
+		// Rule upstreams get the same budget as the default ones; otherwise a
+		// plain rule server retries past FailoverAfter.
+		if wrapFailover {
+			for _, m := range []map[string][]upstream.Upstream{
+				rulesConf.DomainReservedUpstreams,
+				rulesConf.SpecifiedDomainUpstreams,
+			} {
+				for domain, ups := range m {
+					for i := range ups {
+						ups[i] = &boundedUpstream{Upstream: ups[i]}
+					}
+					m[domain] = ups
+				}
+			}
+		}
+
 		// Rules are fixed for the resolver's lifetime; a rule change means a
 		// restart, so there is no live cache to flush here.
 		r.upstreamConf.DomainReservedUpstreams = rulesConf.DomainReservedUpstreams
@@ -237,7 +291,13 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 		r.upstreamConf.SubdomainExclusions = rulesConf.SubdomainExclusions
 	}
 
-	r.handler = &probeHandler{synthetic: SyntheticName(), state: &r.filterState, stats: r.stats}
+	r.handler = &probeHandler{
+		synthetic:     SyntheticName(),
+		state:         &r.filterState,
+		stats:         r.stats,
+		failoverAfter: cfg.FailoverAfter,
+		hasFallback:   len(cfg.FallbackUpstreams) > 0,
+	}
 	if cfg.Filter.Enabled && len(cfg.Filter.Lists) > 0 {
 		if err = r.reloadFilter(ctx, cfg.Filter); err != nil {
 			_ = r.closeBuiltUpstreams()
@@ -610,9 +670,11 @@ func closeBootstrapResolvers(boots []*upstream.UpstreamResolver) (err error) {
 // once (filtering must run before Resolve, whose internal cache ignores a
 // pre-set dctx.Res).
 type probeHandler struct {
-	synthetic string
-	state     *atomic.Pointer[filterState]
-	stats     *stats
+	synthetic     string
+	state         *atomic.Pointer[filterState]
+	stats         *stats
+	failoverAfter time.Duration
+	hasFallback   bool
 }
 
 // ServeDNS implements proxy.Handler.
@@ -645,7 +707,60 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 		}
 	}
 
+	// dnsproxy starts the fallback with context.WithoutCancel, so expiring this
+	// deadline cuts the primary's retries without cutting the fallback.
+	if h.hasFallback && h.failoverAfter > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, h.failoverAfter)
+		defer cancel()
+	}
+
 	return p.Resolve(ctx, dctx)
+}
+
+// boundedUpstream races an exchange against its deadline and optionally reports
+// a successful one.  dnsproxy's plain and DoT upstreams retry a failed exchange
+// with context.WithoutCancel and a fresh per-attempt timeout, so returning when
+// the request context expires is the only way to make the deadline a total
+// budget; the abandoned exchange finishes in the background.  The request is
+// copied because dns.Client may modify the message it is given, and the
+// fallback may start while this exchange is still unwinding.
+type boundedUpstream struct {
+	upstream.Upstream               // embeds Address and Close
+	timeout           time.Duration // 0: only the caller's context bounds it
+	onSuccess         func(time.Duration)
+}
+
+// Exchange implements upstream.Upstream.
+func (u *boundedUpstream) Exchange(ctx context.Context, req *dns.Msg) (resp *dns.Msg, err error) {
+	if u.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, u.timeout)
+		defer cancel()
+	}
+
+	start := time.Now()
+	type result struct {
+		resp *dns.Msg
+		err  error
+	}
+	ch := make(chan result, 1)
+	req = req.Copy()
+	go func() {
+		r, e := u.Upstream.Exchange(ctx, req)
+		ch <- result{r, e}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err == nil && res.resp != nil && u.onSuccess != nil {
+			u.onSuccess(time.Since(start))
+		}
+
+		return res.resp, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // probeResponse builds the answer for a synthetic-name query.

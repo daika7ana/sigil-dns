@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -391,5 +392,196 @@ func TestNewClosesUpstreamsOnListError(t *testing.T) {
 	}
 	if !fallbackUp.closed.Load() {
 		t.Error("fallback upstream was not closed")
+	}
+}
+
+// startHangingUpstream accepts UDP DNS packets and never answers, so an
+// exchange against it blocks until its context or client timeout expires.
+func startHangingUpstream(t *testing.T) (addr string) {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen hanging upstream: %v", err)
+	}
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			if _, _, rErr := pc.ReadFrom(buf); rErr != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { _ = pc.Close() })
+
+	return pc.LocalAddr().String()
+}
+
+// TestFailoverAfterUsesFallbackAndLogs: a dead primary must not hold the query
+// for its own timeout; the fallback answers and the "fallback used" line names
+// the profile.
+func TestFailoverAfterUsesFallbackAndLogs(t *testing.T) {
+	slowAddr := startHangingUpstream(t)
+	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r, err := New(context.Background(), Config{
+		Logger:            logger,
+		Upstreams:         []string{slowAddr},
+		FallbackUpstreams: []string{fallbackAddr},
+		FallbackProfile:   "backup",
+		FailoverAfter:     100 * time.Millisecond,
+		Listen:            []string{"127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err = r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	start := time.Now()
+	resp := query(t, r.UDPAddrs()[0], "example.com.", dns.TypeA)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("query took %v, want the failover deadline to apply", elapsed)
+	}
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || a.A.String() != "192.0.2.2" {
+		t.Fatalf("answer = %v, want the fallback's address", resp.Answer)
+	}
+	if fallbackHits.Load() == 0 {
+		t.Fatal("fallback upstream was never queried")
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "fallback used") || !strings.Contains(logged, "backup") {
+		t.Fatalf("missing fallback log line in:\n%s", logged)
+	}
+}
+
+// TestRuleUpstreamHonoursFailoverAfter: a per-domain rule's plain upstream is
+// bounded by the same failover budget as the profile's default upstreams.
+func TestRuleUpstreamHonoursFailoverAfter(t *testing.T) {
+	ruleAddr := startHangingUpstream(t)
+	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
+
+	r, err := New(context.Background(), Config{
+		Logger:            slog.Default(),
+		Upstreams:         []string{"tcp://127.0.0.1:1"},
+		Rules:             []Rule{{Domains: []string{"rule.test"}, Upstream: "udp://" + ruleAddr}},
+		FallbackUpstreams: []string{fallbackAddr},
+		FailoverAfter:     100 * time.Millisecond,
+		Listen:            []string{"127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err = r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	start := time.Now()
+	resp := query(t, r.UDPAddrs()[0], "www.rule.test.", dns.TypeA)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("query took %v, want the failover deadline to apply to the rule upstream", elapsed)
+	}
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if fallbackHits.Load() == 0 {
+		t.Fatal("fallback upstream was never queried")
+	}
+}
+
+// TestFallbackTimeoutBoundsExchange: a hanging fallback must not outlive its
+// total budget, including dnsproxy's internal retries.
+func TestFallbackTimeoutBoundsExchange(t *testing.T) {
+	hangAddr := startHangingUpstream(t)
+
+	r, err := New(context.Background(), Config{
+		Logger:            slog.Default(),
+		Upstreams:         []string{"tcp://127.0.0.1:1"},
+		FallbackUpstreams: []string{hangAddr},
+		FallbackTimeout:   100 * time.Millisecond,
+		Listen:            []string{"127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err = r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+
+	start := time.Now()
+	resp, _, err := c.Exchange(m, r.UDPAddrs()[0])
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("query took %v, want the fallback budget to bound it", elapsed)
+	}
+	if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
+		t.Fatalf("hanging fallback answered successfully: %v", resp.Answer)
+	}
+}
+
+// TestZeroTimingsKeepExistingBehaviour: zero FailoverAfter/FallbackTimeout add
+// no deadline, and the fallback still answers.
+func TestZeroTimingsKeepExistingBehaviour(t *testing.T) {
+	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
+
+	r, err := New(context.Background(), Config{
+		Logger:            slog.Default(),
+		Upstreams:         []string{"tcp://127.0.0.1:1"},
+		FallbackUpstreams: []string{fallbackAddr},
+		Listen:            []string{"127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if r.handler.failoverAfter != 0 || !r.handler.hasFallback {
+		t.Fatalf("handler timings = (%v, %v), want (0, true)",
+			r.handler.failoverAfter, r.handler.hasFallback)
+	}
+	if len(r.fallbackConf.Upstreams) != 1 {
+		t.Fatalf("fallback upstreams = %d, want 1", len(r.fallbackConf.Upstreams))
+	}
+	if u, ok := r.fallbackConf.Upstreams[0].(*boundedUpstream); !ok || u.timeout != 0 {
+		t.Fatalf("fallback upstream = %#v, want a boundedUpstream with no own deadline", r.fallbackConf.Upstreams[0])
+	}
+
+	if err = r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	resp := query(t, r.UDPAddrs()[0], "example.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if fallbackHits.Load() == 0 {
+		t.Fatal("fallback upstream was never queried")
 	}
 }

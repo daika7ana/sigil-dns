@@ -147,6 +147,11 @@ type ProfilePatch struct {
 	// An explicit empty value clears the fallback.
 	FallbackProfile *string `json:"fallback_profile,omitempty"`
 
+	// FailoverAfterSeconds/FallbackTimeoutSeconds set the failover budgets.
+	// Nil keeps the stored value; 0 means the default.
+	FailoverAfterSeconds   *int `json:"failover_after_seconds,omitempty"`
+	FallbackTimeoutSeconds *int `json:"fallback_timeout_seconds,omitempty"`
+
 	// PerDomain replaces the profile's per-domain routing rules.  A blank
 	// Upstream on an entry keeps the existing rule's upstream at the same index
 	// (replace-only), so a configured per-domain upstream never has to travel.
@@ -650,6 +655,13 @@ func applyProfilePatch(p *config.Profile, pp ProfilePatch) (err error) {
 
 	if pp.FallbackProfile != nil {
 		p.FallbackProfile = strings.TrimSpace(*pp.FallbackProfile)
+	}
+
+	if pp.FailoverAfterSeconds != nil {
+		p.FailoverAfterSeconds = *pp.FailoverAfterSeconds
+	}
+	if pp.FallbackTimeoutSeconds != nil {
+		p.FallbackTimeoutSeconds = *pp.FallbackTimeoutSeconds
 	}
 
 	if pp.Filtering != nil {

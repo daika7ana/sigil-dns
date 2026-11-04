@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/providers"
 	"github.com/daika7ana/sigil-dns/internal/resolver"
@@ -181,6 +182,26 @@ func TestValidationErrors(t *testing.T) {
 		{"fallback profile self", func(c *Config) {
 			p := c.Profiles["default"]
 			p.FallbackProfile = "default"
+			c.Profiles["default"] = p
+		}},
+		{"negative failover_after", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FailoverAfterSeconds = -1
+			c.Profiles["default"] = p
+		}},
+		{"failover_after too large", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FailoverAfterSeconds = MaxFailoverSeconds + 1
+			c.Profiles["default"] = p
+		}},
+		{"negative fallback_timeout", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FallbackTimeoutSeconds = -1
+			c.Profiles["default"] = p
+		}},
+		{"fallback_timeout too large", func(c *Config) {
+			p := c.Profiles["default"]
+			p.FallbackTimeoutSeconds = MaxFailoverSeconds + 1
 			c.Profiles["default"] = p
 		}},
 	}
@@ -506,9 +527,28 @@ func TestFallbackProfile(t *testing.T) {
 	if r.FallbackProvider != "Quad9" || r.FallbackProtocol != "dot" {
 		t.Errorf("fallback metadata = %q/%q", r.FallbackProvider, r.FallbackProtocol)
 	}
+	if r.FallbackProfileName != "backup" {
+		t.Errorf("FallbackProfileName = %q, want backup", r.FallbackProfileName)
+	}
+	if r.FailoverAfter != 10*time.Second || r.FallbackTimeout != 5*time.Second {
+		t.Errorf("failover budgets = %v/%v, want 10s/5s", r.FailoverAfter, r.FallbackTimeout)
+	}
 	// The primary's own endpoints are untouched.
 	if !slices.Equal(r.Upstreams, []string{"https://primary.example/dns-query"}) {
 		t.Errorf("Upstreams = %v", r.Upstreams)
+	}
+
+	// Explicit budgets reach the resolved settings.
+	bp := cfg.Profiles["primary"]
+	bp.FailoverAfterSeconds = 2
+	bp.FallbackTimeoutSeconds = 3
+	cfg.Profiles["primary"] = bp
+	r, err = Resolve(cfg, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve explicit budgets: %v", err)
+	}
+	if r.FailoverAfter != 2*time.Second || r.FallbackTimeout != 3*time.Second {
+		t.Errorf("failover budgets = %v/%v, want 2s/3s", r.FailoverAfter, r.FallbackTimeout)
 	}
 
 	// Renaming the fallback follows the reference.
@@ -532,6 +572,50 @@ func TestFallbackProfile(t *testing.T) {
 	if err = cfg.Validate(); err != nil {
 		t.Fatalf("Validate after delete: %v", err)
 	}
+}
+
+// TestFailoverTimingDefaults pins the YAML keys and the zero-means-default
+// rule for the two failover budgets.
+func TestFailoverTimingDefaults(t *testing.T) {
+	t.Run("omitted gets the defaults", func(t *testing.T) {
+		c := loadConfig(t, "profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n")
+		p := c.Profiles[DefaultProfileName]
+		if p.FailoverAfterSeconds != DefaultFailoverAfterSeconds {
+			t.Errorf("failover_after_seconds = %d, want %d", p.FailoverAfterSeconds, DefaultFailoverAfterSeconds)
+		}
+		if p.FallbackTimeoutSeconds != DefaultFallbackTimeoutSeconds {
+			t.Errorf("fallback_timeout_seconds = %d, want %d", p.FallbackTimeoutSeconds, DefaultFallbackTimeoutSeconds)
+		}
+		if p.FailoverAfter() != 10*time.Second || p.FallbackTimeout() != 5*time.Second {
+			t.Errorf("durations = %v/%v, want 10s/5s", p.FailoverAfter(), p.FallbackTimeout())
+		}
+	})
+
+	t.Run("explicit values round-trip", func(t *testing.T) {
+		c := loadConfig(t, "profiles:\n  default:\n    upstreams: [\"https://dns.quad9.net/dns-query\"]\n"+
+			"    failover_after_seconds: 2\n    fallback_timeout_seconds: 3\n")
+		p := c.Profiles[DefaultProfileName]
+		if p.FailoverAfter() != 2*time.Second || p.FallbackTimeout() != 3*time.Second {
+			t.Errorf("durations = %v/%v, want 2s/3s", p.FailoverAfter(), p.FallbackTimeout())
+		}
+	})
+}
+
+// loadConfig writes body to a temp config file and loads it.
+func loadConfig(t *testing.T, body string) (c *Config) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	return c
 }
 
 func TestInitIdempotence(t *testing.T) {

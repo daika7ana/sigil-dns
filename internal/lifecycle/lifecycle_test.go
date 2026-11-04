@@ -843,3 +843,19 @@ func TestEnableRetriesSystemPath(t *testing.T) {
 		t.Fatalf("flush events = %d, want 2 (initial + retry)", n)
 	}
 }
+
+// TestResolverConfigCarriesFailoverTiming: the failover budgets and the
+// fallback name reach the resolver config unchanged.
+func TestResolverConfigCarriesFailoverTiming(t *testing.T) {
+	l := &Lifecycle{cfg: Config{
+		FallbackProfile: "backup",
+		FailoverAfter:   2 * time.Second,
+		FallbackTimeout: 3 * time.Second,
+	}}
+
+	got := l.resolverConfig()
+	if got.FallbackProfile != "backup" || got.FailoverAfter != 2*time.Second || got.FallbackTimeout != 3*time.Second {
+		t.Fatalf("failover wiring = (%q, %v, %v), want (backup, 2s, 3s)",
+			got.FallbackProfile, got.FailoverAfter, got.FallbackTimeout)
+	}
+}

@@ -207,6 +207,14 @@ func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	fb := strings.TrimSpace(d.fallback)
 	pp.FallbackProfile = &fb
 
+	// A blank or invalid budget is not sent, so the stored value is kept.
+	if n := parseSeconds(d.failoverAfter); n > 0 {
+		pp.FailoverAfterSeconds = new(n)
+	}
+	if n := parseSeconds(d.fallbackTimeout); n > 0 {
+		pp.FallbackTimeoutSeconds = new(n)
+	}
+
 	pp.Filtering = &elevate.FilteringPatch{Enabled: new(d.filtering)}
 	if d.filtering {
 		if br := strings.TrimSpace(d.blockResp); br != "" {
