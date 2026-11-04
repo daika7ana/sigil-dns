@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -417,6 +418,28 @@ func startHangingUpstream(t *testing.T) (addr string) {
 	return pc.LocalAddr().String()
 }
 
+// syncBuffer is a log sink a test can read while the resolver's background
+// goroutines still write to it (an abandoned primary exchange logs after the
+// fallback has answered).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() (s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
 // TestFailoverAfterUsesFallbackAndLogs: a dead primary must not hold the query
 // for its own timeout; the fallback answers and the "fallback used" line names
 // the profile.
@@ -424,7 +447,7 @@ func TestFailoverAfterUsesFallbackAndLogs(t *testing.T) {
 	slowAddr := startHangingUpstream(t)
 	fallbackAddr, fallbackHits := startUpstream(t, "192.0.2.2")
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	r, err := New(context.Background(), Config{
