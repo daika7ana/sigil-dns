@@ -17,7 +17,7 @@ It runs `golang:1.27.3` with the repo at `/w` and forwards `GOOS`/`GOARCH`/`CGO_
 ./dev/go build -tags gui ./...                  # include the GUI
 ./dev/go build -tags tray ./...                 # build-only stub; CI builds it
 GOOS=windows GOARCH=amd64 ./dev/go build ./...  # real cross-compile (pure Go)
-./dev/go generate ./cmd/sigildns                # regenerate the admin/UAC manifest resource
+./dev/go generate ./cmd/sigildns                # regenerate the manifest + icon + PE version-info resource
 ./dev/go fmt ./internal/...                     # gofmt (fmt is a `go` subcommand)
 ./dev/go vet ./...
 ./dev/go vet -tags gui ./...                    # CI runs this too
@@ -45,9 +45,13 @@ no Node/WebView2). The Windows binary embeds `cmd/sigildns/sigildns.manifest`
 - The GUI software renderer has no fonts in the container, so headless text assertions
   are shape/colour-based.
 - The checked-in `cmd/sigildns/rsrc_windows_amd64.syso` is what embeds
-  `requireAdministrator`. If you edit `sigildns.manifest`, run
+  `requireAdministrator`, the icon, and the PE VERSIONINFO from
+  `cmd/sigildns/versioninfo.json` (publisher metadata is an antivirus-heuristic
+  signal; `release.yml` stamps the tag version into the JSON, then regenerates).
+  If you edit `sigildns.manifest` or `versioninfo.json`, run
   `./dev/go generate ./cmd/sigildns` and commit the `.syso` — CI regenerates it and fails
-  on a diff.
+  on a diff. The generator is `josephspurrier/goversioninfo` (pinned in the
+  directive, not in `go.mod`); `rsrc` has no version-info support.
 - `gh run list` must be filtered with **`--workflow CI`**: the auto dependency-graph
   workflow shares `headSha` and otherwise matches.
 - `integration-windows` depends on real Quad9 DoH and is **occasionally flaky**

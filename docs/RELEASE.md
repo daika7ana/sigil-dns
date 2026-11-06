@@ -121,7 +121,11 @@ The workflow lives at `.github/workflows/release.yml` and runs on
 3. Builds **both** binaries:
    `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X .../version.Version=<tag>" -o dist/sigildns.exe ./cmd/sigildns`
    and the same with `-tags gui` and `-H windowsgui` for
-   `dist/sigildns-gui.exe`. `-s -w` matches `dev/build.sh` and strips the
+   `dist/sigildns-gui.exe`. On a tag build it first stamps
+   `cmd/sigildns/versioninfo.json` with the tag and runs
+   `go generate ./cmd/sigildns`, so the embedded PE version information names
+   the release (a branch `workflow_dispatch` build keeps the committed value).
+   `-s -w` matches `dev/build.sh` and strips the
    symbol table and DWARF to keep the download small; Go runtime stack traces
    still include function names and line numbers.
 4. **Optional signing** — signs **both** binaries (see below).
@@ -238,5 +242,11 @@ unsigned build may see SmartScreen warnings; that is expected until signing is
 configured. `SHA256SUMS.txt` catches a corrupted download, not a tampered one —
 it is served from the same place as the zip, so only the Authenticode signature
 on the binaries is real proof of origin.
+
+Unsigned releases are also what antivirus machine-learning engines flag
+(`ML.Attribute.HighConfidence`, `Malicious.moderate.ml.score`,
+`Wacatac.B!ml`). The embedded version information removes one signal, but a
+signature is the only reliable fix; `docs/TROUBLESHOOTING.md` tells users how to
+verify a flagged download and report the false positive.
 
 Installation instructions are in the installer scripts and the user-facing docs.

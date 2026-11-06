@@ -4,7 +4,7 @@ package gui
 
 // Icon resource / Win32 constants.
 const (
-	iconResourceID = 2 // rsrc: manifest id 1, then the .ico group (see go:generate)
+	iconResourceID = 2 // resource: manifest id 1, then the .ico group (see go:generate)
 	imageIcon      = 1
 	wmSetIcon      = 0x0080
 	iconSmall      = 0

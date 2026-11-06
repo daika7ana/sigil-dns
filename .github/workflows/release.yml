@@ -105,6 +105,19 @@ jobs:
           Write-Host "Building version $version"
           $stamp = "-X github.com/daika7ana/sigil-dns/internal/version.Version=$version"
 
+          # Stamp the embedded PE VERSIONINFO from the tag so Explorer's
+          # Properties match the release (the committed versioninfo.json is the
+          # fallback for local builds), then regenerate the resource.
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $numeric = $version.TrimStart('v')
+            $infoPath = Join-Path $PWD 'cmd/sigildns/versioninfo.json'
+            $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+            $info.StringFileInfo.FileVersion = $numeric
+            $info.StringFileInfo.ProductVersion = $numeric
+            [IO.File]::WriteAllText($infoPath, ($info | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            go generate ./cmd/sigildns
+          }
+
           # Console subsystem: CLI + service host + headless --apply helper.
           # -s -w matches dev/build.sh: strip the symbol table and DWARF so the
           # release download stays small (Go runtime stack traces still work).

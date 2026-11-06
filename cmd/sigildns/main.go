@@ -50,12 +50,15 @@ const (
 )
 
 // The Windows binary embeds an application manifest requesting
-// requireAdministrator, so every launch elevates (UAC). The generated .syso is
-// committed; regenerate from the repo root with:
+// requireAdministrator (so every launch elevates, UAC), the icon, and PE
+// VERSIONINFO naming the product and publisher: unsigned Go binaries with no
+// version info are a textbook AV machine-learning false positive. release.yml
+// stamps FileVersion/ProductVersion from the tag before rebuilding. The
+// generated .syso is committed; regenerate from the repo root with:
 //
 //	./dev/go generate ./cmd/sigildns
 //
-//go:generate go run github.com/akavel/rsrc@v0.10.2 -manifest sigildns.manifest -ico ../../assets/sigildns.ico -arch amd64 -o rsrc_windows_amd64.syso
+//go:generate go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 -o rsrc_windows_amd64.syso -icon ../../assets/sigildns.ico -manifest sigildns.manifest -propagate-ver-strings
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "sigildns:", redact.Text(err.Error()))

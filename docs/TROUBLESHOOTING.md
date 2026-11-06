@@ -26,6 +26,29 @@ right-click → **Run with PowerShell**. A group policy that forbids elevation
 (`ConsentPromptBehaviorAdmin`) blocks both — an elevated prompt started by IT is
 then required.
 
+## Antivirus flags the binaries
+
+Hits like `ML.Attribute.HighConfidence` (Symantec),
+`Malicious.moderate.ml.score` (Trapmine), or `Trojan:Win32/*.ml` / `Wacatac.B!ml`
+(Defender) are false positives, not an infection. The binaries are Go
+executables that request elevation, install a service, write NRPT rules through
+PowerShell, and run a local DNS proxy — behaviour the machine-learning engines
+score high, especially for an unsigned file. Every release is also a new hash,
+so no reputation has built up.
+
+Check the download before excluding anything:
+
+```powershell
+(Get-FileHash .\sigildns_<version>_windows_amd64.zip -Algorithm SHA256).Hash
+```
+
+It must match `SHA256SUMS.txt` on the release page; a match means the file is
+byte-for-byte what the release workflow published. Then either report the false
+positive to the vendor named in the detection (the only fix that clears it for
+everyone, and it must be repeated for each new build), or exclude the two `.exe`
+files, or the folder you installed them into. Do not disable real-time
+protection or exclude all of `C:\`.
+
 ## Where things live
 
 | Item | Windows path |
