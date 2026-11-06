@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-06
+
 ### Added
 - Per-profile failover budgets: `failover_after_seconds` (default 10) caps the active profile's exchange, dnsproxy's own retries included, before the fallback profile is used; `fallback_timeout_seconds` (default 5) caps the fallback's whole exchange. Both sit next to the fallback selector in the profile editor, so a slow primary can be made to fail over sooner.
 - A rate-limited `fallback used` line at info level when the fallback answers a query, naming the fallback profile and its duration. It never carries a resolver id, upstream URL, or query name.
+
+### Changed
+- The Windows binaries now embed PE version information (product name, publisher, file and product version) alongside the manifest and icon, so Explorer's Properties dialog and the security products that read it see a named, versioned release instead of an anonymous executable; `docs/TROUBLESHOOTING.md` explains how to verify a download flagged by antivirus. A signature is still the only reliable fix.
 
 ## [0.7.0] - 2026-11-02
 

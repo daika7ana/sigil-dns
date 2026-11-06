@@ -3,13 +3,13 @@
 		"FileVersion": {
 			"Major": 0,
 			"Minor": 7,
-			"Patch": 0,
+			"Patch": 1,
 			"Build": 0
 		},
 		"ProductVersion": {
 			"Major": 0,
 			"Minor": 7,
-			"Patch": 0,
+			"Patch": 1,
 			"Build": 0
 		},
 		"FileFlagsMask": "3f",
@@ -22,14 +22,14 @@
 		"Comments": "",
 		"CompanyName": "daika7ana",
 		"FileDescription": "Sigil DNS - encrypted DNS client for Windows",
-		"FileVersion": "0.7.0",
+		"FileVersion": "0.7.1",
 		"InternalName": "sigildns",
 		"LegalCopyright": "Copyright (C) 2026 daika7ana. GPL-3.0-or-later.",
 		"LegalTrademarks": "",
 		"OriginalFilename": "",
 		"PrivateBuild": "",
 		"ProductName": "Sigil DNS",
-		"ProductVersion": "0.7.0",
+		"ProductVersion": "0.7.1",
 		"SpecialBuild": ""
 	},
 	"VarFileInfo": {
