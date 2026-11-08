@@ -21,6 +21,10 @@ const (
 	// maxRequestBytes caps the bytes read from a single connection.
 	maxRequestBytes = 64 << 10
 
+	// maxRequestsPerConn caps the requests one connection may issue, so a
+	// caller holding a connection slot cannot starve the others.
+	maxRequestsPerConn = 128
+
 	// defaultMaxConns is the maximum number of concurrent client connections.
 	defaultMaxConns = 32
 
@@ -109,7 +113,7 @@ type Authorizer func(conn net.Conn) Caller
 func AdminAuthorizer(net.Conn) Caller { return Caller{Admin: true} }
 
 // ReadOnlyAuthorizer denies administrative privileges.  The status pipe is
-// served with this authorizer, so enable/disable/reload are rejected.
+// served with this authorizer, so enable/reload are rejected.
 func ReadOnlyAuthorizer(net.Conn) Caller { return Caller{Admin: false} }
 
 // Server dispatches IPC requests.
@@ -213,16 +217,16 @@ func (s *Server) SetStatsReporter(r StatsReporter) *Server {
 // untrusted input.
 func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp Response) {
 	if req.Version != ProtocolVersion {
-		return errorResponse(ErrVersion)
+		return s.errorResponse(ErrVersion)
 	}
 	if !req.Method.valid() {
-		return errorResponse(ErrMethod)
+		return s.errorResponse(ErrMethod)
 	}
 
 	// Single authorization table (SPEC §15.3.2): the SDDL is the primary
 	// boundary, but reject admin methods from non-admin callers here too.
 	if req.Method.privilege() == Admin && !caller.Admin {
-		return errorResponse(ErrForbidden)
+		return s.errorResponse(ErrForbidden)
 	}
 
 	switch req.Method {
@@ -230,98 +234,91 @@ func (s *Server) Handle(ctx context.Context, caller Caller, req Request) (resp R
 		return s.handleStatus()
 
 	case MethodInfo:
-		return marshalOK(Info{
+		return s.marshalOK(Info{
 			ProtocolVersion: ProtocolVersion,
 			AppVersion:      version.Version,
 			Capabilities:    Capabilities,
 		})
 
 	case MethodConfigSummary:
-		return marshalOK(s.configSummary())
+		return s.marshalOK(s.configSummary())
 
 	case MethodEnable:
 		if err := s.lc.Enable(ctx); err != nil {
-			return errorResponse(err)
-		}
-
-		return okResponse(nil)
-
-	case MethodDisable:
-		if err := s.lc.Disable(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	case MethodReload:
 		if s.reloader == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		sum, err := s.reloader.Reload(ctx)
 		if err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
-		return marshalOK(sum)
+		return s.marshalOK(sum)
 
 	case MethodRestore:
 		if s.restorer == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		if err := s.restorer.Restore(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	case MethodRefreshLists:
 		if s.refresher == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		if err := s.refresher.RefreshLists(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	case MethodClearCache:
 		if s.clearer == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		if err := s.clearer.ClearCache(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	case MethodPauseFiltering:
 		if s.pauser == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		if err := s.pauser.PauseFiltering(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	case MethodResumeFiltering:
 		if s.resumer == nil {
-			return errorResponse(ErrUnsupported)
+			return s.errorResponse(ErrUnsupported)
 		}
 
 		if err := s.resumer.ResumeFiltering(ctx); err != nil {
-			return errorResponse(err)
+			return s.errorResponse(err)
 		}
 
 		return okResponse(nil)
 
 	default:
-		return errorResponse(ErrMethod)
+		return s.errorResponse(ErrMethod)
 	}
 }
 
@@ -339,7 +336,7 @@ func (s *Server) safeHandle(ctx context.Context, caller Caller, req Request) (re
 					"method", string(req.Method), "panic_type", fmt.Sprintf("%T", r))
 			}
 
-			resp = errorResponse(ErrInternal)
+			resp = s.errorResponse(ErrInternal)
 		}
 	}()
 
@@ -354,7 +351,7 @@ func (s *Server) handleStatus() (resp Response) {
 			return okResponse(nil)
 		}
 
-		return errorResponse(err)
+		return s.errorResponse(err)
 	}
 
 	if s.sanitize {
@@ -368,12 +365,12 @@ func (s *Server) handleStatus() (resp Response) {
 			}
 		}
 
-		return marshalOK(dto)
+		return s.marshalOK(dto)
 	}
 
 	data, err := json.Marshal(st)
 	if err != nil {
-		return errorResponse(err)
+		return s.errorResponse(err)
 	}
 
 	return okResponse(data)
@@ -387,10 +384,10 @@ func (s *Server) configSummary() (sum ConfigSummary) {
 }
 
 // marshalOK marshals v into a success response.
-func marshalOK(v any) (resp Response) {
+func (s *Server) marshalOK(v any) (resp Response) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return errorResponse(err)
+		return s.errorResponse(err)
 	}
 
 	return okResponse(data)
@@ -439,9 +436,10 @@ func okResponse(data json.RawMessage) (resp Response) {
 
 // errorResponse is the single boundary every error crosses on its way to a
 // client, so URLs (which can carry a resolver id) are scrubbed here rather than
-// in each method.
-func errorResponse(err error) Response {
-	return Response{Version: ProtocolVersion, Error: redact.Text(err.Error())}
+// in each method.  The seeded literals are read per call because the handler's
+// seed set is replaced on every config reload.
+func (s *Server) errorResponse(err error) Response {
+	return Response{Version: ProtocolVersion, Error: redact.Scrub(err.Error(), redact.Secrets(s.logger.Handler()))}
 }
 
 // Serve accepts connections on ln and serves each until it closes.  auth must
@@ -548,12 +546,13 @@ func CloseListener(ln net.Listener, timeout time.Duration) {
 }
 
 // serveConn reads requests from a single client until EOF, applying read and
-// write deadlines and a per-connection byte cap.
+// write deadlines, a per-connection byte cap, and a per-connection request cap
+// (the caller closes the connection once serveConn returns).
 func (s *Server) serveConn(ctx context.Context, conn net.Conn, caller Caller) {
 	dec := json.NewDecoder(io.LimitReader(conn, maxRequestBytes))
 	enc := json.NewEncoder(conn)
 
-	for {
+	for i := 0; i < maxRequestsPerConn; i++ {
 		_ = conn.SetReadDeadline(time.Now().Add(s.requestTimeout))
 
 		var req Request
@@ -563,7 +562,7 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn, caller Caller) {
 			}
 
 			_ = conn.SetWriteDeadline(time.Now().Add(s.requestTimeout))
-			_ = enc.Encode(errorResponse(ErrMalformed))
+			_ = enc.Encode(s.errorResponse(ErrMalformed))
 
 			return
 		}

@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -178,25 +180,32 @@ func Apply(ctx context.Context, req Request) (res Result, err error) {
 // allowlisted patch, then drives the service over the verified control pipe.  It
 // writes its verdict to the sibling .res file.
 func HelperMain(reqPath string) (err error) {
+	// Every early exit below still writes a verdict: the caller otherwise only
+	// sees its timeout and reports "helper did not report a result".
 	elevated, err := isElevated()
 	if err != nil {
+		_ = writeResult(reqPath, Result{Err: "elevation could not be verified"})
 		return fmt.Errorf("checking elevation: %w", err)
 	}
 	if !elevated {
+		_ = writeResult(reqPath, Result{Err: "helper is not elevated"})
 		return errors.New("--apply must run elevated")
 	}
 
 	dir, err := stagingDir()
 	if err != nil {
+		_ = writeResult(reqPath, Result{Err: "staging directory is unavailable"})
 		return err
 	}
 	data, err := readStagingRequest(reqPath, dir)
 	if err != nil {
+		_ = writeResult(reqPath, Result{Err: "request could not be read"})
 		return err
 	}
 
 	plain, err := dpapiUnprotect(data)
 	if err != nil {
+		_ = writeResult(reqPath, Result{Err: "request could not be decrypted"})
 		return fmt.Errorf("unprotecting request: %w", err)
 	}
 
@@ -234,10 +243,11 @@ func ServiceStop() (err error) {
 }
 
 // ServiceUninstall runs the same ordered, fail-closed uninstall the elevated
-// helper drives (restore -> stop -> verify interception down -> delete) so the
-// `service uninstall` CLI command cannot delete a registration while
-// interception is still live.  It lives here because internal/elevate already
-// imports internal/service; the reverse would be an import cycle.
+// helper drives (stop-and-verify when running, otherwise restore -> stop ->
+// verify interception down -> delete) so the `service uninstall` CLI command
+// cannot delete a registration while interception is still live.  It lives here
+// because internal/elevate already imports internal/service; the reverse would be
+// an import cycle.
 func ServiceUninstall() (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
 	defer cancel()
@@ -549,11 +559,12 @@ func verifyInterceptionDown(ctx context.Context) (err error) {
 	return nil
 }
 
-// uninstallService is compound and abort-on-failure.  It clears live
-// interception first -- via the verified control pipe when the service is
-// running, otherwise through a local config-independent restore -- stops and
-// confirms the service, proves interception is down, and only then deletes the
-// registration.
+// uninstallService is compound and abort-on-failure.  It stops and confirms the
+// service first when it is running (its shutdown restore is the one that still
+// owns the resolver; a failed stop must not leave it running with protection
+// off).  Interception is then proven down -- restoring first when the service
+// is already stopped and state says it may be enabled -- and only then is the
+// registration deleted.
 func uninstallService(ctx context.Context) (res Result) {
 	running, pid := serviceRunning()
 	enabled, dirty, active := uninstallStateFrom(running, loadPersistedState, func() bool {
@@ -570,6 +581,13 @@ func uninstallService(ctx context.Context) (res Result) {
 			return nil
 		},
 		func() error {
+			if running {
+				if sRes := stopServiceAndVerify(ctx); sRes.Err != "" {
+					return errors.New(sRes.Err)
+				}
+
+				return nil
+			}
 			if sErr := service.Stop(); sErr != nil && !errors.Is(sErr, windows.ERROR_SERVICE_NOT_ACTIVE) {
 				return errors.New("could not stop the service before uninstall")
 			}
@@ -587,6 +605,7 @@ func uninstallService(ctx context.Context) (res Result) {
 			if dErr := service.Delete(); dErr != nil {
 				return errors.New("could not remove the service registration")
 			}
+			deleteLogonTask()
 
 			return nil
 		},
@@ -596,6 +615,24 @@ func uninstallService(ctx context.Context) (res Result) {
 	}
 
 	return Result{OK: true, Message: "service uninstalled (" + reason + ")"}
+}
+
+// deleteLogonTask best-effort removes the per-user logon task that the tray
+// autostart creates.  The name is duplicated from gui.autostartTaskName rather
+// than importing the GUI package; failures are ignored because uninstall has
+// already succeeded.
+func deleteLogonTask() {
+	// Absolute path: this runs elevated, and a bare name would resolve through
+	// the current directory first, which may be user-writable.
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+
+	cmd := exec.Command(filepath.Join(systemRoot, "System32", "schtasks.exe"),
+		"/Delete", "/TN", "SigilDNS", "/F")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = cmd.Run()
 }
 
 // clearCaches resets the resolver cache and the Windows DNS cache.  A running
@@ -936,7 +973,22 @@ func writeResult(reqPath string, res Result) (err error) {
 		resPath = reqPath + ".res"
 	}
 
-	if err = os.WriteFile(resPath, body, 0o600); err != nil {
+	if err = os.Remove(resPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("writing result: %w", err)
+	}
+
+	// O_EXCL: the staging directory is user-writable, so a pre-planted link at
+	// this path must fail the write rather than redirect an administrator's.
+	f, err := os.OpenFile(resPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("writing result: %w", err)
+	}
+	if _, err = f.Write(body); err != nil {
+		_ = f.Close()
+
+		return fmt.Errorf("writing result: %w", err)
+	}
+	if err = f.Close(); err != nil {
 		return fmt.Errorf("writing result: %w", err)
 	}
 

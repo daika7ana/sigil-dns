@@ -5,6 +5,7 @@ package ipc
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -40,6 +41,12 @@ func TestWindowsPipeRoundTrip(t *testing.T) {
 	}
 	if st == nil || st.Mode != state.ModeOn {
 		t.Fatalf("Status = %+v", st)
+	}
+
+	// The control pipe's identity gate: every privileged GUI action depends on
+	// the client seeing the service's own PID.
+	if pid, ok := ServerPID(conn); !ok || pid != uint32(os.Getpid()) {
+		t.Fatalf("ServerPID = (%d, %v), want (%d, true)", pid, ok, os.Getpid())
 	}
 
 	// Disconnect before shutting down: Serve drains in-flight connections

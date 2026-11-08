@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daika7ana/sigil-dns/internal/redact"
 	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
@@ -176,7 +177,9 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("okResponse = %+v", resp)
 	}
 
-	data, err = json.Marshal(errorResponse(ErrForbidden))
+	srv := NewServer(&fakeLifecycle{}, nil)
+
+	data, err = json.Marshal(srv.errorResponse(ErrForbidden))
 	if err != nil {
 		t.Fatalf("marshal response: %v", err)
 	}
@@ -215,13 +218,13 @@ func TestHandleAuthorization(t *testing.T) {
 	}
 
 	// State-changing methods require admin.
-	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRestore} {
+	for _, m := range []Method{MethodEnable, MethodReload, MethodRestore} {
 		if resp := srv.Handle(ctx, Caller{Admin: false}, Request{Version: ProtocolVersion, Method: m}); resp.OK ||
 			resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s non-admin: %+v", m, resp)
 		}
 	}
-	if lc.enableCalls != 0 || lc.disableCalls != 0 {
+	if lc.enableCalls != 0 {
 		t.Fatal("non-admin caller reached the lifecycle")
 	}
 
@@ -432,11 +435,15 @@ func TestClientRoundTrip(t *testing.T) {
 	if err = c.Enable(ctx); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	if err = Exchange(conn, MethodDisable, nil); err != nil {
-		t.Fatalf("Disable: %v", err)
+	var info Info
+	if err = Exchange(conn, MethodInfo, &info); err != nil {
+		t.Fatalf("Info: %v", err)
 	}
-	if lc.enableCalls != 1 || lc.disableCalls != 1 {
-		t.Fatalf("calls: enable=%d disable=%d", lc.enableCalls, lc.disableCalls)
+	if info.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("Info = %+v", info)
+	}
+	if lc.enableCalls != 1 {
+		t.Fatalf("enableCalls = %d, want 1", lc.enableCalls)
 	}
 }
 
@@ -793,7 +800,9 @@ func TestServeGivesUpAfterRepeatedAcceptFailures(t *testing.T) {
 func TestErrorResponseScrubsURLs(t *testing.T) {
 	const id = "abc123secret"
 
-	resp := errorResponse(fmt.Errorf(
+	srv := NewServer(&fakeLifecycle{}, nil)
+
+	resp := srv.errorResponse(fmt.Errorf(
 		"creating upstream %q: dial failed", "https://dns.nextdns.io/"+id,
 	))
 	if strings.Contains(resp.Error, id) {
@@ -801,5 +810,15 @@ func TestErrorResponseScrubsURLs(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "https://dns.nextdns.io") {
 		t.Fatalf("response lost the host: %q", resp.Error)
+	}
+
+	// DoT/DoQ carry the id as the hostname label, which a scheme+host
+	// reduction cannot remove; the seeded scrubber must.
+	srv = NewServer(&fakeLifecycle{}, slog.New(redact.Handler(slog.NewTextHandler(io.Discard, nil), []string{id})))
+	resp = srv.errorResponse(fmt.Errorf(
+		"creating upstream %q: dial failed", "tls://"+id+".dns.nextdns.io:853",
+	))
+	if strings.Contains(resp.Error, id) {
+		t.Fatalf("response leaks the DoT host label: %q", resp.Error)
 	}
 }

@@ -1002,7 +1002,9 @@ func reloadRelevant(before, after *config.Config) (changed bool) {
 func uninstallPlan(running, enabled, dirty, active bool) (restore bool, reason string) {
 	switch {
 	case running:
-		return true, "running service; interception is restored first"
+		// A running service is stopped (and the stop confirmed) before anything
+		// else: its shutdown restore is the one that still holds the resolver.
+		return false, "running service; it is stopped and verified first"
 	case active:
 		return true, "active interception is restored first"
 	case enabled || dirty:
@@ -1016,7 +1018,7 @@ func uninstallPlan(running, enabled, dirty, active bool) (restore bool, reason s
 // positive NRPT probe.  load reports (enabled, dirty, ok); a missing or corrupt
 // state.json (ok=false) is NOT a negative witness.  probeActive reports whether
 // sigildns NRPT interception is currently present.  When the service is
-// running it is always restored, so the probe is skipped.  Pure so the
+// running it is stopped first, so the probe is skipped.  Pure so the
 // fail-open default is unit-testable.
 func uninstallStateFrom(
 	running bool,

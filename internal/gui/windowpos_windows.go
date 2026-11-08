@@ -4,6 +4,8 @@ package gui
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -285,9 +287,12 @@ func refocusLater(w *gogui.Window, tries int) {
 // focusExistingWindow brings the already-open window back: it restores a
 // minimized window and re-maximizes one that was minimized from the maximized
 // state.  The tray host's Open action uses it before launching a new window.
+// The window must belong to this executable: any same-session process can
+// create one with the same title, and raising an impostor would hand it the
+// foreground the user asked for.
 func focusExistingWindow() {
 	hwnd := findWindowByTitle(windowTitle)
-	if hwnd == 0 {
+	if hwnd == 0 || !ownedByThisExe(hwnd) {
 		return
 	}
 
@@ -305,6 +310,36 @@ func focusExistingWindow() {
 	// A refused foreground leaves the window visible but unfocused, where
 	// go-gui drops input; focusHWND retries with the foreground-thread attach.
 	focusHWND(hwnd)
+}
+
+// ownedByThisExe reports whether hwnd's process image is this executable.  A
+// second instance is a different process, so a PID comparison cannot be used.
+func ownedByThisExe(hwnd uintptr) (ok bool) {
+	var pid uint32
+	procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return false
+	}
+
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+
+	buf := make([]uint16, 1024)
+	size := uint32(len(buf))
+	if err = windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
+		return false
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+
+	// Full path, not just the file name: any process can be renamed to match.
+	return strings.EqualFold(filepath.Clean(windows.UTF16ToString(buf[:size])), filepath.Clean(self))
 }
 
 // windowVisible reports whether the titled window is actually on screen,

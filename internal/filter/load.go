@@ -43,7 +43,9 @@ type List struct {
 }
 
 // LoadAll reads every list and returns the raw contents.  Lists with identical
-// content are parsed once.
+// content are parsed once.  A source that fails is skipped: the lists that did
+// load are returned together with the joined errors, so one broken source does
+// not discard the rest.  Callers decide whether a partial set is usable.
 //
 // Note: per SPEC §6 the plan mentioned ETag/If-None-Match refresh, but AdGuard
 // Home does not use conditional requests; its pattern is an unconditional GET
@@ -51,6 +53,7 @@ type List struct {
 // a per-list sha256.
 func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	seen := map[[32]byte]struct{}{}
+	var failures []error
 
 	for i, l := range lists {
 		if strings.TrimSpace(l.Source) == "" {
@@ -59,7 +62,8 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 
 		data, lErr := loadOne(ctx, l.Source)
 		if lErr != nil {
-			return nil, listError(i, l.Source, lErr)
+			failures = append(failures, listError(i, l.Source, lErr))
+			continue
 		}
 
 		c := sha256.Sum256(data)
@@ -71,7 +75,7 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 		raw = append(raw, RawList{Text: data})
 	}
 
-	return raw, nil
+	return raw, errors.Join(failures...)
 }
 
 // listFailure carries the static, source-free message while keeping the

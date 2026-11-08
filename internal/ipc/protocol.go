@@ -63,9 +63,6 @@ const (
 	// MethodEnable is state-changing and requires administrator privileges.
 	MethodEnable Method = "enable"
 
-	// MethodDisable is state-changing and requires administrator privileges.
-	MethodDisable Method = "disable"
-
 	// MethodReload is state-changing and requires administrator privileges.
 	MethodReload Method = "reload"
 
@@ -116,7 +113,6 @@ var methodPrivileges = map[Method]Privilege{
 	MethodInfo:            ReadOnly,
 	MethodConfigSummary:   ReadOnly,
 	MethodEnable:          Admin,
-	MethodDisable:         Admin,
 	MethodReload:          Admin,
 	MethodRestore:         Admin,
 	MethodRefreshLists:    Admin,

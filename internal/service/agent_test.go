@@ -299,7 +299,8 @@ func TestAgentStatusPipeReadOnly(t *testing.T) {
 }
 
 // TestAgentStopGated checks Stop does not error or call Disable when the
-// session never got as far as enabling interception.
+// session never got as far as enabling interception -- except for a corrupt
+// state file, which must still disarm.
 func TestAgentStopGated(t *testing.T) {
 	t.Run("no state", func(t *testing.T) {
 		lc := &fakeAgentLC{stErr: state.ErrNoState, startupErr: errors.New("boom")}
@@ -311,6 +312,20 @@ func TestAgentStopGated(t *testing.T) {
 		}
 		if lc.disableCalls != 0 {
 			t.Fatalf("disableCalls = %d, want 0", lc.disableCalls)
+		}
+	})
+
+	t.Run("corrupt state", func(t *testing.T) {
+		// No Start: Start's own failure cleanup would also call Disable, and
+		// this row is about the stop path.
+		lc := &fakeAgentLC{stErr: state.ErrCorrupt}
+		a := newTestAgent(t, lc)
+
+		if err := a.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if lc.disableCalls != 1 {
+			t.Fatalf("disableCalls = %d, want 1 so a mid-run corruption still disarms", lc.disableCalls)
 		}
 	})
 

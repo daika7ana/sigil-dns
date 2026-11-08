@@ -52,6 +52,30 @@ func TestLoadAllHTTP(t *testing.T) {
 	}
 }
 
+// TestLoadAllKeepsGoodLists: one failing source must not discard the lists that
+// did load; the failure comes back alongside the partial set.
+func TestLoadAllKeepsGoodLists(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.txt")
+	if err := os.WriteFile(good, []byte("||good.test^\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := LoadAll(context.Background(), []List{
+		{Source: good},
+		{Source: filepath.Join(dir, "missing.txt")},
+	})
+	if err == nil {
+		t.Fatal("expected an error for the missing source")
+	}
+	if len(raw) != 1 || !strings.Contains(string(raw[0].Text), "good.test") {
+		t.Fatalf("raw = %+v, want the good list", raw)
+	}
+	if strings.Contains(err.Error(), "missing.txt") {
+		t.Errorf("error leaked the source: %v", err)
+	}
+}
+
 func TestLoadRejectsNonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusNotFound)

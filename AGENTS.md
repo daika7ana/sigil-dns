@@ -113,7 +113,7 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
   `refresh_lists`/`clear_cache`. Every field is validated (bootstrap as IP literals,
   provider/variant/protocol against the registry, id charset/length, explicit-zero
   rejection); ids travel only in the DPAPI-sealed body; blank id = keep. The control pipe
-  has only `reload`/`enable`/`disable`/`restore`/`refresh_lists`/`clear_cache`, each
+  has only `reload`/`enable`/`restore`/`refresh_lists`/`clear_cache`, each
   classified in the §15.3 privilege table.
   - An **explicit empty** patch bootstrap clears the list; `normalize()` only defaults a
     `nil` one. That is how a bootstrap-free provider (OpenBLD, NextDNS `ultralow`) stays

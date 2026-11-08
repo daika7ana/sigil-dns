@@ -240,6 +240,32 @@ func TestRewriteDoesNotCountAsBlocked(t *testing.T) {
 	}
 }
 
+// TestHostsOverrideDoesNotCountAsBlocked: a hosts mapping to a real address is
+// an answer, not a block, so it must not inflate the blocked counter; a
+// 0.0.0.0 hosts entry still counts.
+func TestHostsOverrideDoesNotCountAsBlocked(t *testing.T) {
+	upstream, _ := startUpstream(t, "192.0.2.1")
+	list := writeList(t, "192.168.1.10 intranet.local\n0.0.0.0 blocked.test\n")
+
+	r, qaddr := startFilteredResolver(t, upstream, list, BlockResponseZero)
+
+	resp := query(t, qaddr, "intranet.local.", dns.TypeA)
+	if got := firstA(t, resp); got != "192.168.1.10" {
+		t.Fatalf("hosts answer = %s, want 192.168.1.10", got)
+	}
+	if got := r.Stats().Blocked; got != 0 {
+		t.Fatalf("hosts override counted as blocked: %d", got)
+	}
+
+	resp = query(t, qaddr, "blocked.test.", dns.TypeA)
+	if got := firstA(t, resp); got != "0.0.0.0" {
+		t.Fatalf("blocked answer = %s, want 0.0.0.0", got)
+	}
+	if got := r.Stats().Blocked; got != 1 {
+		t.Fatalf("blocked count = %d, want 1", got)
+	}
+}
+
 // TestRewriteAcceptsIPv4MappedAAAA: an explicit 128-bit rewrite value is a
 // valid AAAA answer and must not turn into an empty response.
 func TestRewriteAcceptsIPv4MappedAAAA(t *testing.T) {

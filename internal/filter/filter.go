@@ -19,6 +19,10 @@ import (
 // ErrNoLists is returned by New when no raw lists are provided.
 var ErrNoLists = errors.New("no filter lists provided")
 
+// ErrNoRules is returned by New when the lists parse to zero rules, e.g. when a
+// source serves a 200 error page that is not HTML.
+var ErrNoRules = errors.New("filter lists contain no usable rules")
+
 // Action is the outcome of a filter match.
 type Action int
 
@@ -106,8 +110,16 @@ func New(lists []RawList) (e *Engine, err error) {
 		return nil, fmt.Errorf("creating rule storage: %w", err)
 	}
 
+	eng := urlfilter.NewDNSEngine(storage)
+	// An engine with no rules would silently disable filtering.
+	if eng.RulesCount() == 0 {
+		_ = storage.Close()
+
+		return nil, ErrNoRules
+	}
+
 	return &Engine{
-		eng:     urlfilter.NewDNSEngine(storage),
+		eng:     eng,
 		storage: storage,
 	}, nil
 }

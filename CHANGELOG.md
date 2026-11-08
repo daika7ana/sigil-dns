@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- One broken filter-list source no longer discards the lists that did load, and a source that answers 200 with content that parses to no rules is rejected instead of silently turning filtering off.
+- `service uninstall` stops and verifies the service before removing it, so a failed stop cannot leave it running with interception off; uninstall also removes the per-user `SigilDNS` logon task.
+- A per-domain rule upstream containing whitespace is rejected instead of silently becoming several load-balanced upstreams.
+- Hosts entries that map a name to a real address no longer count as blocked queries.
+- The elevated helper reports the cause of early failures (elevation, staging, request, decryption) instead of "did not report a result", and writes its result with `O_EXCL` so a pre-planted link cannot redirect an administrator write.
+- Resolver ids are scrubbed from IPC error responses for DoT/DoQ profiles, where the id is the host label.
+- Raising the already-open window only accepts a window owned by this executable.
+
+### Changed
+- One IPC connection may issue at most 128 requests, so a status-pipe holder cannot occupy every slot indefinitely.
+- The unused IPC `disable` method was removed; the CLI `disable` command is unchanged.
+
 ## [0.7.1] - 2026-11-06
 
 ### Added

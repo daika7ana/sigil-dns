@@ -64,6 +64,21 @@ func TestSource(t *testing.T) {
 	}
 }
 
+// TestScrubRemovesSeededIDs covers the seeded counterpart of Text: a DoT/DoQ
+// id that is the hostname label must not survive an IPC error message.
+func TestScrubRemovesSeededIDs(t *testing.T) {
+	const id = "abc123"
+
+	for _, in := range []string{
+		"tls://" + id + ".dns.nextdns.io:853",
+		"https://dns.nextdns.io/" + id,
+	} {
+		if out := Scrub(in, []string{id}); strings.Contains(out, id) {
+			t.Fatalf("Scrub(%q) = %q still contains the id", in, out)
+		}
+	}
+}
+
 // TestUpstreamDoesNotLeakID is the explicit regression guard from the review:
 // a planted NextDNS/ControlD id must never appear in redacted output.
 func TestUpstreamDoesNotLeakID(t *testing.T) {

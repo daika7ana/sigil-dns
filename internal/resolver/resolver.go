@@ -329,7 +329,10 @@ func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error
 
 	raw, err := filter.LoadAll(ctx, fc.Lists)
 	if err != nil {
-		return fmt.Errorf("loading filter lists: %w", err)
+		if len(raw) == 0 {
+			return fmt.Errorf("loading filter lists: %w", err)
+		}
+		r.logger.WarnContext(ctx, "some filter lists failed to load", "err", err)
 	}
 	if len(raw) == 0 {
 		r.setFilterState(nil)
@@ -455,9 +458,15 @@ func parseRules(rules []Rule, opts *upstream.Options) (conf *proxy.UpstreamConfi
 
 // ValidateRuleUpstream reports whether u is a per-domain upstream the dnsproxy
 // parser accepts.  It parses one synthetic rule with zero options, the same
-// configuration parseRules gets for a bootstrap-free profile.  The error is
-// static, so no URL can leak into a caller-visible message.
+// configuration parseRules gets for a bootstrap-free profile.  Whitespace is
+// rejected: dnsproxy splits an upstream on spaces (strings.Fields), so
+// "tls://1.1.1.1 tls://1.0.0.1" would silently become two load-balanced
+// upstreams.  The error is static, so no URL can leak into a caller-visible
+// message.
 func ValidateRuleUpstream(u string) (err error) {
+	if strings.ContainsAny(u, " \t\r\n") {
+		return errors.New("invalid per-domain upstream")
+	}
 	if strings.TrimSpace(u) == "" {
 		return errors.New("invalid per-domain upstream")
 	}
@@ -696,8 +705,9 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 			res := st.engine.Match(q.Name, q.Qtype)
 
 			if resp := buildFilterResponse(req, res, st); resp != nil {
-				// A rewrite supplies a real answer; it is not a block.
-				if res.Action != filter.ActionRewrite {
+				// A rewrite supplies a real answer, as does a hosts mapping to
+				// a real address; neither is a block.
+				if res.Action != filter.ActionRewrite && !hostsOverride(res) {
 					h.stats.blocked.Add(1)
 				}
 				dctx.Res = resp
@@ -716,6 +726,22 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 	}
 
 	return p.Resolve(ctx, dctx)
+}
+
+// hostsOverride reports whether a hosts rule maps the name to a real address,
+// e.g. "192.168.1.10 intranet.local".  That is an answer, not a block; only
+// empty or 0.0.0.0/:: hosts matches count as blocks.
+func hostsOverride(res filter.Result) bool {
+	if res.Action != filter.ActionHosts {
+		return false
+	}
+	for _, ip := range res.Hosts {
+		if !ip.IsUnspecified() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // boundedUpstream races an exchange against its deadline and optionally reports

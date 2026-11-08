@@ -227,7 +227,7 @@ redirect auth/corp traffic). Therefore:
   - **Status pipe** `\\.\pipe\sigildns-status` — read-only. SDDL
     `D:P(A;;GA;;;SY)(A;;GRGW;;;AU)` (SYSTEM plus Authenticated Users with
     GR+GW, which go-winio needs to dial). Served with a read-only authorizer, so
-    `enable`/`disable` are rejected even though any local user can connect. The
+    `enable`/`reload` are rejected even though any local user can connect. The
     status payload is a sanitized DTO that omits `active_upstream` (resolver id)
     and interface GUIDs.
 - Per-method authorization is enforced in the server as defence in depth, in
@@ -642,7 +642,7 @@ Public DNS, OpenBLD, and uBlockDNS presets. Details in §15.4.
 - **Unit / platform**: config parse + validation, preset expansion,
   single-instance guard, rule selection, blocked responses, allowlist overrides,
   cache flush, IPC privilege table (non-admin rejection), uninstall ordering
-  (restore → stop → verify → delete).
+  (stop-and-verify when running, otherwise restore → stop → verify → delete).
 - **Integration (Windows CI)**: CLI `enable`, NRPT presence, a killed resolver
   leaving the dirty marker, and `restore`; real Quad9 DoH through
   `scripts/ci-windows-integration.ps1`. SCM install/start/stop, the drift
@@ -733,7 +733,7 @@ not a status viewer.
   signed binary* `--apply <staging>` via `ShellExecuteW "runas"`. The helper
   re-loads and validates the staged patch with `internal/config`, writes
   `config.yaml` (atomic + ACL), then drives the service over the existing admin
-  control pipe (`reload` / `enable` / `disable` / `refresh_lists` /
+  control pipe (`reload` / `enable` / `refresh_lists` /
   `clear_cache` / `pause_filtering` / `resume_filtering`).
   The allowlist is the **whole config surface**: `ActiveProfile`, per-profile
   `Profiles` patches (provider / variant / protocol / id / custom URL /
@@ -975,8 +975,8 @@ URLs (test); an unknown config key is rejected rather than ignored; the helper
 rejects an out-of-registry provider/variant/protocol, a non-IP bootstrap, a bad
 id charset, a malformed per-domain domain or upstream, an explicit-zero cache
 size while the cache is enabled, and a zero block TTL; uninstall never
-deletes while interception is unproven down (ordered restore → stop → verify →
-delete, unit-tested).
+deletes while interception is unproven down (stop-and-verify when running,
+otherwise restore → stop → verify → delete, unit-tested).
 
 Known gaps: the SCM service install/start/stop, drift reconcile, and two-stage
 health paths are unit/Windows-code-level only; an end-to-end non-admin read test

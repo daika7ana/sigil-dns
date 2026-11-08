@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 
@@ -18,6 +19,14 @@ func newTestEngine(t *testing.T, text string) (e *Engine) {
 	t.Cleanup(func() { _ = e.Close() })
 
 	return e
+}
+
+// TestNewRejectsEmptyEngine: a list with no usable rules (e.g. a 200 error page
+// that is not HTML) must not build an engine that silently filters nothing.
+func TestNewRejectsEmptyEngine(t *testing.T) {
+	if _, err := New([]RawList{{Text: []byte("# only a comment\n")}}); !errors.Is(err, ErrNoRules) {
+		t.Fatalf("err = %v, want ErrNoRules", err)
+	}
 }
 
 func TestHostsRuleBlocks(t *testing.T) {

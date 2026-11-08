@@ -13,7 +13,7 @@ import (
 const clientTimeout = 10 * time.Second
 
 // reloadTimeout bounds calls that bind or restore interception (reload, enable,
-// disable, restore), health check included.
+// restore), health check included.
 const reloadTimeout = 2 * time.Minute
 
 // Client talks to a running sigildns service over the IPC transport.

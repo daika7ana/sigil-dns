@@ -121,6 +121,22 @@ func firstA(t *testing.T, resp *dns.Msg) (ip string) {
 	return a.A.String()
 }
 
+// TestValidateRuleUpstream: whitespace is rejected because dnsproxy's parser
+// splits on it, silently turning one entry into several load-balanced
+// upstreams; a normal URL still validates.
+func TestValidateRuleUpstream(t *testing.T) {
+	for _, u := range []string{"tls://1.1.1.1 tls://1.0.0.1", "1.1.1.1\t1.0.0.1", " 1.1.1.1"} {
+		if err := ValidateRuleUpstream(u); err == nil {
+			t.Errorf("ValidateRuleUpstream(%q) = nil, want an error", u)
+		}
+	}
+
+	if err := ValidateRuleUpstream("tls://1.1.1.1"); err != nil {
+		t.Errorf("ValidateRuleUpstream(tls://1.1.1.1) = %v, want nil", err)
+	}
+}
+
+// TestRulesRoutingEndToEnd routes names through per-domain upstreams.
 func TestRulesRoutingEndToEnd(t *testing.T) {
 	const (
 		ipDefault = "192.0.2.1"

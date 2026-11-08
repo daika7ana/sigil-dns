@@ -172,6 +172,36 @@ func TestIPv4Addrs(t *testing.T) {
 	}
 }
 
+// TestStartFallsBackToIPv4Only: a busy ::1 port must not abort enabling; the
+// resolver retries with the IPv4 listener alone.
+func TestStartFallsBackToIPv4Only(t *testing.T) {
+	blocker, err := net.ListenPacket("udp", "[::1]:0")
+	if err != nil {
+		t.Skipf("cannot bind [::1]: %v", err)
+	}
+	t.Cleanup(func() { _ = blocker.Close() })
+	port := blocker.LocalAddr().(*net.UDPAddr).Port
+
+	upstreamAddr, _ := startUpstream(t, "192.0.2.1")
+
+	r, err := New(context.Background(), Config{
+		Logger:    slog.Default(),
+		Upstreams: []string{upstreamAddr},
+		Listen:    []string{"127.0.0.1:0", fmt.Sprintf("[::1]:%d", port)},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	if err = r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if addrs := r.UDPAddrs(); len(addrs) != 1 {
+		t.Fatalf("UDPAddrs = %v, want the IPv4 listener only", addrs)
+	}
+}
+
 func TestSyntheticNameUnique(t *testing.T) {
 	a, b := SyntheticName(), SyntheticName()
 	if a == b {

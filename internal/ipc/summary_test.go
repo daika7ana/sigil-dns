@@ -319,7 +319,6 @@ func TestPrivilegeTable(t *testing.T) {
 		MethodInfo:            ReadOnly,
 		MethodConfigSummary:   ReadOnly,
 		MethodEnable:          Admin,
-		MethodDisable:         Admin,
 		MethodReload:          Admin,
 		MethodRestore:         Admin,
 		MethodRefreshLists:    Admin,
@@ -366,7 +365,7 @@ func TestStatusPipeRejectsAdminMethods(t *testing.T) {
 	srv := NewServer(&fakeLifecycle{}, nil).SetReloader(&fakeReloader{}).SanitizeStatus()
 	ctx := context.Background()
 
-	for _, m := range []Method{MethodEnable, MethodDisable, MethodReload, MethodRefreshLists, MethodClearCache, MethodPauseFiltering, MethodResumeFiltering} {
+	for _, m := range []Method{MethodEnable, MethodReload, MethodRefreshLists, MethodClearCache, MethodPauseFiltering, MethodResumeFiltering} {
 		resp := srv.Handle(ctx, ReadOnlyAuthorizer(nil), Request{Version: ProtocolVersion, Method: m})
 		if resp.OK || resp.Error != ErrForbidden.Error() {
 			t.Errorf("%s on status pipe = %+v, want ErrForbidden", m, resp)

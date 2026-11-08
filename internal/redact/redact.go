@@ -65,6 +65,19 @@ func Text(s string) (out string) {
 	return urlPattern.ReplaceAllStringFunc(s, func(raw string) string { return Upstream(raw) })
 }
 
+// Scrub is the seeded counterpart of Text for non-logging boundaries (IPC
+// error responses): it reduces embedded URLs the same way and then removes
+// every seeded literal, including the DoT/DoQ hostname-label form, because a
+// scheme+host reduction cannot hide an id that is itself the host label.
+func Scrub(s string, secrets []string) (out string) {
+	out = Text(s)
+	for _, sec := range cleanSecrets(secrets) {
+		out = strings.ReplaceAll(out, sec, "<redacted>")
+	}
+
+	return out
+}
+
 // Source labels a filter-list source without exposing it: a URL becomes scheme
 // plus host, and any local path (including a Windows drive or UNC path, which
 // Upstream would pass through intact) becomes "local file".

@@ -185,8 +185,8 @@ sigildns service start
 
 `service install` registers the service to start automatically and points it at
 the current executable with the `--service` argument. Uninstall with
-`sigildns service uninstall` (which restores interception before it stops and
-removes the service).
+`sigildns service uninstall` (which stops the service, confirms interception is
+down, and only then removes it).
 
 > The service runs as **LocalSystem**. The least-privilege virtual account
 > cannot create the IPC pipe instances, is locked out of its own state file, and

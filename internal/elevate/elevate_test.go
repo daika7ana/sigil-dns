@@ -720,8 +720,8 @@ func TestUninstallPlan(t *testing.T) {
 		running, enabled, dirty, active bool
 		wantRestore                     bool
 	}{
-		{"running", true, false, false, false, true},
-		{"running_ignores_active", true, false, false, true, true},
+		{"running", true, false, false, false, false},
+		{"running_ignores_active", true, false, false, true, false},
 		{"active_probe", false, false, false, true, true},
 		{"stopped_dirty", false, false, true, false, true},
 		{"stopped_enabled", false, true, false, false, true},
