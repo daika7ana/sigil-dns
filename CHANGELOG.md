@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-08
 
 ### Fixed
 - One broken filter-list source no longer discards the lists that did load, and a source that answers 200 with content that parses to no rules is rejected instead of silently turning filtering off.

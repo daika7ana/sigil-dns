@@ -5,7 +5,7 @@ Target: Windows 11 x64 (ARM64 deferred).
 Developed on Linux, cross-built, released on a Windows runner.
 **License: GPLv3** — forced by `AdguardTeam/urlfilter`; see §3.
 
-Status: the design below is implemented and shipped through **v0.7.1**. §11
+Status: the design below is implemented and shipped through **v0.8.0**. §11
 separates what exists from what is deliberately deferred.
 
 ---
@@ -616,7 +616,7 @@ docs/CONFIG.md.
 
 ## 11. Status and roadmap
 
-**Delivered through v0.7.1:** the walking skeleton, YAML config + provider
+**Delivered through v0.8.0:** the walking skeleton, YAML config + provider
 presets (DoH/DoH3/DoT/DoQ), per-domain rules + blocklists, the LocalSystem
 service with dual SDDL-locked pipes, drift reconcile + config-independent
 restore, packaging/signing, the redesigned five-page go-gui config client, the
