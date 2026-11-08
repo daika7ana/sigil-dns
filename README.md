@@ -33,7 +33,7 @@ terminal? Every command is there too.
   normal apps get encrypted lookups without any per-app or per-adapter setup.
 - **Lets you choose the resolver.** Quad9, Cloudflare, AdGuard DNS, Google
   Public DNS, NextDNS, ControlD, OpenBLD, uBlockDNS, or any custom
-  DoH / DoT / DoQ URL.
+  DoH / DoH3 / DoT / DoQ URL.
 - **Routes by domain.** dnsmasq-style rules — send `corp.example` to an internal
   resolver while everything else goes to your provider.
 - **Blocks locally.** hosts-format and AdGuard/ABP lists via
@@ -185,8 +185,8 @@ sigildns service start
 
 `service install` registers the service to start automatically and points it at
 the current executable with the `--service` argument. Uninstall with
-`sigildns service uninstall` (which stops the service first and restores
-interception).
+`sigildns service uninstall` (which restores interception before it stops and
+removes the service).
 
 > The service runs as **LocalSystem**. The least-privilege virtual account
 > cannot create the IPC pipe instances, is locked out of its own state file, and
@@ -265,7 +265,7 @@ sigildns run --upstream https://dns.quad9.net/dns-query
   an **Appearance** card with the Auto / Light / Dark picker, a profile list
   with add / rename / delete / set-active, a per-profile editor
   (provider / variant / protocol, a masked resolver id, custom URL, bootstrap,
-  fallback profile, cache and size), and
+  fallback profile + failover budgets, cache and size), and
   **Window & tray**.
 - **Rules** — the filtering toggle and block response, filter lists, and
   per-domain routing rules (Upstream or Bypass).
@@ -427,7 +427,10 @@ sigildns <command> [flags]
 ### Flags
 
 Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
-`config` (both `-flag` and `--flag` forms work, per Go's `flag` package):
+`config`, though not every command takes every flag: `enable`/`run` accept all
+of the below, `status` accepts `--state`, `--config`, `--summary`, `disable` and
+`restore` accept only `--state`, and `config` accepts only `--config` (both
+`-flag` and `--flag` forms work, per Go's `flag` package):
 
 | Flag | Description | Default |
 |---|---|---|
@@ -441,7 +444,7 @@ Flags are accepted by `enable`, `disable`, `restore`, `status`, `run`, and
 > `providers show` uses its own parser and accepts `--id` (prompts with input
 > hidden), `--id-file <path>` (or `-` for stdin), `--upstream`, and `--bootstrap`
 > (before or after the positional selection). A resolver id is never a flag
-> value. Protocol is one of `doh`, `dot`, `doq`; default `doh`.
+> value. Protocol is one of `doh`, `doh3`, `dot`, `doq`; default `doh`.
 >
 > `enable`/`run --upstream` is the one documented argv exception (dev/CI); in
 > production, resolver ids live only in `config.yaml`.

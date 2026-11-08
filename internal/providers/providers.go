@@ -219,7 +219,7 @@ func Registry() (ps []Provider) {
 		Description:    "raw user-entered upstream URL + optional bootstrap",
 		DefaultVariant: "custom",
 		Protocols:      Protocols(),
-		Variants:       []Variant{{Name: "custom", Description: "raw DoH/DoT/DoQ URL"}},
+		Variants:       []Variant{{Name: "custom", Description: "raw DoH/DoH3/DoT/DoQ URL"}},
 	}
 
 	return []Provider{quad9, cloudflare, adguard, google, nextdns, controld, openbld, ublockdns, custom}

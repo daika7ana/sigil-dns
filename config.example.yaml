@@ -1,7 +1,7 @@
 # sigildns configuration (SPEC §8).
 #
 # Copy to the platform default path, or run `sigildns config init`:
-#   Windows: %ProgramData%\sigildns\config.yaml
+#   Windows: %ProgramData%\SigilDNS\config.yaml
 #   Linux:   ~/.config/sigildns/config.yaml (or $XDG_CONFIG_HOME)
 #
 # Precedence when starting: command-line flags > this file > built-in defaults.
@@ -30,7 +30,7 @@ profiles:
 
     # Optional display-only metadata (never used for resolution; older configs
     # omit it).  Lets a GUI label the profile without parsing the upstream URL.
-    provider: Quad9
+    provider: quad9
     variant: secure
     protocol: doh         # doh | doh3 | dot | doq
 

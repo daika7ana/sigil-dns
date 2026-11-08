@@ -347,11 +347,7 @@ func upstreamHasPathID(u string) (ok bool) {
 func LoadSummary(path string) (sum ConfigSummary) {
 	cfg, err := config.Load(path)
 	if err != nil && !errors.Is(err, config.ErrNoConfig) {
-		return ConfigSummary{
-			ConfigValid: false,
-			ConfigError: SanitizedConfigError(err),
-			Revision:    Revision(path),
-		}
+		return InvalidSummary(path, SanitizedConfigError(err))
 	}
 
 	if cfg == nil {
@@ -363,6 +359,12 @@ func LoadSummary(path string) (sum ConfigSummary) {
 	sum.Revision = Revision(path)
 
 	return sum
+}
+
+// InvalidSummary is the sanitized summary for a config that could not be
+// loaded or resolved.
+func InvalidSummary(path, reason string) (sum ConfigSummary) {
+	return ConfigSummary{ConfigValid: false, ConfigError: reason, Revision: Revision(path)}
 }
 
 // Revision returns an opaque revision token for path: config file mtime + size.

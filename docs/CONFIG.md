@@ -11,7 +11,7 @@ precedence is **command-line flags > config file > built-in defaults**.
 `sigildns config path` prints the resolved path. `sigildns config init`
 writes a default config and never overwrites an existing file.
 
-A running config file is optional: with no file, built-in defaults are used
+A config file is optional at runtime: with no file, built-in defaults are used
 (ControlD free p0, 64 MiB cache). An invalid file is a hard error for
 `enable`/`run`.
 
@@ -42,7 +42,7 @@ To turn protection off, stop the service (`sigildns service stop` or the GUI
 | `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow, OpenBLD); an omitted list gets the default. |
 | `fallback_profile` | string | empty | Optional name of another profile; see below. |
 | `failover_after_seconds` | int | `10` | Total seconds the active profile's servers get, dnsproxy retries included, before the fallback is used. `0` = default; max `120`. |
-| `fallback_timeout_seconds` | int | `5` | Total seconds the fallback profile's servers get. `0` = default; max `120`. Set on the profile that names the fallback. |
+| `fallback_timeout_seconds` | int | `5` | Seconds each fallback-profile upstream gets; a fallback profile with several upstreams can therefore take that long per server. `0` = default; max `120`. Set on the profile that names the fallback. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
 | `filtering` | block | disabled | See below. |
@@ -81,7 +81,8 @@ followed — the fallback profile's own `fallback_profile` is ignored.
 `failover_after_seconds` (default 10) bounds the primary's whole exchange,
 dnsproxy's internal retries included; the fallback is used when that budget
 expires or the primary fails outright. `fallback_timeout_seconds` (default 5)
-bounds the fallback's whole exchange. Both are set on the profile that names
+bounds each fallback upstream's exchange, so a fallback profile with several
+upstreams can take up to that long per server. Both are set on the profile that names
 the fallback: `fallback_timeout_seconds` on the fallback profile itself is used
 only while that profile is active. `0` means the default. A shorter
 `failover_after_seconds` makes failover kick in sooner (it

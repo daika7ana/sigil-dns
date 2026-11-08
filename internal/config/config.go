@@ -254,8 +254,8 @@ func Default() (c *Config) {
 	}
 }
 
-// DefaultPath returns the platform-appropriate config file path.
-func DefaultPath() (p string) {
+// defaultPath returns the platform-appropriate config file path.
+func defaultPath() (p string) {
 	if dir := os.Getenv("ProgramData"); dir != "" {
 		return filepath.Join(dir, "SigilDNS", "config.yaml")
 	}

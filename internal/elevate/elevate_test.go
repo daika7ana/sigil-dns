@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1153,5 +1154,32 @@ func TestApplyProfileFallbackPatch(t *testing.T) {
 	}
 	if p.FallbackProfile != "" {
 		t.Fatalf("fallback not cleared: %q", p.FallbackProfile)
+	}
+}
+
+// TestPatchEmptyCoversAllFields guards the allowlist boundary: Request.Validate
+// rejects a patch on a noPatch() action only when Patch.empty() notices it, so
+// every field must make empty() false.
+func TestPatchEmptyCoversAllFields(t *testing.T) {
+	typ := reflect.TypeOf(Patch{})
+
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+
+		var p Patch
+		v := reflect.ValueOf(&p).Elem().Field(i)
+		switch v.Kind() {
+		case reflect.Ptr:
+			v.Set(reflect.New(v.Type().Elem()))
+		case reflect.Map:
+			v.Set(reflect.MakeMap(v.Type()))
+			v.SetMapIndex(reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem())
+		default:
+			t.Fatalf("unhandled field %s kind %s", f.Name, v.Kind())
+		}
+
+		if p.empty() {
+			t.Errorf("Patch.empty() = true with only %s set", f.Name)
+		}
 	}
 }

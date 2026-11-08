@@ -9,11 +9,11 @@ import (
 
 // SystemDir is the directory of the platform default off Windows: there is no
 // ProgramData KnownFolder and no ACL'd admin path.
-func SystemDir() (dir string) { return filepath.Dir(DefaultPath()) }
+func SystemDir() (dir string) { return filepath.Dir(defaultPath()) }
 
 // SystemPath is the platform default off Windows: there is no ProgramData
 // KnownFolder and no ACL'd admin path.
-func SystemPath() (p string) { return DefaultPath() }
+func SystemPath() (p string) { return defaultPath() }
 
 // SystemStatePath is the platform default state path off Windows.  It keeps the
 // historical env-based resolution (the service and CLI shared it before the

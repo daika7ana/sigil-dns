@@ -113,8 +113,11 @@ func NRPTNamespace(domain string) string {
 	return "." + name
 }
 
-// nrptNormalize reduces an NRPT namespace to its dot-free comparison key.
-func nrptNormalize(ns string) string { return strings.Trim(strings.TrimSpace(ns), ".") }
+// NormalizeNamespace reduces an NRPT namespace to its dot-free comparison key.
+// DNS names compare case-insensitively, so the key is lowercased.
+func NormalizeNamespace(ns string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(ns), "."))
+}
 
 // nrptEnableScript builds the PowerShell that re-adds our catch-all rule on
 // servers plus an exemption (no name servers) per bypass namespace, then prints
@@ -146,11 +149,11 @@ func nrptVerify(out string, namespaces []string) (missing []string) {
 	for line := range strings.SplitSeq(out, "\n") {
 		ns, ok := strings.CutPrefix(strings.TrimSpace(line), "rule=")
 		if ok {
-			present[nrptNormalize(ns)] = true
+			present[NormalizeNamespace(ns)] = true
 		}
 	}
 	for _, ns := range namespaces {
-		if !present[nrptNormalize(ns)] {
+		if !present[NormalizeNamespace(ns)] {
 			missing = append(missing, ns)
 		}
 	}

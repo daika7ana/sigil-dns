@@ -80,6 +80,9 @@ supported.
 }
 ```
 
+The sample is abridged: `name_servers` and `leak` also appear in the output
+when the persisted state carries them.
+
 | Field | Meaning |
 |---|---|
 | `mode` | Persisted interception state (`on`/`off`); a running service is always `on`. |
@@ -87,6 +90,7 @@ supported.
 | `active_upstream` | The upstream(s) captured at enable time. |
 | `dirty` | `true` means interception was applied but not cleanly restored — run `restore`. |
 | `last_health` | Two-stage health result: `ours` (loopback is us), `ipv4`/`ipv6` (upstream per family), `detail` (human text). |
+| `leak` | Last plain-DNS leak probe — `checked`, `open`, `servers` (the configured servers that answered), and `checked_at`; the block is absent until a probe runs. See [LIMITATIONS](LIMITATIONS.md). |
 
 If the service has never been enabled, `status` prints
 `state: none (<path>)` and exits 0.

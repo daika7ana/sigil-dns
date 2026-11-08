@@ -87,6 +87,11 @@ func TestNrptVerify(t *testing.T) {
 	if len(missing) != 1 || missing[0] != ".b.example" {
 		t.Fatalf("missing = %v, want [.b.example]", missing)
 	}
+
+	// Namespaces compare case-insensitively and ignore a trailing dot.
+	if got := nrptVerify("rule=.A.Example\nrule=SUB.example.\n", []string{".a.example", ".sub.example"}); len(got) != 0 {
+		t.Fatalf("mixed-case verify reported missing = %v, want none", got)
+	}
 }
 
 func TestPSErrorMessage(t *testing.T) {

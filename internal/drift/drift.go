@@ -79,9 +79,7 @@ func Decide(expected, actual State) (d Decision) {
 
 // namespaceKey normalizes an NRPT namespace to its dot-free comparison key.
 // DNS names compare case-insensitively.
-func namespaceKey(ns string) string {
-	return strings.ToLower(strings.Trim(strings.TrimSpace(ns), "."))
-}
+func namespaceKey(ns string) string { return intercept.NormalizeNamespace(ns) }
 
 // expectedNamespaces is the catch-all plus every bypass namespace, deduped and
 // normalized for comparison with the observed rule set.

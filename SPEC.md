@@ -5,7 +5,7 @@ Target: Windows 11 x64 (ARM64 deferred).
 Developed on Linux, cross-built, released on a Windows runner.
 **License: GPLv3** — forced by `AdguardTeam/urlfilter`; see §3.
 
-Status: the design below is implemented and shipped through **v0.5.0**. §11
+Status: the design below is implemented and shipped through **v0.7.1**. §11
 separates what exists from what is deliberately deferred.
 
 ---
@@ -169,7 +169,7 @@ Strict order:
    leaves "enabled" as a lie while the ISP answers. Failure unwinds exactly like
    a failed apply (restore, stop the resolver, report the error) — except when a
    **foreign catch-all NRPT rule** explains it: that is the documented conflict
-   of §4.5 (detect and warn, never fight), so the session keeps running with a
+   of §4.1 (detect and warn, never fight), so the session keeps running with a
    warning instead of refusing to start.
 
 Never touch NRPT until the resolver is proven listening *and* forwarding. The
@@ -276,9 +276,10 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
   query only after every primary upstream fails. Only that profile's
   `upstreams`/`bootstrap` are used, and fallback chains are not followed.
   `failover_after_seconds` (default 10) bounds the primary exchange, retries
-  included, and `fallback_timeout_seconds` (default 5) bounds the fallback; both
-  are set on the profile that names the fallback and `0` means the default. A
-  successful fallback logs one
+  included, and `fallback_timeout_seconds` (default 5) bounds each fallback
+  upstream's exchange — a fallback profile with several upstreams can take that
+  long per server. Both are set on the profile that names the fallback and `0`
+  means the default. A successful fallback logs one
   rate-limited `fallback used` record at info level (profile name and duration
   only — never an id, URL, or query name).
 - **Integration pitfalls (verified against pinned dnsproxy v0.86.0):**
@@ -452,7 +453,7 @@ verified against provider documentation (2026-10).
   variants enable it).
 
 ### 7.10 Custom
-User-entered DoH/DoH3/DoT URL plus optional bootstrap (v4/v6). Raw upstream escape
+User-entered DoH/DoH3/DoT/DoQ URL plus optional bootstrap (v4/v6). Raw upstream escape
 hatch for power users.
 
 ---
@@ -518,7 +519,7 @@ docs/CONFIG.md.
   system-path verify fails, restore whatever was partially applied and stop the
   resolver; if the restore also fails, keep the resolver up (DNS must not point
   at a dead port) and leave the dirty marker. A **foreign catch-all NRPT rule**
-  is the exception: the unverified path is explained by the §4.5 conflict, not a
+  is the exception: the unverified path is explained by the §4.1 conflict, not a
   broken listener, so the service warns and keeps running.
 - **Disable**: restore (delete the NRPT rule) → **flush DNS** → stop resolver →
   clear dirty marker. A failed restore leaves the resolver running so a retry is
@@ -536,7 +537,7 @@ docs/CONFIG.md.
   addresses. Three attempts with a cache flush between them; the enable aborts
   if none succeeds — unless `ProbeNRPT` reports a foreign **catch-all** rule,
   in which case Windows precedence explains the miss and the service warns and
-  keeps running (§4.5). This is the check that distinguishes "NRPT rule exists"
+  keeps running (§4.1). This is the check that distinguishes "NRPT rule exists"
   from "Windows actually uses it" — the drift probe only observes the rules.
 - **Leak probe**: on enable and on every drift re-apply, the adapters' configured
   non-loopback servers are asked directly over UDP/53. An answer is recorded in
@@ -581,12 +582,11 @@ docs/CONFIG.md.
   which we do not ship), GH Actions + `signtool`, gated on repository secrets
   (`WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`). Without them the
   artifacts are unsigned and SmartScreen warns.
-- Ship: both binaries, `install.ps1`, `config.example.yaml`, README,
-  SPEC, LICENSE, docs/, and `SHA256SUMS.txt` beside the zip. Releases publish
-  draft-first (create draft → upload → undraft) so a failed run never exposes an
-  assetless release. Notes come from `release-notes/<tag>.md` when present, else
-  generated notes; the curated CHANGELOG entry is the reference for the same
-  version.
+- Ship: both binaries, `install.ps1`, `config.example.yaml`, README, SPEC,
+  CHANGELOG, LICENSE, docs/, and `SHA256SUMS.txt` beside the zip. Releases
+  publish draft-first (create draft → upload → undraft) so a failed run never
+  exposes an assetless release. Notes come from `release-notes/<tag>.md` when
+  present, else the matching `CHANGELOG.md` section, else generated notes.
 - **Installer (`install.ps1`) contract.** Installs `sigildns.exe` and (when
   present) `sigildns-gui.exe` to `%ProgramFiles%\SigilDNS`, seeds `config.yaml`
   in `%ProgramData%\SigilDNS`, restricts the data directory to SYSTEM +
@@ -616,13 +616,14 @@ docs/CONFIG.md.
 
 ## 11. Status and roadmap
 
-**Delivered through v0.5.0:** the walking skeleton, YAML config + provider
+**Delivered through v0.7.1:** the walking skeleton, YAML config + provider
 presets (DoH/DoH3/DoT/DoQ), per-domain rules + blocklists, the LocalSystem
 service with dual SDDL-locked pipes, drift reconcile + config-independent
 restore, packaging/signing, the redesigned five-page go-gui config client, the
 About update checker with a checksum-verified download, the one-line installer
-(install/upgrade/uninstall, `-Quiet`), and the opt-in tray with `ONLOGON`
-autostart. Details in §15.4.
+(install/upgrade/uninstall, `-Quiet`), the opt-in tray with `ONLOGON`
+autostart, the plain-DNS leak guard and Status chip, and the AdGuard, Google
+Public DNS, OpenBLD, and uBlockDNS presets. Details in §15.4.
 
 **Deferred / future:**
 - Per-adapter DNS fallback (§4.2) — only if NRPT proves unreliable in the field.

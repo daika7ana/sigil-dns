@@ -13,7 +13,10 @@ honest version of that boundary.
 - Queries on every adapter, present and future, because interception is a single
   NRPT rule with namespace `.` (`Add-DnsClientNrptRule -Namespace '.' -NameServers
   127.0.0.1,::1`), not per-adapter settings.
-- Both address families: the resolver listens on `127.0.0.1:53` and `[::1]:53`.
+- Both address families when available: the resolver listens on
+  `127.0.0.1:53` and `[::1]:53`; if the `::1` bind fails (IPv6 disabled) it
+  retries IPv4-only and the NRPT rule advertises the addresses that actually
+  bound.
 
 ## What is not intercepted
 
@@ -135,8 +138,8 @@ not yet authenticated to.**
 ### Persistent drift
 
 If Windows, Group Policy, MDM/Intune, or another DNS tool keeps rewriting the
-interception out from under the service, the reconcile loop retries. After
-`DefaultMaxAttempts` (3) consecutive failed re-applies it **auto-disables, logs
+interception out from under the service, the reconcile loop retries. After 3
+consecutive failed re-applies it **auto-disables, logs
 an error, and stops the service** rather than looping forever or running
 unprotected. `status` then shows interception off; fix the conflicting tool and
 start the service again. If the auto-disable itself fails, the service keeps

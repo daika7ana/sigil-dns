@@ -1061,6 +1061,20 @@ func TestVariantOptionsUseHumanLabels(t *testing.T) {
 	}
 }
 
+// TestVariantLabelsCoverTheCatalog proves every variant the catalog publishes
+// has GUI display copy: a missing key would silently fall back to the raw
+// backend variant name in variantNameLabel.
+func TestVariantLabelsCoverTheCatalog(t *testing.T) {
+	for _, p := range providers.Registry() {
+		for _, v := range p.Variants {
+			key := p.Name + "/" + v.Name
+			if variantLabels[key] == "" {
+				t.Errorf("variantLabels is missing %q", key)
+			}
+		}
+	}
+}
+
 // TestProviderDetailStatesTheRequirement proves the small line under the
 // provider select states only what the current choice needs: a Resolver ID when
 // one is required, and nothing otherwise.

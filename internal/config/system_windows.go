@@ -9,7 +9,7 @@ import (
 )
 
 // SystemDir returns the fixed, machine-wide data directory derived from the
-// ProgramData KnownFolder.  Unlike DefaultPath it never trusts the ProgramData
+// ProgramData KnownFolder.  Unlike defaultPath it never trusts the ProgramData
 // environment variable and never falls back to a user-writable directory.  It
 // returns "" when the KnownFolder cannot be resolved.
 func SystemDir() (dir string) {

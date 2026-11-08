@@ -17,6 +17,10 @@ func TestExpectedNamespaces(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("expectedNamespaces = %q, want %q", got, want)
 	}
+
+	if got := namespaceKey("  ExAmple.ORG. "); got != "example.org" {
+		t.Fatalf("namespaceKey = %q, want %q", got, "example.org")
+	}
 }
 
 func TestDecide(t *testing.T) {

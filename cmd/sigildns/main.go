@@ -738,11 +738,8 @@ func (s *serviceLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, e
 func serviceConfig(configPath, profile, upstream, bootstrap string) (sum ipc.ConfigSummary, resolved config.Resolved, err error) {
 	cfg, lErr := config.Load(configPath)
 	if lErr != nil && !errors.Is(lErr, config.ErrNoConfig) {
-		return ipc.ConfigSummary{
-			ConfigValid: false,
-			ConfigError: ipc.SanitizedConfigError(lErr),
-			Revision:    ipc.Revision(configPath),
-		}, config.Resolved{}, errors.New(ipc.SanitizedConfigError(lErr))
+		reason := ipc.SanitizedConfigError(lErr)
+		return ipc.InvalidSummary(configPath, reason), config.Resolved{}, errors.New(reason)
 	}
 
 	resolved, rErr := config.Resolve(cfg, config.Overrides{
@@ -751,11 +748,7 @@ func serviceConfig(configPath, profile, upstream, bootstrap string) (sum ipc.Con
 		Bootstrap: bootstrap,
 	})
 	if rErr != nil {
-		return ipc.ConfigSummary{
-			ConfigValid: false,
-			ConfigError: "config could not be resolved",
-			Revision:    ipc.Revision(configPath),
-		}, config.Resolved{}, errors.New("config could not be resolved")
+		return ipc.InvalidSummary(configPath, "config could not be resolved"), config.Resolved{}, errors.New("config could not be resolved")
 	}
 
 	effCfg := cfg

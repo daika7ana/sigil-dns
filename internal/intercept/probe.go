@@ -30,7 +30,7 @@ func parseNRPTProbe(out string) (st NRPTState, err error) {
 		case strings.HasPrefix(line, "rule="):
 			// rule=<namespace>|<servers>; the catch-all normalizes to "".
 			parts := strings.SplitN(strings.TrimPrefix(line, "rule="), "|", 2)
-			ns := nrptNormalize(parts[0])
+			ns := NormalizeNamespace(parts[0])
 			st.Namespaces = append(st.Namespaces, ns)
 
 			var servers []string

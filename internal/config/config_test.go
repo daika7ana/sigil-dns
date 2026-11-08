@@ -966,8 +966,32 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Skip("config.example.yaml not present")
 	}
 
-	if _, err := Load(path); err != nil {
+	cfg, err := Load(path)
+	if err != nil {
 		t.Fatalf("config.example.yaml does not load: %v", err)
+	}
+
+	for name, p := range cfg.Profiles {
+		if p.Provider != "" {
+			pr, ok := providers.Lookup(p.Provider)
+			if !ok {
+				t.Fatalf("profile %q: unknown provider %q", name, p.Provider)
+			}
+			if p.Variant != "" && !slices.ContainsFunc(pr.Variants, func(v providers.Variant) bool {
+				return v.Name == p.Variant
+			}) {
+				t.Fatalf("profile %q: unknown variant %q for provider %q", name, p.Variant, p.Provider)
+			}
+			if p.Protocol != "" {
+				proto := providers.Protocol(p.Protocol)
+				if !proto.Valid() {
+					t.Fatalf("profile %q: unknown protocol %q", name, p.Protocol)
+				}
+				if !slices.Contains(pr.Protocols, proto) {
+					t.Fatalf("profile %q: protocol %q not offered by provider %q", name, p.Protocol, p.Provider)
+				}
+			}
+		}
 	}
 }
 
