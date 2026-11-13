@@ -184,11 +184,8 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return nil
 	}
 
-	// Never re-snapshot a dirty system; restore from the persisted snapshot
-	// first, while any resolver left by an earlier session is still running.
-	if err = l.restore(ctx, true); err != nil {
-		return err
-	}
+	// A crash-leftover rule is not removed first: it keeps DNS fail-closed until
+	// step 5, and ic.Enable replaces our tagged rule anyway.
 
 	// A resolver left by a now-disabled session is stopped before rebinding.
 	if err = l.stopResolver(ctx); err != nil {
@@ -248,7 +245,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		// A partial apply must not be left pointing at a resolver we are about
 		// to stop.  Restore first; if that fails, leave the resolver running so
 		// DNS still works and the caller can retry.
-		if rErr := l.restore(ctx, false); rErr != nil {
+		if rErr := l.restore(ctx); rErr != nil {
 			return errors.Join(enableErr, rErr)
 		}
 		if sErr := l.stopResolver(ctx); sErr != nil {
@@ -280,7 +277,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 
 			// Same unwind as a failed interception apply: never leave
 			// interception pointing at a resolver we are about to stop.
-			if rErr := l.restore(ctx, false); rErr != nil {
+			if rErr := l.restore(ctx); rErr != nil {
 				return errors.Join(verifyErr, rErr)
 			}
 			if sErr := l.stopResolver(ctx); sErr != nil {
@@ -405,14 +402,14 @@ func (l *Lifecycle) Restore(ctx context.Context) (err error) {
 		}()
 	}
 
-	return l.restore(ctx, false)
+	return l.restore(ctx)
 }
 
-// restore removes interception and clears the dirty marker.  If onlyIfDirty is
-// true it is a no-op when the state is clean.
-func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
+// restore removes interception and clears the dirty marker.  It is the undo
+// used by Restore, disable and the stop path, and is never called before an
+// Enable — that would only open a boot-window leak.
+func (l *Lifecycle) restore(ctx context.Context) (err error) {
 	st, lErr := l.store.Load()
-	dirty := lErr == nil && st.Dirty
 	if lErr != nil && !errors.Is(lErr, state.ErrNoState) {
 		// A corrupt state file must not block cleanup (M2): undo any partial
 		// interception, then quarantine the bad file and record a clean off
@@ -432,17 +429,13 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 
 		return lErr
 	}
-	if onlyIfDirty && !dirty {
-		return nil
-	}
-
 	if err = l.ic.Disable(ctx); err != nil {
 		return fmt.Errorf("restoring interception (state kept dirty): %w", err)
 	}
 
 	l.flushDNS(ctx)
 
-	if dirty {
+	if lErr == nil && st.Dirty {
 		st.Mode = state.ModeOff
 		st.Dirty = false
 
@@ -452,22 +445,13 @@ func (l *Lifecycle) restore(ctx context.Context, onlyIfDirty bool) (err error) {
 	return nil
 }
 
-// Startup performs crash recovery: a running service always means protection
-// is on, so the caller must Enable next.  If the dirty marker is set it
-// restores first.  The lock is retained for the caller's Enable; a failure
-// releases it.
+// Startup readies a session: a running service always means protection is on,
+// so the caller must Enable next, and the lock is retained for it.
+//
+// A crash leftover is left in place: it keeps DNS fail-closed until Enable
+// rewrites our tagged rule.  A failed enable still disarms via the stop path.
 func (l *Lifecycle) Startup(ctx context.Context) (err error) {
-	if err = l.acquire(); err != nil {
-		return err
-	}
-
-	if err = l.restore(ctx, true); err != nil {
-		l.release()
-
-		return err
-	}
-
-	return nil
+	return l.acquire()
 }
 
 // Run starts the resolver in the foreground without touching interception.

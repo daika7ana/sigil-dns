@@ -42,6 +42,16 @@ an on-path attacker; prefer DoH/DoT/DoQ if that matters.
 
 ## What silently breaks or leaks
 
+### Boot window
+
+A clean `stop` or `disable` removes the rule, so between boot and the next enable
+lookups use the adapters' DNS servers; the window is the service start plus
+resolver startup (filter download, health check). A start-order change cannot
+remove it — a boot-start driver is out of scope. A crash leftover is not removed
+first, so those boots stay fail-closed, and it is recoverable without a start
+(`sigildns restore`, or **Restore now** in the GUI). A zero window would mean
+keeping the rule while stopped: no DNS at all if the service never starts.
+
 ### New or transient adapters
 
 NRPT is machine-wide, so a newly connected adapter is covered as soon as Windows

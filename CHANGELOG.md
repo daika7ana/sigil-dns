@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A rule left behind by a crashed service is no longer deleted before the next enable, so a crash-recovery boot no longer falls back to the adapters' DNS servers while the resolver starts.
+- The GUI offers **Restore now** while the service is stopped, so a leftover rule can be cleared without starting it.
 - The tray icon no longer vanishes silently at sign-in. The host now waits for Explorer's notification area and retries icon creation instead of exiting after ~4 s with no console, re-adds the icon when Explorer rebuilds it, and reports a mutex failure instead of treating it as "already running".
 
 ## [0.8.0] - 2026-11-08

@@ -121,7 +121,7 @@ func TestWindowRendersEachState(t *testing.T) {
 		},
 		"dirty-leftover": {
 			// Interception applied, but interception is off: the genuine
-			// crash-recovery case, the only one that offers Restore.
+			// crash-recovery case.
 			mk: func() snapshot {
 				s := sampleSnapshot()
 				s.status.Enabled = false
@@ -135,6 +135,8 @@ func TestWindowRendersEachState(t *testing.T) {
 			mk: func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
 		},
 		"stopped-installed": {
+			// A stopped service may still have left the NRPT rule behind, so
+			// Restore is offered here too.
 			mk: func() snapshot {
 				s := sampleSnapshot()
 				s.running = false
@@ -142,6 +144,7 @@ func TestWindowRendersEachState(t *testing.T) {
 
 				return s
 			},
+			restore: true,
 		},
 		"unverified": {
 			mk: func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
@@ -349,7 +352,7 @@ func TestPlanPower(t *testing.T) {
 	}{
 		{"running", kindRunning, true, true, false, true, false, false},
 		{"stopped-not-installed", kindStopped, false, false, false, true, false, true},
-		{"stopped-installed", kindStopped, true, false, false, true, false, true},
+		{"stopped-installed", kindStopped, true, false, false, true, true, true},
 		{"interception-off", kindStopped, true, true, false, true, false, true},
 		{"dirty-leftover", kindDirty, true, true, false, true, true, true},
 		{"degraded", kindDegraded, true, true, false, true, false, true},
@@ -366,10 +369,14 @@ func TestPlanPower(t *testing.T) {
 			if tt.wantNote != (got.note != "") {
 				t.Errorf("note = %q, wantNote = %v", got.note, tt.wantNote)
 			}
-			// Restore is offered only for the crash leftover, never for a
-			// healthy running state.
+			// Restore is offered for a crash leftover and for a stopped
+			// service, never for a healthy running state (Restore stops a
+			// running service).
 			if tt.kind == kindRunning && got.restore {
 				t.Fatal("a healthy running state must never offer Restore")
+			}
+			if tt.kind == kindStopped && tt.running && got.restore {
+				t.Fatal("Restore must not be offered while the service runs")
 			}
 		})
 	}

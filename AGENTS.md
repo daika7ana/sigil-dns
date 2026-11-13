@@ -10,7 +10,7 @@ security), §10 (packaging) before changing behaviour. `README.md` +
 
 ## Commands (there is no Go toolchain on the host)
 Use the Docker wrapper `dev/go` — never call `go` directly, never install a toolchain.
-It runs `golang:1.27.3` with the repo at `/w` and forwards `GOOS`/`GOARCH`/`CGO_ENABLED`.
+It runs `golang:1.27.4` with the repo at `/w` and forwards `GOOS`/`GOARCH`/`CGO_ENABLED`.
 
 ```sh
 ./dev/go build ./...                            # default build (GUI-free)

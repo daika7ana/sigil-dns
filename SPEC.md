@@ -91,7 +91,7 @@ The GUI and README surface this table; it is a product boundary, not a bug.
 
 | Concern | Choice | License |
 |---|---|---|
-| Language | Go 1.27.3 | — |
+| Language | Go 1.27.4 | — |
 | DNS engine | `github.com/AdguardTeam/dnsproxy` v0.86.0 (embedded) | Apache-2.0 |
 | Wire/types | `github.com/miekg/dns` v1.1.73 | BSD-3 |
 | Filtering | `github.com/AdguardTeam/urlfilter` v0.23.4 (`DNSEngine`) | **GPL-3.0** → whole app GPLv3 |
@@ -121,9 +121,9 @@ Pros: one rule covers every current **and future** adapter; a single restore
 action; no per-adapter snapshot churn.
 
 Caveats (handled):
-- Rules persist across reboot → the dirty marker triggers recovery on the next
-  start. Our rule is tagged (DisplayName/GUID) so we can find and remove exactly
-  ours.
+- Rules persist across reboot → a crash leftover stays applied from boot, so DNS
+  stays fail-closed until the resolver listens again; `Enable` rewrites it. Our
+  rule is tagged (DisplayName/GUID) so we can find and remove exactly ours.
 - VPN/clients may install equal-or-more-specific NRPT rules that take
   precedence (VPN DNS may hard-break). Conflicting foreign rules are detected
   and warned about in the log/UI, never modified.
@@ -505,15 +505,15 @@ docs/CONFIG.md.
 
 ## 9. Lifecycle
 
-- **Service start**: if the dirty marker is set → **restore interception first**,
-  then **always enable**. The NRPT build stores no adapter snapshot; dirty means
-  a previous session may still have our rule applied. The SCM state stays
-  **StartPending** (checkpointed every 10 s) until recovery and enable finish;
-  only then does it become Running. A running service means interception is on —
-  there is no running-but-off state. If recovery or enable fails the service
-  stops rather than keep serving a half state; a failed restore leaves the dirty
-  marker for the next start. A configuration error exits cleanly so the SCM does
-  not restart a hopeless boot.
+- **Service start**: **always enable, never remove a crash-leftover rule first**.
+  The rule persists across reboot and keeps DNS **fail-closed** from boot until
+  the resolver listens; `Enable` replaces our tagged rule, so a pre-enable
+  restore would only open a leak window. The SCM state stays **StartPending**
+  (checkpointed every 10 s) until enable finishes; only then does it become
+  Running. A running service means interception is on — there is no
+  running-but-off state. A failed enable stops the service and the stop path
+  restores; a failed restore keeps the dirty marker for the next start. A
+  configuration error exits cleanly so the SCM does not restart a hopeless boot.
 - **Enable**: §4.3 strict order (bind → two-stage health check → leak probe →
   state+dirty → apply → flush → system-path verify). If apply or the
   system-path verify fails, restore whatever was partially applied and stop the

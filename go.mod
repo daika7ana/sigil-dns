@@ -1,6 +1,6 @@
 module github.com/daika7ana/sigil-dns
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/AdguardTeam/dnsproxy v0.86.0

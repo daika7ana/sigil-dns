@@ -71,12 +71,13 @@ type powerState struct {
 // is the one place the state->header matrix lives, so it is pure and directly
 // testable.
 //
-// Restore is offered ONLY for the crash-leftover case (kindDirty, interception
-// still applied while it is off); it is never offered beside a healthy session,
-// so one click can no longer tear down a working one.  Routine protection is
-// turned on by starting the service in Settings.
+// Restore is offered for the crash-leftover case (kindDirty) and for a stopped,
+// installed service: a stop or power loss can leave the rule pointing at no
+// resolver, and Start cannot clear that when the service will not start.  Never
+// while the service runs — the helper stops it first (elevate.ActionRestore).
+// Protection is turned on from Settings.
 func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powerState) {
-	ps.restore = kind == kindDirty && trusted && !busy
+	ps.restore = (kind == kindDirty || (kind == kindStopped && installed && !running)) && trusted && !busy
 
 	switch {
 	case !trusted:
@@ -90,7 +91,7 @@ func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powe
 	case kind == kindStopped && running:
 		ps.note = "The service is running but protection is off."
 	case kind == kindStopped:
-		ps.note = "Start the service in Settings to turn on protection."
+		ps.note = "Start the service in Settings, or use Restore now if DNS stopped working after a crash."
 	case kind == kindDegraded:
 		ps.note = "The resolver needs attention. Check Settings."
 	}

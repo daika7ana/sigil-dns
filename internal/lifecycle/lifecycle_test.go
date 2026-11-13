@@ -218,6 +218,11 @@ func TestStartupAlwaysEnables(t *testing.T) {
 			if st.Mode != state.ModeOn || !st.Dirty {
 				t.Fatalf("state = %+v, want mode=on dirty=true", st)
 			}
+			// A crash leftover rule must survive Startup: it is the only thing
+			// keeping DNS fail-closed between boot and the resolver listening.
+			if e.ic.disabled != 0 {
+				t.Fatalf("intercept disable = %d, want 0", e.ic.disabled)
+			}
 		})
 	}
 }
@@ -363,7 +368,7 @@ func TestLifecycleInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "enable restores the dirty snapshot before binding",
+			name: "enable leaves a crash leftover rule in place until the rewrite",
 			setup: func(t *testing.T, e *testEnv) {
 				t.Helper()
 				e.seed(t, dirtyState())
@@ -374,12 +379,15 @@ func TestLifecycleInvariants(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Enable: %v", err)
 				}
-				want := []string{"intercept-disable", "flush", "bind", "health", "intercept-enable", "flush"}
+				// The leftover rule keeps DNS fail-closed from boot until the
+				// resolver listens; ic.Enable replaces it, so nothing is
+				// removed first.
+				want := []string{"bind", "health", "intercept-enable", "flush"}
 				if !reflect.DeepEqual(*e.events, want) {
 					t.Fatalf("events = %v, want %v", *e.events, want)
 				}
-				if e.ic.disabled != 1 || e.ic.enabled != 1 {
-					t.Fatalf("intercept disable/enable = %d/%d, want 1/1", e.ic.disabled, e.ic.enabled)
+				if e.ic.disabled != 0 || e.ic.enabled != 1 {
+					t.Fatalf("intercept disable/enable = %d/%d, want 0/1", e.ic.disabled, e.ic.enabled)
 				}
 			},
 		},

@@ -59,8 +59,8 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
   disable; `restore` recovers after a crash.
 - **Drift auto-reconcile** — a registry watcher plus a 45 s reconcile loop
   re-apply interception if Windows, GPO, or another tool rewrites it.
-- **Crash recovery** — a dirty marker forces a restore on the next start, so a
-  killed service can never leave the machine pointing at a dead resolver.
+- **Crash recovery** — a rule left by a crashed session stays applied through
+  the next boot, so DNS keeps failing closed until the service rewrites it.
 - **Service + CLI** — one console binary runs as the CLI or the Windows service.
 - **GUI config client** — a five-page window (Status, Settings, Rules, Logging,
   About): Start / Stop and Restore, service install / remove, and profile /

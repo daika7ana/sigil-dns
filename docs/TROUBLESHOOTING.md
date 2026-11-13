@@ -177,8 +177,11 @@ process carries no ownership), and works even if the config YAML is corrupt (it
 reads only the state file). On partial failure it **keeps** the dirty marker set;
 fix the underlying problem and run `restore` again.
 
-If `enable` finds a dirty state it also restores first, so recovery is implicit
-on the next enable.
+`enable` does not restore a dirty state first: the leftover rule keeps DNS
+failing closed until the resolver listens, and enabling rewrites it anyway. A
+failed enable stops the service, whose stop path restores. If the service never
+starts, the leftover rule stays — clear it with `restore` or the GUI's **Restore
+now**, which is offered whenever the service is stopped.
 
 ## NRPT conflicts with a VPN
 
