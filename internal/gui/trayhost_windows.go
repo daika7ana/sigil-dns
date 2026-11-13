@@ -24,9 +24,9 @@ import (
 // the idle tray costs ~25-30 MB.  The GUI starts it with --tray and quits when the
 // window closes; Open relaunches the GUI.
 //
-// The host's message-only control window is also its single-instance guard and
-// its exit channel.  It is created elevated, like the GUI, so UIPI stops a
-// lower-integrity process from posting WM_CLOSE to it.
+// The host's hidden control window is its single-instance guard and exit
+// channel; it must be top-level, or the shell's TaskbarCreated broadcast never
+// reaches it.  Elevated like the GUI, so UIPI stops a lower-integrity WM_CLOSE.
 const (
 	trayHostClass = "SigilDNS.TrayHost"
 
@@ -39,10 +39,17 @@ const (
 	// stuck service cannot block the tray thread for the client's 2 min.
 	trayHostActionTimeout = 10 * time.Second
 
-	// trayHostCreateTries/trayHostCreateWait retry icon creation when the
-	// shell is not ready yet at sign-in (the logon task can beat Explorer).
-	trayHostCreateTries = 3
-	trayHostCreateWait  = 2 * time.Second
+	// trayHostShellWait/trayHostShellPoll bound the wait for the shell's
+	// notification area: the logon task usually starts before Explorer creates
+	// it, and an icon added then is never shown.
+	trayHostShellWait = 60 * time.Second
+	trayHostShellPoll = 250 * time.Millisecond
+
+	// trayHostCreateWait/trayHostCreateWindow bound the icon retries: a host
+	// that gives up leaves no trace (no console), and the wait must stay under
+	// stopTrayHost's 1 s hand-over.
+	trayHostCreateWait   = 500 * time.Millisecond
+	trayHostCreateWindow = 60 * time.Second
 
 	// trayHostRetryTries/trayHostRetryWait bound the hand-over between a
 	// dying host and its replacement: the new process waits for the old
@@ -50,11 +57,9 @@ const (
 	trayHostRetryTries = 20
 	trayHostRetryWait  = 50 * time.Millisecond
 
-	// trayHostStartTimeout bounds the GUI's wait for the new host's icon, so
-	// a host that dies on start fails the toggle instead of leaving the
-	// switch on with no icon.  It covers the host's full icon-retry window
-	// plus process start and the icon-creation call.
-	trayHostStartTimeout = trayHostCreateTries*trayHostCreateWait + 3*time.Second
+	// trayHostStartTimeout bounds the GUI's wait for the new host's icon, so a
+	// dead start fails the toggle instead of leaving the switch on with no icon.
+	trayHostStartTimeout = 9 * time.Second
 
 	// trayHostStillActive is the STILL_ACTIVE exit code of a live process.
 	trayHostStillActive = 259
@@ -81,6 +86,7 @@ var (
 	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
 	procDestroyWindow    = user32.NewProc("DestroyWindow")
 	procGetMessageW      = user32.NewProc("GetMessageW")
+	procPeekMessageW     = user32.NewProc("PeekMessageW")
 	procTranslateMessage = user32.NewProc("TranslateMessage")
 	procDispatchMessageW = user32.NewProc("DispatchMessageW")
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
@@ -90,6 +96,8 @@ var (
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = kernel32.NewProc("CreateMutexW")
 	procCloseHandle      = kernel32.NewProc("CloseHandle")
+
+	procRegisterWindowMessageW = user32.NewProc("RegisterWindowMessageW")
 )
 
 // wndClassExW mirrors WNDCLASSEXW.
@@ -120,11 +128,21 @@ type msgW struct {
 
 type pointW struct{ x, y int32 }
 
-// trayHostWndProc closes the host on WM_CLOSE.  DefWindowProc destroys the
-// window on WM_CLOSE, and the resulting WM_DESTROY ends the message loop.
+// taskbarCreatedMsg is the shell's TaskbarCreated id, or 0 before registration.
+var taskbarCreatedMsg uintptr
+
+// trayHostWndProc re-adds the icon when the shell rebuilds its notification
+// area; WM_CLOSE destroys the window and the resulting WM_DESTROY ends the loop.
 var trayHostWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr) uintptr {
-	if msg == wmDestroy {
+	switch {
+	case msg == wmDestroy:
 		procPostQuitMessage.Call(0)
+
+		return 0
+	case taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg && activeTrayIcon != nil:
+		// The shell dropped the icon and never reports it.
+		activeTrayIcon.readd()
+		applyTrayTooltip(windowTitle)
 
 		return 0
 	}
@@ -133,13 +151,56 @@ var trayHostWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr
 	return r
 })
 
+// registerTaskbarCreated returns the shell's TaskbarCreated message id.
+func registerTaskbarCreated() uintptr {
+	name, err := syscall.UTF16PtrFromString("TaskbarCreated")
+	if err != nil {
+		return 0
+	}
+	id, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(name)))
+
+	return id
+}
+
+// waitForShellTray waits up to timeout for the shell's notification area, and
+// returns early on an exit request: it runs before the message loop.
+func waitForShellTray(hwnd uintptr, timeout time.Duration) {
+	name, err := syscall.UTF16PtrFromString("Shell_TrayWnd")
+	if err != nil {
+		return
+	}
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if exitRequested(hwnd) {
+			return
+		}
+		if h, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(name)), 0); h != 0 {
+			return
+		}
+		time.Sleep(trayHostShellPoll)
+	}
+}
+
+// exitRequested reports a queued WM_CLOSE without consuming it, so the caller
+// can still exit on it after the wait returns.
+func exitRequested(hwnd uintptr) bool {
+	var msg msgW
+	r, _, _ := procPeekMessageW.Call(
+		uintptr(unsafe.Pointer(&msg)), hwnd, wmClose, wmClose, 0) // PM_NOREMOVE
+
+	return r != 0
+}
+
 // RunTrayHost runs the tray icon process until its Exit action or a WM_CLOSE
 // from the GUI's tray switch.  A second launch is a no-op: the session mutex is
 // already held.
 func RunTrayHost() (err error) {
 	detachConsole()
 
-	if !acquireTrayHost() {
+	owned, err := acquireTrayHost()
+	if err != nil {
+		return err
+	}
+	if !owned {
 		return nil // another host owns the icon
 	}
 	defer procCloseHandle.Call(trayHostMutex)
@@ -147,6 +208,9 @@ func RunTrayHost() (err error) {
 	// One message loop on one OS thread, as Win32 requires.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+
+	// Before the window, so a TaskbarCreated broadcast cannot arrive unhandled.
+	taskbarCreatedMsg = registerTaskbarCreated()
 
 	hwnd, err := createTrayHostWindow()
 	if err != nil {
@@ -158,26 +222,26 @@ func RunTrayHost() (err error) {
 	defer cancel()
 
 	host := &trayHost{}
-	var tr sni.Tray
-	var id int
+	icon := &trayHostIcon{onAction: func(action string) { host.action(hwnd, action) }}
+	activeTrayIcon = icon
 
-	for tries := 1; ; tries++ {
-		id, err = tr.Create(trayConfig(trayStatusText(host.snapshot())), func(action string) {
-			host.action(hwnd, action)
-		})
-		if err == nil {
-			break
-		}
-		if tries >= trayHostCreateTries {
-			return fmt.Errorf("tray host: %w", err)
-		}
-		select {
-		case <-time.After(trayHostCreateWait):
-		case <-ctx.Done():
+	waitForShellTray(hwnd, trayHostShellWait)
+
+	deadline := time.Now().Add(trayHostCreateWindow)
+	for {
+		if exitRequested(hwnd) {
 			return nil
 		}
+		if err = icon.add(trayStatusText(host.snapshot())); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("tray host: %w", err)
+		}
+		time.Sleep(trayHostCreateWait)
 	}
-	defer tr.Remove(id)
+	// Stop the poller before the icon goes: a late update must not re-create it.
+	defer func() { cancel(); icon.remove() }()
 	applyTrayTooltip(windowTitle) // sni does not set NIF_SHOWTIP
 
 	// The window exists before the icon does; marking it only now lets the
@@ -185,12 +249,8 @@ func RunTrayHost() (err error) {
 	prop, _ := syscall.UTF16PtrFromString(trayHostReadyProp)
 	procSetPropW.Call(hwnd, uintptr(unsafe.Pointer(prop)), 1)
 
-	// shortcut: like go-gui, sni does not re-add the icon after an Explorer
-	// restart; toggling the tray setting restarts this host. Upgrade if it
-	// becomes a field issue.
-
 	go pollTrayHost(ctx, newSource(), host, func(status string) {
-		tr.Update(id, trayConfig(status))
+		icon.update(status)
 		applyTrayTooltip(windowTitle) // an update rewrites the tip flags
 	})
 
@@ -203,6 +263,83 @@ func RunTrayHost() (err error) {
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
 	}
+}
+
+// trayHostIcon owns the live tray icon: the shell drops it when Explorer
+// restarts, so it has to be addable again under a new id.
+type trayHostIcon struct {
+	mu       sync.Mutex
+	tray     sni.Tray
+	id       int
+	live     bool // the current id is in the shell's notification area
+	closed   bool // the host is exiting; a late poll must not re-add the icon
+	status   string
+	onAction func(string)
+}
+
+// activeTrayIcon is the icon the TaskbarCreated handler re-adds; set before the
+// message loop runs.
+var activeTrayIcon *trayHostIcon
+
+// add creates the icon at status.
+func (i *trayHostIcon) add(status string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.status = status
+
+	return i.create()
+}
+
+// create adds the icon at the current status.  The caller holds i.mu.
+func (i *trayHostIcon) create() error {
+	i.live = false
+	id, err := i.tray.Create(trayConfig(i.status), i.onAction)
+	if err != nil {
+		return err
+	}
+	i.id, i.live = id, true
+
+	return nil
+}
+
+// readd re-creates the icon after the shell rebuilt its notification area.
+func (i *trayHostIcon) readd() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.tray.Remove(i.id)
+	_ = i.create()
+}
+
+// update refreshes the tooltip, and creates the icon again if the last create
+// failed — the shell can refuse one while it rebuilds.
+func (i *trayHostIcon) update(status string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if i.closed {
+		return
+	}
+	i.status = status
+	if !i.live {
+		_ = i.create()
+
+		return
+	}
+	i.tray.Update(i.id, trayConfig(status))
+}
+
+func (i *trayHostIcon) remove() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.closed = true
+	if !i.live {
+		return
+	}
+	i.tray.Remove(i.id)
+	i.live = false
 }
 
 // trayHost is the latest sanitized read, shared between the poller goroutine
@@ -331,34 +468,33 @@ func launchGUI() error {
 // for its lifetime, so the OS releases it even after a crash.
 var trayHostMutex uintptr
 
-// acquireTrayHost takes the session-local single-instance mutex.  A host that
-// is already running makes the new process wait briefly for the name to go
-// away: the GUI may be replacing a host that is still exiting, and losing that
-// hand-over would leave the tray setting on with no icon.
-func acquireTrayHost() bool {
+// acquireTrayHost takes the session-local single-instance mutex, waiting briefly
+// for a host that is still exiting.  An error means the mutex could not be
+// created, not that another host owns it.
+func acquireTrayHost() (owned bool, err error) {
 	name, err := syscall.UTF16PtrFromString(trayHostMutexName)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for tries := 0; tries < trayHostRetryTries; tries++ {
 		h, _, callErr := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
 		if h == 0 {
-			return false
+			return false, fmt.Errorf("tray host: create mutex: %w", callErr)
 		}
 		if e, ok := callErr.(syscall.Errno); ok && e == errAlreadyExists {
 			procCloseHandle.Call(h)
 			if tries == trayHostRetryTries-1 {
-				return false
+				return false, nil
 			}
 			time.Sleep(trayHostRetryWait)
 			continue
 		}
 		trayHostMutex = h
 
-		return true
+		return true, nil
 	}
 
-	return false
+	return false, nil
 }
 
 // trayHostRunning reports whether the control window exists.
@@ -366,15 +502,14 @@ func trayHostRunning() bool {
 	return trayHostWindow() != 0
 }
 
-// trayHostWindow finds the host's message-only control window.  FindWindowW
-// cannot see message-only windows; they are children of HWND_MESSAGE.
+// trayHostWindow finds the host's hidden top-level control window, which is
+// also why FindWindowW can see it.
 func trayHostWindow() (hwnd uintptr) {
 	class, err := syscall.UTF16PtrFromString(trayHostClass)
 	if err != nil {
 		return 0
 	}
-	h, _, _ := procFindWindowExW.Call(
-		hwndMessage, 0, uintptr(unsafe.Pointer(class)), 0)
+	h, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(class)), 0)
 	if h == 0 {
 		return 0
 	}
@@ -426,10 +561,9 @@ func trayHostAlive(pid uint32) bool {
 	return code == trayHostStillActive
 }
 
-// startTrayHost launches the host unless it is already running.  It waits for
-// the host's icon (up to trayHostStartTimeout), because the caller reverts the
-// tray setting when the start fails; the child has to acquire the mutex,
-// register its window and create the icon first.
+// startTrayHost launches the host unless one is running and waits (up to
+// trayHostStartTimeout) for its icon, because the caller reverts the tray
+// setting when the start fails.
 func startTrayHost() error {
 	deadline := time.Now().Add(trayHostStartTimeout)
 
@@ -459,6 +593,12 @@ func startTrayHost() error {
 		return nil
 	}
 
+	// Alive but not ready is a slow start, not a failed one: the GUI stops
+	// waiting, the host keeps trying.
+	if trayHostWindow() != 0 {
+		return nil
+	}
+
 	if cmd != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -484,7 +624,8 @@ func stopTrayHost() {
 	}
 }
 
-// createTrayHostWindow creates the message-only control window.
+// createTrayHostWindow creates the host's hidden top-level control window; a
+// message-only one would not receive the shell's TaskbarCreated broadcast.
 func createTrayHostWindow() (hwnd uintptr, err error) {
 	hinst, _, _ := procGetModuleHandleW.Call(0)
 	class, err := syscall.UTF16PtrFromString(trayHostClass)
@@ -506,7 +647,7 @@ func createTrayHostWindow() (hwnd uintptr, err error) {
 
 	h, _, callErr := procCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(class)), 0, 0,
-		0, 0, 0, 0, hwndMessage, 0, hinst, 0)
+		0, 0, 0, 0, 0, 0, hinst, 0)
 	if h == 0 {
 		return 0, fmt.Errorf("tray host: create window: %w", callErr)
 	}

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- The tray icon no longer vanishes silently at sign-in. The host now waits for Explorer's notification area and retries icon creation instead of exiting after ~4 s with no console, re-adds the icon when Explorer rebuilds it, and reports a mutex failure instead of treating it as "already running".
+
 ## [0.8.0] - 2026-11-08
 
 ### Fixed

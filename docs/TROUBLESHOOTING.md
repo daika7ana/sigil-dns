@@ -236,6 +236,39 @@ persists, a live process still holds the lock. Check for it:
 Get-Process sigildns
 ```
 
+## The tray icon does not appear after sign-in
+
+The **Start tray icon on startup** setting registers the per-user Task Scheduler
+task `SigilDNS`, which launches `sigildns-gui.exe --tray`. The GUI binary is
+built without a console, so a tray host that fails to start leaves no message
+anywhere. Two checks separate the cases:
+
+```powershell
+# Did the task run, and with what result? (0x0 = the host ran; 0x1 = it gave up)
+schtasks /query /tn SigilDNS /v /fo list
+
+# Is a tray host process alive, and did it start before Explorer?
+Get-Process explorer,sigildns-gui -ErrorAction SilentlyContinue |
+  Select-Object Name, StartTime
+```
+
+- No `sigildns-gui` process: the host exited or never started. `Last Run Result`
+  is the host's own exit code, not a task verdict; a non-zero one next to a fresh
+  `Last Run Time` means it started and quit (`0x1` = it gave up on the icon). A
+  stale `Last Run Time` means the task never ran — its exe path is pinned to the
+  binary the setting was enabled from, so re-enable the setting from the
+  installed copy after moving the install.
+- A `sigildns-gui` process started **before** `explorer`: the logon task beat
+  the shell. The host now waits for the notification area and retries, so update
+  first; on an old build, toggle **System tray icon** off and on once.
+- A live process and no icon: the shell dropped the icon (Explorer restarted) —
+  the host re-adds it when Explorer announces the rebuilt notification area, so
+  update if this persists. Otherwise the icon may be in Windows 11's overflow
+  flyout: Settings → Personalization → Taskbar → **Other system tray icons**.
+- Closing the window removes the icon when **Close to tray** is off: the tray
+  host is stopped with the window, by design, and is not restarted until the
+  next sign-in or until the tray is toggled.
+
 ## Service will not start or keeps stopping
 
 - `service start` timing out at the SCM's ~30 s start budget: the service stays

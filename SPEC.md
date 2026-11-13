@@ -804,7 +804,10 @@ not a status viewer.
   **Open log file**, **Clear DNS cache** (resolver cache + Windows DNS cache),
   and **Exit**. If the host cannot be started, the switch reverts with a toast
   instead of leaving a dead setting; the host refreshes the status row from a
-  live read every 5 s and retries icon creation while the shell is starting.
+  live read every 5 s, waits for the shell's notification area, retries icon
+  creation for up to a minute, and re-adds the icon when Explorer rebuilds the
+  notification area — the logon task can start before either exists, and a host
+  that gave up there would leave no trace (the GUI binary has no console).
   This uses go-gui's tray backend in the host process, not the retired `tray`
   build tag.
 - **Identity** — before trusting reads or sending writes, verify the pipe server
