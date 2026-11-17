@@ -2441,15 +2441,15 @@ func TestDropdownPopupsWide(t *testing.T) {
 	})
 	w.SetView(view)
 	w.TestRender(nil)
-	for _, id := range ids {
-		if err := w.TestKey(id, gogui.KeyEnter, 0); err != nil {
-			t.Fatalf("open %s: %v", id, err)
-		}
-	}
-	root := w.TestRender(nil)
 
 	var first float32
 	for i, id := range ids {
+		// An open Select closes when focus moves (#1181), so open, measure and
+		// close each dropdown in turn rather than holding three open at once.
+		if err := w.TestKey(id, gogui.KeyEnter, 0); err != nil {
+			t.Fatalf("open %s: %v", id, err)
+		}
+		root := w.TestRender(nil)
 		ly := mustFindLayout(t, w, root, id+":dropdown")
 		if ly.Shape.Width <= 200 {
 			t.Errorf("%s popup width %.0f is still a tiny box", id, ly.Shape.Width)
@@ -2468,11 +2468,12 @@ func TestDropdownPopupsWide(t *testing.T) {
 
 		if i == 0 {
 			first = ly.Shape.Width
-			continue
-		}
-		if absF(ly.Shape.Width-first) > 0.5 {
+		} else if absF(ly.Shape.Width-first) > 0.5 {
 			t.Errorf("%s popup width %.0f differs from %s popup %.0f",
 				id, ly.Shape.Width, ids[0], first)
+		}
+		if err := w.TestKey(id, gogui.KeyEscape, 0); err != nil {
+			t.Fatalf("close %s: %v", id, err)
 		}
 	}
 
