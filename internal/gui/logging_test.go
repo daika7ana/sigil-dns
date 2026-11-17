@@ -15,6 +15,7 @@ import (
 
 	"github.com/daika7ana/sigil-dns/internal/config"
 	"github.com/daika7ana/sigil-dns/internal/elevate"
+	"github.com/daika7ana/sigil-dns/internal/ipc"
 )
 
 // goGlyphMaxTextLength is go-glyph's hard single-text cap (validation_common.go
@@ -620,7 +621,13 @@ func TestLoggingViewerDefaultInterval(t *testing.T) {
 // TestApplyLogCarriesPatch drives Apply and checks the request builder carries
 // the level and path as an elevate patch on ActionApply.
 func TestApplyLogCarriesPatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigildns.log")
+	// The helper only accepts a log path inside the machine-wide data
+	// directory (config.ValidateLogPath), so the fixture lives there.
+	dir := config.SystemDir()
+	if dir == "" {
+		t.Skip("no machine-wide data directory on this host")
+	}
+	path := filepath.Join(dir, "sigildns.log")
 
 	req, ok := buildElevateRequest(applyRequest{
 		action: actionSaveLog,
@@ -829,4 +836,43 @@ func appendFile(t *testing.T, path, s string) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close %s: %v", path, err)
 	}
+}
+
+// TestEffectiveLogPathIgnoresCachedSummary proves the file actions only trust a
+// LIVE, VERIFIED summary: a cached-only (gui.json) or unverified snapshot yields
+// no path, so a same-user process cannot seed a path that the elevated GUI then
+// hands to openPath or os.Truncate.
+func TestEffectiveLogPathIgnoresCachedSummary(t *testing.T) {
+	const seeded = `C:\Users\Public\x.exe`
+
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.cached = &ipc.ConfigSummary{LogPath: seeded}
+	app.snap = snapshot{trust: trustVerified, installed: true, scmState: "stopped"}
+	if got := app.effectiveLogPath(); got != "" {
+		t.Fatalf("cached-only effective log path = %q, want empty", got)
+	}
+
+	app.snap = snapshot{trust: trustUnverified, summary: &ipc.ConfigSummary{LogPath: seeded}}
+	if got := app.effectiveLogPath(); got != "" {
+		t.Fatalf("unverified effective log path = %q, want empty", got)
+	}
+
+	app.snap = snapshot{trust: trustVerified, summary: &ipc.ConfigSummary{LogPath: seeded}}
+	if got := app.effectiveLogPath(); got != seeded {
+		t.Fatalf("verified effective log path = %q, want %q", got, seeded)
+	}
+}
+
+// TestLogFileActionsDisabledWithoutLiveSummary proves both file buttons render
+// disabled when the path would come only from the cached summary.
+func TestLogFileActionsDisabledWithoutLiveSummary(t *testing.T) {
+	app := loggingApp()
+	app.snap.summary = nil
+	app.cached = &ipc.ConfigSummary{LogPath: filepath.Join("C:", "Users", "Public", "x.exe")}
+
+	w, root := layoutFor(t, app, defaultWidth, defaultHeight)
+
+	assertDisabled(t, root, w, "gui:log:open", true)
+	assertDisabled(t, root, w, "gui:log:clear", true)
+	assertNoFindings(t, w)
 }

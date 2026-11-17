@@ -9,6 +9,8 @@ import (
 	"os/user"
 	"strings"
 	"syscall"
+
+	"github.com/daika7ana/sigil-dns/internal/config"
 )
 
 // setStartWithWindows registers or removes the per-user logon task.  The GUI is
@@ -34,22 +36,52 @@ func setStartWithWindows(on bool) error {
 		id = u.Username
 	}
 
-	f, err := os.CreateTemp("", "sigildns-task-*.xml")
+	path, err := stageTaskXML(autostartTaskXML(exe, id))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(f.Name()) }()
+	defer func() { _ = os.Remove(path) }()
 
-	if _, err = f.Write(utf16LE(autostartTaskXML(exe, id))); err != nil {
+	return runSchtasks([]string{"/Create", "/TN", autostartTaskName, "/XML", path, "/F"})
+}
+
+// stageTaskXML writes the task XML into the machine-wide data directory
+// (SYSTEM + Administrators only) and returns its path.  %TEMP% is
+// user-writable, so a same-user process could swap the file before schtasks
+// read it and register an arbitrary exe at logon with HighestAvailable.
+func stageTaskXML(xml string) (path string, err error) {
+	dir := config.SystemDir()
+	if dir == "" {
+		return "", fmt.Errorf("sigildns: cannot resolve the machine-wide data directory")
+	}
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+
+	return writeTaskXML(dir, xml)
+}
+
+// writeTaskXML stages the UTF-16LE task XML in dir and returns the file path.
+func writeTaskXML(dir, xml string) (path string, err error) {
+	f, err := os.CreateTemp(dir, "sigildns-task-*.xml")
+	if err != nil {
+		return "", err
+	}
+	path = f.Name()
+
+	if _, err = f.Write(utf16LE(xml)); err != nil {
 		_ = f.Close()
+		_ = os.Remove(path)
 
-		return err
+		return "", err
 	}
 	if err = f.Close(); err != nil {
-		return err
+		_ = os.Remove(path)
+
+		return "", err
 	}
 
-	return runSchtasks([]string{"/Create", "/TN", autostartTaskName, "/XML", f.Name(), "/F"})
+	return path, nil
 }
 
 // deleteAutostartTask removes the logon task.  A delete that fails because the

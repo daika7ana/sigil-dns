@@ -567,7 +567,7 @@ func readWith(ctx context.Context, read func(context.Context) (snapshot, error))
 
 	snap, err := read(rctx)
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now()}
+		return snapshot{trust: trustUnverified, updated: time.Now()}
 	}
 	if snap.updated.IsZero() {
 		snap.updated = time.Now()

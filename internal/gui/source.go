@@ -19,12 +19,13 @@ const readTimeout = 8 * time.Second
 type trustKind int
 
 const (
+	// trustUnverified is the ZERO value, so a snapshot nobody has explicitly
+	// verified (a fresh read error, a dropped poll) can never be mistaken for
+	// a confirmed reading.
+	trustUnverified trustKind = iota
 	// trustVerified means the status source is the sigildns service (on
 	// Windows: the pipe server PID matches the SCM-reported ProcessId).
-	trustVerified trustKind = iota
-	// trustUnverified means the identity could not be confirmed, so the
-	// data is not shown.
-	trustUnverified
+	trustVerified
 )
 
 // snapshot is one read of the service status.  It carries only sanitized data

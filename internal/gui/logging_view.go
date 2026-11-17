@@ -369,14 +369,17 @@ func (a *App) syncLogViewer() {
 	a.logView.path.Store(&path)
 }
 
-// effectiveLogPath is the resolved log file path from the summary — the
-// configured override, or the platform default the summary already fills in.
+// effectiveLogPath is the resolved log file path the file actions may touch.
+// It only trusts a VERIFIED snapshot — including the offlineSummary read from
+// the admin-only config while the service is stopped.  The cached last-good
+// summary (gui.json) is user-writable and display-only, so a same-user process
+// cannot point these buttons at an executable.
 func (a *App) effectiveLogPath() (path string) {
-	if sum := a.summary(); sum != nil {
-		return sum.LogPath
+	if a.snap.trust != trustVerified || a.snap.summary == nil {
+		return ""
 	}
 
-	return ""
+	return a.snap.summary.LogPath
 }
 
 // defaultPathHint is the path field's placeholder: the effective default the

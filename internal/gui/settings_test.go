@@ -1353,8 +1353,8 @@ func TestTrayStatusText(t *testing.T) {
 	}{
 		{"unknown", snapshot{}, "Service: Unknown"},
 		{"not installed", snapshot{scmState: "not installed"}, "Service: Not installed"},
-		{"running", snapshot{installed: true, scmState: "running"}, "Service: Running"},
-		{"stopped", snapshot{installed: true, scmState: "stopped"}, "Service: Stopped"},
+		{"running", snapshot{trust: trustVerified, installed: true, scmState: "running"}, "Service: Running"},
+		{"stopped", snapshot{trust: trustVerified, installed: true, scmState: "stopped"}, "Service: Stopped"},
 		{"unverified", snapshot{installed: true, scmState: "running", trust: trustUnverified}, "Service: Unverified"},
 	}
 

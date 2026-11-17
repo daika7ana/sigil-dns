@@ -24,7 +24,7 @@ import (
 func (s *pipeSource) liveBase(ctx context.Context) (snapshot, net.Conn, liveOutcome) {
 	pid, running, installed, state, err := serviceProcess()
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now()}, nil, liveUnavailable
+		return snapshot{trust: trustUnverified, updated: time.Now()}, nil, liveUnavailable
 	}
 	if !installed {
 		return snapshot{trust: trustVerified, updated: time.Now(),
@@ -37,7 +37,7 @@ func (s *pipeSource) liveBase(ctx context.Context) (snapshot, net.Conn, liveOutc
 
 	conn, err := ipc.Dial(ctx, s.endpoint)
 	if err != nil {
-		return snapshot{trust: trustVerified, updated: time.Now(),
+		return snapshot{trust: trustUnverified, updated: time.Now(),
 			installed: true, scmState: state}, nil, liveUnavailable
 	}
 	unverified := func() (snapshot, net.Conn, liveOutcome) {
