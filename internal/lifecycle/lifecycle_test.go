@@ -230,7 +230,10 @@ func TestStartupAlwaysEnables(t *testing.T) {
 // TestRestoreKeepsLiveSessionLock: a control-pipe Restore runs while the
 // service already holds the lock; it must not release it under the running
 // session.
-func TestRestoreKeepsLiveSessionLock(t *testing.T) {
+// TestRestoreRefusesLiveSession: Restore is crash/dirty recovery only.  On a
+// live session it must refuse (Disable is the way down), so the SCM never says
+// Running with interception off, and the session lock stays held.
+func TestRestoreRefusesLiveSession(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()
 
@@ -241,11 +244,18 @@ func TestRestoreKeepsLiveSessionLock(t *testing.T) {
 		t.Fatal("Enable did not retain the lock")
 	}
 
-	if err := e.lc.Restore(ctx); err != nil {
-		t.Fatalf("Restore: %v", err)
+	if err := e.lc.Restore(ctx); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Restore err = %v, want ErrNotRunning", err)
 	}
 	if e.lc.lock == nil {
 		t.Fatal("Restore released a lock it did not acquire")
+	}
+	st, lErr := e.store.Load()
+	if lErr != nil {
+		t.Fatalf("Load: %v", lErr)
+	}
+	if st.Mode != state.ModeOn {
+		t.Fatalf("state = %+v, want mode=on left untouched", st)
 	}
 
 	if err := e.lc.Disable(ctx); err != nil {
@@ -555,11 +565,9 @@ func TestLifecycleInvariants(t *testing.T) {
 				if !st.Dirty {
 					t.Fatalf("state = %+v, want dirty=true kept on failure", st)
 				}
-				if e.lc.lock == nil {
-					t.Fatal("failed restore released the session lock")
+				if e.lc.lock != nil {
+					t.Fatal("a Restore that acquired the lock must release it on failure too")
 				}
-
-				e.lc.release()
 			},
 		},
 		{
@@ -865,5 +873,51 @@ func TestResolverConfigCarriesFailoverTiming(t *testing.T) {
 	if got.FallbackProfile != "backup" || got.FailoverAfter != 2*time.Second || got.FallbackTimeout != 3*time.Second {
 		t.Fatalf("failover wiring = (%q, %v, %v), want (backup, 2s, 3s)",
 			got.FallbackProfile, got.FailoverAfter, got.FallbackTimeout)
+	}
+}
+
+// TestRestoreClearsLeak: a leak verdict only means something while interception
+// is on; the off transition must drop the previous session's verdict.
+func TestRestoreClearsLeak(t *testing.T) {
+	env := newTestEnv(t)
+	st := dirtyState()
+	st.Leak = &state.Leak{Checked: true, Open: true, Servers: []string{"203.0.113.1"}}
+	env.seed(t, st)
+
+	if err := env.lc.Restore(context.Background()); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := env.store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Mode != state.ModeOff || got.Dirty || got.Leak != nil {
+		t.Fatalf("state = %+v, want clean off with no leak", got)
+	}
+}
+
+// TestHealth: the post-enable probe reports ErrNotRunning without a resolver,
+// nil for a healthy one, and the check detail on failure.
+func TestHealth(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	if err := env.lc.Health(ctx); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Health without resolver err = %v, want ErrNotRunning", err)
+	}
+
+	if err := env.lc.Enable(ctx); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if err := env.lc.Health(ctx); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+
+	env.lc.checkHealth = func(context.Context, health.Target) health.Result {
+		return health.Result{OK: false, Detail: "upstream timeout"}
+	}
+	if err := env.lc.Health(ctx); err == nil || !strings.Contains(err.Error(), "upstream timeout") {
+		t.Fatalf("Health err = %v, want the check detail", err)
 	}
 }

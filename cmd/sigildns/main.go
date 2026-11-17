@@ -580,6 +580,10 @@ type svcDaemon interface {
 	PauseFiltering(ctx context.Context) (err error)
 	ResumeFiltering(ctx context.Context) (err error)
 	RuntimeStats() (queries, blocked uint64, pausedUntil time.Time)
+
+	// Health runs a resolver health check; used by the drift loop to catch a
+	// live-but-wedged resolver.
+	Health(ctx context.Context) error
 }
 
 // liveLifecycle publishes the current inner lifecycle to RuntimeStats, the one
@@ -627,6 +631,16 @@ func (s *serviceLifecycle) RuntimeStats() (queries, blocked uint64, pausedUntil 
 	}
 
 	return 0, 0, time.Time{}
+}
+
+// Health implements service.Lifecycle.  It reads the atomically published inner
+// lifecycle so the drift loop follows a reload swap without the shared mutex.
+func (s *serviceLifecycle) Health(ctx context.Context) error {
+	if live := s.live.Load(); live != nil {
+		return live.lc.Health(ctx)
+	}
+
+	return lifecycle.ErrNotRunning
 }
 
 // Enable implements service.Lifecycle.
@@ -830,7 +844,7 @@ func cmdServiceHost(args []string) (err error) {
 	slc.stop = agent.RequestStop
 	agent.SetConfigPath(o.configPath)
 	agent.SetReloader(slc.Reload)
-	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l, agent.RequestStop, agent.Interlock()))
+	agent.SetWatcher(drift.NewSystemReconciler(o.statePath, l, agent.RequestStop, agent.Interlock(), slc.Health))
 
 	return service.Run(agent)
 }

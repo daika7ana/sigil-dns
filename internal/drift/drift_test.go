@@ -419,3 +419,118 @@ func TestReconcilerStartStop(t *testing.T) {
 	// Stop is idempotent.
 	r.Stop()
 }
+
+func healthyObs() (obs Observation) {
+	return Observation{
+		Expected: State{NRPTOurs: true, Namespaces: []string{""}},
+		Actual:   State{NRPTOurs: true, Namespaces: []string{""}},
+	}
+}
+
+// TestReconcileHealthFailuresAutoDisable: a bound but wedged resolver is a
+// silent outage, so N consecutive health failures take the same fail-closed
+// path as persistent drift.
+func TestReconcileHealthFailuresAutoDisable(t *testing.T) {
+	p := &fakeProber{fn: func(int) (Observation, error) { return healthyObs(), nil }}
+	dis := &fakeDisabler{}
+	stopped := false
+
+	r := NewReconciler(Options{
+		Prober: p, Disabler: dis, Interval: time.Millisecond,
+		Health:    func(context.Context) error { return errors.New("upstream timeout") },
+		OnDisable: func() { stopped = true },
+	})
+
+	attempts := 0
+	for i := 0; i < r.maxHealthFails-1; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatalf("reconcile %d stopped before the health threshold", i+1)
+		}
+	}
+	if got := dis.disables.Load(); got != 0 {
+		t.Fatalf("disable calls = %d, want 0 before the threshold", got)
+	}
+
+	if stop := r.reconcile(context.Background(), &attempts); !stop {
+		t.Fatal("reconcile did not stop after repeated health failures")
+	}
+	if got := dis.disables.Load(); got != 1 {
+		t.Errorf("disable calls = %d, want 1", got)
+	}
+	if !stopped {
+		t.Error("OnDisable not called after a health-triggered disable")
+	}
+}
+
+// TestReconcileHealthSuccessResetsFailures: one healthy probe between failures
+// clears the streak, so a flapping upstream never disables protection.
+func TestReconcileHealthSuccessResetsFailures(t *testing.T) {
+	p := &fakeProber{fn: func(int) (Observation, error) { return healthyObs(), nil }}
+	dis := &fakeDisabler{}
+
+	healthCalls := 0
+	r := NewReconciler(Options{
+		Prober: p, Disabler: dis, Interval: time.Millisecond,
+		Health: func(context.Context) error {
+			healthCalls++
+			if healthCalls == 3 {
+				return nil
+			}
+
+			return errors.New("upstream timeout")
+		},
+	})
+
+	attempts := 0
+	for i := 0; i < 4; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatal("reconcile stopped although a success reset the streak")
+		}
+	}
+	if got := dis.disables.Load(); got != 0 {
+		t.Fatalf("disable calls = %d, want 0", got)
+	}
+}
+
+// TestReconcileBypassRetryAfterBackoff: a transient bypass-only failure is
+// retried after the backoff instead of staying frozen until restart; it still
+// never auto-disables catch-all protection.
+func TestReconcileBypassRetryAfterBackoff(t *testing.T) {
+	obs := Observation{
+		Expected: State{NRPTOurs: true, Namespaces: []string{"", "corp.example"}},
+		Actual:   State{NRPTOurs: true, Namespaces: []string{""}},
+	}
+	p := &fakeProber{fn: func(int) (Observation, error) { return obs, nil }}
+	ap := &fakeApplier{}
+	dis := &fakeDisabler{}
+
+	r := NewReconciler(Options{Prober: p, Applier: ap, Disabler: dis, MaxAttempts: 1})
+	r.bypassRetryDelay = 10 * time.Millisecond
+
+	attempts := 0
+	if stop := r.reconcile(context.Background(), &attempts); stop {
+		t.Fatal("reconcile stopped for a bypass-only drift")
+	}
+	if got := ap.applies.Load(); got != 1 {
+		t.Fatalf("apply calls = %d, want 1", got)
+	}
+
+	// Inside the backoff window: no retry.
+	if stop := r.reconcile(context.Background(), &attempts); stop {
+		t.Fatal("reconcile stopped for a bypass-only drift")
+	}
+	if got := ap.applies.Load(); got != 1 {
+		t.Fatalf("apply calls = %d, want 1 inside the backoff", got)
+	}
+
+	time.Sleep(3 * r.bypassRetryDelay)
+	if stop := r.reconcile(context.Background(), &attempts); stop {
+		t.Fatal("reconcile stopped for a bypass-only drift")
+	}
+	if got := ap.applies.Load(); got != 2 {
+		t.Fatalf("apply calls = %d, want 2 after the backoff", got)
+	}
+	if got := dis.disables.Load(); got != 0 {
+		t.Fatalf("disable calls = %d, want 0", got)
+	}
+}

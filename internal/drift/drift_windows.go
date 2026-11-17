@@ -36,11 +36,11 @@ const (
 // NewSystemReconciler returns a Reconciler wired to the Windows registry watcher
 // and NRPT interception.  interlock must be the mutex the service lifecycle
 // holds for enable/disable/reload, so a re-apply cannot race a disable.
-func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func(), interlock *sync.Mutex) (r *Reconciler) {
+func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func(), interlock *sync.Mutex, health func(context.Context) error) (r *Reconciler) {
 	s := &system{statePath: statePath, interlock: interlock}
 
 	return NewReconciler(Options{
-		Prober: s, Applier: s, Disabler: s, Logger: logger, OnDisable: onDisable,
+		Prober: s, Applier: s, Disabler: s, Logger: logger, OnDisable: onDisable, Health: health,
 	})
 }
 

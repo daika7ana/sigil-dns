@@ -127,6 +127,16 @@ func rewriteResponse(req *dns.Msg, rws []filter.Rewrite, ttl uint32) (resp *dns.
 				resp.Answer = append(resp.Answer,
 					&dns.AAAA{Hdr: rrHdr(q.Name, dns.TypeAAAA, ttl), AAAA: ip.AsSlice()})
 			}
+		case q.Qtype == dns.TypePTR && rw.RRType == dns.TypePTR:
+			if v, ok := rw.Value.(string); ok {
+				resp.Answer = append(resp.Answer,
+					&dns.PTR{Hdr: rrHdr(q.Name, dns.TypePTR, ttl), Ptr: dns.Fqdn(v)})
+			}
+		case q.Qtype == dns.TypeTXT && rw.RRType == dns.TypeTXT:
+			if v, ok := rw.Value.(string); ok {
+				resp.Answer = append(resp.Answer,
+					&dns.TXT{Hdr: rrHdr(q.Name, dns.TypeTXT, ttl), Txt: []string{v}})
+			}
 		}
 	}
 

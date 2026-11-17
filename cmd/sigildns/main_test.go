@@ -107,6 +107,8 @@ func (f *fakeDaemon) RuntimeStats() (queries, blocked uint64, pausedUntil time.T
 	return f.queries, f.blocked, f.pausedUntil
 }
 
+func (f *fakeDaemon) Health(context.Context) error { return nil }
+
 func TestRuntimeStatsFollowsReloadSwap(t *testing.T) {
 	lc := &serviceLifecycle{}
 	lc.setInner(&fakeDaemon{queries: 1, blocked: 2})

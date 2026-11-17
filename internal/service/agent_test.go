@@ -159,6 +159,45 @@ func (b *blockingAgentLC) Startup(context.Context) (err error) {
 	return nil
 }
 
+// blockingEnableLC blocks Enable until the test releases it.
+type blockingEnableLC struct {
+	fakeAgentLC
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingEnableLC) Enable(context.Context) (err error) {
+	close(b.entered)
+	<-b.release
+
+	return nil
+}
+
+// TestLockedStatusDoesNotBlock: Status only reads atomic state, so it must not
+// wait behind a slow lifecycle operation (drift's enable can hold the mutex for
+// up to a minute).
+func TestLockedStatusDoesNotBlock(t *testing.T) {
+	lc := &blockingEnableLC{entered: make(chan struct{}), release: make(chan struct{})}
+	l := &lockedLifecycle{lc: lc}
+
+	go func() { _ = l.Enable(context.Background()) }()
+	<-lc.entered
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = l.Status()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Status blocked behind a held lifecycle mutex")
+	}
+
+	close(lc.release)
+}
+
 // TestAgentStopDuringStartupDoesNotEnable: a stop that arrives while Start is
 // still recovering must wait for Start and must not let a late enable run.
 func TestAgentStopDuringStartupDoesNotEnable(t *testing.T) {

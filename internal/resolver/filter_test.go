@@ -290,6 +290,39 @@ func TestRewriteAcceptsIPv4MappedAAAA(t *testing.T) {
 	}
 }
 
+// TestRewritePTRAndTXT: $dnsrewrite with a PTR or TXT value must answer with
+// that record instead of an empty NOERROR.
+func TestRewritePTRAndTXT(t *testing.T) {
+	upstream, hits := startUpstream(t, "192.0.2.1")
+	// The pinned urlfilter uses two delimiters (rcode;type;value).
+	list := writeList(t, "|1.0.0.10.in-addr.arpa^$dnsrewrite=NOERROR;PTR;host.local\n"+
+		"||txt.test^$dnsrewrite=NOERROR;TXT;hello\n")
+
+	_, qaddr := startFilteredResolver(t, upstream, list, BlockResponseZero)
+
+	resp := query(t, qaddr, "1.0.0.10.in-addr.arpa.", dns.TypePTR)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("PTR answers = %v, want one", resp.Answer)
+	}
+	ptr, ok := resp.Answer[0].(*dns.PTR)
+	if !ok || ptr.Ptr != "host.local." {
+		t.Fatalf("PTR answer = %v, want host.local.", resp.Answer[0])
+	}
+
+	resp = query(t, qaddr, "txt.test.", dns.TypeTXT)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("TXT answers = %v, want one", resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok || len(txt.Txt) != 1 || txt.Txt[0] != "hello" {
+		t.Fatalf("TXT answer = %v, want hello", resp.Answer[0])
+	}
+
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("rewritten names reached upstream: hits = %d", n)
+	}
+}
+
 func TestFilterHostsAndNXDOMAIN(t *testing.T) {
 	upstream, hits := startUpstream(t, "192.0.2.1")
 	list := writeList(t, "0.0.0.0 hosts-blocked.test\n")

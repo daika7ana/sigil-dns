@@ -25,6 +25,15 @@ import (
 const (
 	defaultInterval    = 45 * time.Second
 	defaultMaxAttempts = 3
+
+	// defaultMaxHealthFails is how many consecutive post-enable health failures
+	// disable interception.  One transient probe failure must not take the
+	// service down.
+	defaultMaxHealthFails = 3
+
+	// bypassRetryIntervals spaces retries of a bypass-only exemption that could
+	// not be applied.  It is best-effort, so keep the rate low.
+	bypassRetryIntervals = 10
 )
 
 // State is an abstraction of the interception state used for comparisons.
@@ -245,6 +254,11 @@ type Options struct {
 	// OnDisable runs after the auto-disable attempt on persistent drift so the
 	// service host can stop (a running service is never left unprotected).
 	OnDisable func()
+
+	// Health probes the running resolver (when interception is on).  Consecutive
+	// failures auto-disable like persistent drift: a bound but wedged resolver
+	// would otherwise be a silent system-wide outage reported as healthy.
+	Health func(ctx context.Context) error
 }
 
 // Reconciler periodically compares expected and actual interception state and
@@ -253,15 +267,25 @@ type Reconciler struct {
 	prober      Prober
 	applier     Applier
 	disabler    Disabler
+	health      func(ctx context.Context) error
 	logger      *slog.Logger
 	interval    time.Duration
 	maxAttempts int
 	onDisable   func()
 
-	// bypassRetried records that a bypass-only drift was already re-applied.
-	// A permanently rejected exemption is best-effort and must never
-	// auto-disable protection.  reconcile is serialized, so no lock is needed.
-	bypassRetried bool
+	// maxHealthFails is how many consecutive health failures auto-disable; it
+	// is a field so tests can shrink it.
+	maxHealthFails int
+
+	// healthFails counts consecutive health-check failures.  reconcile is
+	// serialized, so no lock is needed.
+	healthFails int
+
+	// bypassRetryAt is when a failed bypass-only re-apply may be retried.  A
+	// permanently rejected exemption is best-effort and must never auto-disable
+	// protection, but one transient failure must not freeze it until restart.
+	bypassRetryAt    time.Time
+	bypassRetryDelay time.Duration
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -286,13 +310,16 @@ func NewReconciler(opts Options) (r *Reconciler) {
 	}
 
 	return &Reconciler{
-		prober:      opts.Prober,
-		applier:     opts.Applier,
-		disabler:    opts.Disabler,
-		logger:      logger,
-		interval:    interval,
-		maxAttempts: maxAttempts,
-		onDisable:   opts.OnDisable,
+		prober:           opts.Prober,
+		applier:          opts.Applier,
+		disabler:         opts.Disabler,
+		health:           opts.Health,
+		logger:           logger,
+		interval:         interval,
+		maxAttempts:      maxAttempts,
+		onDisable:        opts.OnDisable,
+		maxHealthFails:   defaultMaxHealthFails,
+		bypassRetryDelay: bypassRetryIntervals * interval,
 	}
 }
 
@@ -339,7 +366,11 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			r.logger.InfoContext(ctx, "drift resolved")
 		}
 		*attempts = 0
-		r.bypassRetried = false
+		r.bypassRetryAt = time.Time{}
+
+		if r.checkHealth(ctx, obs) {
+			return true
+		}
 
 	case DecisionConflict:
 		r.logger.WarnContext(ctx,
@@ -348,9 +379,11 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 		)
 
 	case DecisionApply:
-		// Only a bypass exemption is missing and it already failed once: it is
-		// best-effort, so never retry into the auto-disable path.
-		if !catchAllMissing(obs.Expected, obs.Actual) && r.bypassRetried {
+		// Only a bypass exemption is missing and it failed recently: it is
+		// best-effort, so never retry into the auto-disable path before the
+		// backoff expires.
+		if !catchAllMissing(obs.Expected, obs.Actual) &&
+			!r.bypassRetryAt.IsZero() && time.Now().Before(r.bypassRetryAt) {
 			r.logger.WarnContext(ctx,
 				"bypass exemption missing; not retrying until rules are clean",
 				"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
@@ -381,7 +414,7 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 		switch Decide(after.Expected, after.Actual) {
 		case DecisionOK:
 			*attempts = 0
-			r.bypassRetried = false
+			r.bypassRetryAt = time.Time{}
 
 		case DecisionApply:
 			if !catchAllMissing(after.Expected, after.Actual) {
@@ -389,7 +422,7 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 					"bypass exemption could not be applied; catch-all protection is active",
 					"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
 				)
-				r.bypassRetried = true
+				r.bypassRetryAt = time.Now().Add(r.bypassRetryDelay)
 				*attempts = 0
 
 				return false
@@ -431,6 +464,49 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			return true
 		}
 	}
+
+	return false
+}
+
+// checkHealth probes the running resolver while interception is on and reports
+// whether the loop must stop: maxHealthFails consecutive failures auto-disable
+// like persistent drift.  A nil Health or an off observation (no expected
+// namespaces) is a no-op.
+func (r *Reconciler) checkHealth(ctx context.Context, obs Observation) (stop bool) {
+	if r.health == nil || len(obs.Expected.Namespaces) == 0 {
+		return false
+	}
+
+	if hErr := r.health(ctx); hErr != nil {
+		r.healthFails++
+		r.logger.WarnContext(ctx, "resolver health check failed", "err", hErr, "consecutive", r.healthFails)
+
+		if r.healthFails < r.maxHealthFails {
+			return false
+		}
+
+		r.logger.ErrorContext(ctx, "resolver unhealthy; auto-disabling interception",
+			"consecutive", r.healthFails, "err", hErr)
+
+		if r.disabler != nil {
+			if dErr := r.disabler.Disable(ctx); dErr != nil {
+				// Never stop with interception pointing at a wedged resolver:
+				// keep the service up and start counting again.
+				r.logger.ErrorContext(ctx, "auto-disable failed; keeping service up", "err", dErr)
+				r.healthFails = 0
+
+				return false
+			}
+		}
+
+		if r.onDisable != nil {
+			r.onDisable()
+		}
+
+		return true
+	}
+
+	r.healthFails = 0
 
 	return false
 }

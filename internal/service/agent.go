@@ -186,11 +186,9 @@ func (l *lockedLifecycle) Reload(ctx context.Context) (sum ipc.ConfigSummary, er
 	return l.reload(ctx)
 }
 
-// Status implements Lifecycle.
+// Status implements Lifecycle.  It deliberately skips the lifecycle mutex: it
+// only reads atomic state, and must not stall behind a slow Enable/Reload.
 func (l *lockedLifecycle) Status() (st *state.State, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	return l.lc.Status()
 }
 

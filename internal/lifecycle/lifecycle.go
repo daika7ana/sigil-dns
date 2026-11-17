@@ -385,9 +385,18 @@ func (l *Lifecycle) disable(ctx context.Context) (err error) {
 	return l.markClean()
 }
 
-// Restore undoes interception from the persisted state.  It is idempotent and
-// keeps the dirty marker and the session lock set on partial failure.
+// Restore undoes interception from the persisted state.  It is idempotent,
+// refuses to run against a live resolver (a running session must use Disable),
+// keeps the dirty marker set on partial failure, and drops the session lock on
+// return when this call acquired it.
 func (l *Lifecycle) Restore(ctx context.Context) (err error) {
+	// Restore is the crash/dirty-recovery undo, never a way to disarm a live
+	// session: that would leave the SCM Running with interception off and the
+	// resolver still up.  A running session must be stopped through Disable.
+	if l.resolver() != nil {
+		return ErrNotRunning
+	}
+
 	// A running service already holds the lock; only drop it when this call
 	// acquired it, or a concurrent client could race the live session.
 	acquired := l.lock == nil
@@ -395,11 +404,7 @@ func (l *Lifecycle) Restore(ctx context.Context) (err error) {
 		return err
 	}
 	if acquired {
-		defer func() {
-			if err == nil {
-				l.release()
-			}
-		}()
+		defer l.release()
 	}
 
 	return l.restore(ctx)
@@ -436,10 +441,9 @@ func (l *Lifecycle) restore(ctx context.Context) (err error) {
 	l.flushDNS(ctx)
 
 	if lErr == nil && st.Dirty {
-		st.Mode = state.ModeOff
-		st.Dirty = false
-
-		return l.store.Save(st)
+		// MarkClean records the off transition and drops the previous session's
+		// leak verdict, so a stopped service cannot keep reporting one.
+		return l.markClean()
 	}
 
 	return nil
@@ -476,6 +480,22 @@ func (l *Lifecycle) Run(ctx context.Context) (err error) {
 
 // Status returns the persisted state, or state.ErrNoState.
 func (l *Lifecycle) Status() (st *state.State, err error) { return l.store.Load() }
+
+// Health runs the two-stage health check against the running resolver.  It
+// returns ErrNotRunning when no resolver is up, and an error carrying the
+// check detail when the listener is bound but cannot answer.
+func (l *Lifecycle) Health(ctx context.Context) error {
+	res := l.resolver()
+	if res == nil {
+		return ErrNotRunning
+	}
+
+	if hr := l.healthCheck(ctx, res); !hr.OK {
+		return fmt.Errorf("health check failed: %s", hr.Detail)
+	}
+
+	return nil
+}
 
 // RefreshLists re-downloads the running resolver's filter lists and rebuilds
 // its filter engine (SPEC §15.1).  It then flushes the OS DNS cache so a
