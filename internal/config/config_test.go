@@ -1118,12 +1118,14 @@ func TestLogConfigValidate(t *testing.T) {
 		}
 	}
 
-	good := Default()
-	dir := filepath.Join(t.TempDir(), "SigilDNS")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	// ValidateLogPath checks against SystemDir(), which on Windows resolves the
+	// ProgramData KnownFolder (not the ProgramData env var).  Use the real data
+	// dir so the test holds on both platforms.
+	dir := SystemDir()
+	if dir == "" {
+		t.Skip("SystemDir unavailable")
 	}
-	t.Setenv("ProgramData", filepath.Dir(dir))
+	good := Default()
 	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(dir, "sigildns.log"), MaxSizeMB: 5, KeepMB: 2}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid log config rejected: %v", err)

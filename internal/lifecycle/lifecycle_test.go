@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -574,6 +575,14 @@ func TestLifecycleInvariants(t *testing.T) {
 			name: "restore with corrupt state disables and recovers",
 			setup: func(t *testing.T, e *testEnv) {
 				t.Helper()
+				if runtime.GOOS == "windows" {
+					// On Windows, Restore's AcquireLockSecure takes ownership of
+					// the temp directory for Administrators, so the test process
+					// can no longer read back the clean state file it just wrote
+					// (the service runs as SYSTEM, which can).  Windows ACL
+					// behavior is covered by the winacl/state windows tests.
+					t.Skip("state file is admin-only on Windows")
+				}
 				if err := os.WriteFile(e.path, []byte("{not valid json"), 0o600); err != nil {
 					t.Fatal(err)
 				}
