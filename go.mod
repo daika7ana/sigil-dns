@@ -8,7 +8,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/go-gui-org/go-gui v0.92.0
 	github.com/miekg/dns v1.1.73
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
