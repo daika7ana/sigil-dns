@@ -198,15 +198,28 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) (err error) {
 	return h.next.Handle(ctx, out)
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs implements slog.Handler.  Values are stored as a LogValuer so the
+// scrub runs only when a record carrying the attribute is formatted, not on
+// every query-time With() call (dnsproxy builds a per-packet logger even when
+// logging is off).
 func (h *handler) WithAttrs(attrs []slog.Attr) (out slog.Handler) {
 	cleaned := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
-		cleaned[i] = h.scrubAttr(a)
+		a.Value = slog.AnyValue(lazyScrub{h: h, v: a.Value})
+		cleaned[i] = a
 	}
 
 	return &handler{next: h.next.WithAttrs(cleaned), store: h.store}
 }
+
+// lazyScrub defers scrubValue until slog resolves the value.
+type lazyScrub struct {
+	h *handler
+	v slog.Value
+}
+
+// LogValue implements slog.LogValuer.
+func (l lazyScrub) LogValue() (v slog.Value) { return l.h.scrubValue(l.v) }
 
 // WithGroup implements slog.Handler.
 func (h *handler) WithGroup(name string) (out slog.Handler) {

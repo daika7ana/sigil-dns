@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/redact"
@@ -22,6 +23,10 @@ const maxListSize = 64 << 20
 
 // fetchTimeout bounds a single HTTP(S) list fetch.
 const fetchTimeout = 30 * time.Second
+
+// loadTimeout bounds one LoadAll pass.  Lists are fetched concurrently, so the
+// per-list budget is also the pass budget.
+const loadTimeout = fetchTimeout
 
 // Loading errors.
 var (
@@ -52,6 +57,33 @@ type List struct {
 // plus a content checksum.  We follow that: fetch unconditionally and dedupe by
 // a per-list sha256.
 func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
+	// One shared deadline for the whole pass: concurrent fetches complete in
+	// roughly the slowest list's time instead of N*30s, so a caller holding a
+	// lifecycle lock is not blocked list after list.
+	ctx, cancel := context.WithTimeout(ctx, loadTimeout)
+	defer cancel()
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	results := make([]result, len(lists))
+
+	var wg sync.WaitGroup
+	for i, l := range lists {
+		if strings.TrimSpace(l.Source) == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(i int, source string) {
+			defer wg.Done()
+			data, lErr := loadOne(ctx, source)
+			results[i] = result{data: data, err: lErr}
+		}(i, l.Source)
+	}
+	wg.Wait()
+
 	seen := map[[32]byte]struct{}{}
 	var failures []error
 
@@ -59,13 +91,12 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 		if strings.TrimSpace(l.Source) == "" {
 			continue
 		}
-
-		data, lErr := loadOne(ctx, l.Source)
-		if lErr != nil {
+		if lErr := results[i].err; lErr != nil {
 			failures = append(failures, listError(i, l.Source, lErr))
 			continue
 		}
 
+		data := results[i].data
 		c := sha256.Sum256(data)
 		if _, dup := seen[c]; dup {
 			continue
@@ -250,7 +281,10 @@ func isBinary(data []byte) (ok bool) {
 	return bytes.IndexByte(data, 0) >= 0
 }
 
-// isURL reports whether source is an HTTP(S) URL.
+// isURL reports whether source is an HTTP(S) URL.  Schemes are
+// case-insensitive (RFC 3986), matching the config validation.
 func isURL(source string) (ok bool) {
+	source = strings.ToLower(source)
+
 	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 }

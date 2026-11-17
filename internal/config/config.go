@@ -120,8 +120,10 @@ func ValidateLogLevel(level string) (err error) {
 }
 
 // ValidateLogPath rejects a non-empty log path that is not a clean absolute
-// file path.  It never echoes the path in its error, which can reach an
-// unelevated caller through Result.Err.
+// file path inside the SigilDNS data directory: the SYSTEM service creates,
+// re-ACLs and truncates that file on rotation, so any other path (the hosts
+// file) would be destroyed.  It never echoes the path in its error, which can
+// reach an unelevated caller through Result.Err.
 func ValidateLogPath(path string) (err error) {
 	if strings.ContainsRune(path, 0) {
 		return errors.New("log path must not contain NUL")
@@ -139,7 +141,66 @@ func ValidateLogPath(path string) (err error) {
 		return errors.New("log path must name a file")
 	}
 
+	dir := SystemDir()
+	if dir == "" {
+		return errors.New("log path must be inside the SigilDNS data directory")
+	}
+
+	// Windows paths are case-insensitive; EqualFold matches the ASCII roots
+	// ProgramData produces.
+	dir = filepath.Clean(dir)
+	if len(path) <= len(dir) || !strings.EqualFold(path[:len(dir)], dir) ||
+		path[len(dir)] != filepath.Separator {
+		return errors.New("log path must be inside the SigilDNS data directory")
+	}
+
 	return nil
+}
+
+// ValidateListURL rejects anything internal/filter would open as a local file
+// other than an absolute drive path: it accepts only http(s) URLs and drive
+// paths, so a patch or a config can never hand the LocalSystem service a UNC
+// path (outbound NTLM) or a device path.
+func ValidateListURL(raw string) (err error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return errors.New("filter list url must not be empty")
+	}
+	if strings.HasPrefix(s, `\\.\`) || strings.HasPrefix(s, `\\?\`) {
+		return errors.New("filter list url must not name a device")
+	}
+	if strings.HasPrefix(s, `\\`) || strings.HasPrefix(s, "//") {
+		return errors.New("filter list url must not be a UNC path")
+	}
+
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return nil
+	}
+	if !isDrivePath(s) {
+		return errors.New("filter list url must be http(s) or an absolute drive path")
+	}
+	for _, seg := range strings.FieldsFunc(s[2:], func(r rune) bool { return r == '\\' || r == '/' }) {
+		if seg == "." || seg == ".." {
+			return errors.New("filter list url must be a clean path")
+		}
+	}
+
+	return nil
+}
+
+// isDrivePath reports whether s is a Windows drive-absolute path ("C:\..."),
+// independent of the host GOOS.
+func isDrivePath(s string) (ok bool) {
+	if len(s) < 3 || s[1] != ':' {
+		return false
+	}
+	c := s[0]
+	if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+		return false
+	}
+
+	return s[2] == '\\' || s[2] == '/'
 }
 
 // ErrNoConfig is returned by Load when the config file does not exist.
@@ -252,23 +313,6 @@ func Default() (c *Config) {
 			},
 		},
 	}
-}
-
-// defaultPath returns the platform-appropriate config file path.
-func defaultPath() (p string) {
-	if dir := os.Getenv("ProgramData"); dir != "" {
-		return filepath.Join(dir, "SigilDNS", "config.yaml")
-	}
-
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "sigildns", "config.yaml")
-	}
-
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "sigildns", "config.yaml")
-	}
-
-	return filepath.Join(os.TempDir(), "sigildns", "config.yaml")
 }
 
 // Load reads and normalizes the config at path.  It returns ErrNoConfig if the
@@ -514,8 +558,8 @@ func (p Profile) validate(name string) (err error) {
 		}
 	}
 	for i, l := range p.Filtering.Lists {
-		if strings.TrimSpace(l.URL) == "" {
-			return fmt.Errorf("profile %q: filtering list %d has no url", name, i)
+		if err = ValidateListURL(l.URL); err != nil {
+			return fmt.Errorf("profile %q: filtering list %d: %w", name, i, err)
 		}
 	}
 	switch p.Filtering.BlockResponse {

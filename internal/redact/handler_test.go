@@ -2,6 +2,9 @@ package redact
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -59,6 +62,70 @@ func TestHandlerScrubsWithAttrsAndGroups(t *testing.T) {
 		}
 	}
 }
+
+// TestWithAttrsDefersScrubbing: WithAttrs must not scrub at call time; values
+// are stored as a LogValuer and scrubbed only when a record is emitted.
+func TestWithAttrsDefersScrubbing(t *testing.T) {
+	const id = "SECRETID"
+
+	var buf bytes.Buffer
+	cap := &captureHandler{out: &buf}
+
+	child := Handler(cap, []string{id}).WithAttrs([]slog.Attr{
+		slog.String("upstream", "https://dns.nextdns.io/"+id),
+	})
+
+	ch, ok := child.(*handler)
+	if !ok {
+		t.Fatalf("WithAttrs returned %T, want *handler", child)
+	}
+	next, ok := ch.next.(*captureHandler)
+	if !ok || len(next.attrs) != 1 {
+		t.Fatalf("next = %#v, want one captured attr", ch.next)
+	}
+	if k := next.attrs[0].Value.Kind(); k != slog.KindLogValuer {
+		t.Fatalf("attr kind = %s, want LogValuer (not scrubbed eagerly)", k)
+	}
+
+	slog.New(child).Info("hi")
+
+	out := buf.String()
+	if strings.Contains(out, id) {
+		t.Fatalf("log leaked %q:\n%s", id, out)
+	}
+	if !strings.Contains(out, "<redacted>") {
+		t.Fatalf("attr was not scrubbed on emission:\n%s", out)
+	}
+}
+
+// captureHandler records the attrs passed to WithAttrs and renders every attr
+// (resolving LogValuers) on Handle.
+type captureHandler struct {
+	attrs []slog.Attr
+	out   io.Writer
+}
+
+func (c *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *captureHandler) Handle(_ context.Context, r slog.Record) (err error) {
+	attrs := append([]slog.Attr{}, c.attrs...)
+	r.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, a)
+
+		return true
+	})
+	for _, a := range attrs {
+		_, _ = fmt.Fprintf(c.out, "%s=%s\n", a.Key, a.Value.Resolve().String())
+	}
+
+	return nil
+}
+
+func (c *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &captureHandler{attrs: append(append([]slog.Attr{}, c.attrs...), attrs...), out: c.out}
+}
+
+func (c *captureHandler) WithGroup(string) slog.Handler { return c }
 
 // TestHandlerScrubsErrors covers a wrapped error that embeds a credential URL.
 func TestHandlerScrubsErrors(t *testing.T) {

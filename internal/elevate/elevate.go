@@ -492,8 +492,8 @@ func (l ListPatch) validateShape() (err error) {
 		}
 	}
 	for _, e := range l.Add {
-		if strings.TrimSpace(e.URL) == "" {
-			return errors.New("an added list needs a url")
+		if err = config.ValidateListURL(e.URL); err != nil {
+			return err
 		}
 	}
 

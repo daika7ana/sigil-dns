@@ -1119,8 +1119,68 @@ func TestLogConfigValidate(t *testing.T) {
 	}
 
 	good := Default()
-	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(t.TempDir(), "sigildns.log"), MaxSizeMB: 5, KeepMB: 2}
+	dir := filepath.Join(t.TempDir(), "SigilDNS")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("ProgramData", filepath.Dir(dir))
+	good.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(dir, "sigildns.log"), MaxSizeMB: 5, KeepMB: 2}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid log config rejected: %v", err)
+	}
+
+	// A log path outside the SigilDNS data directory would let LocalSystem
+	// truncate and re-ACL an arbitrary file (for example the hosts file).
+	outside := Default()
+	outside.Log = LogConfig{
+		Level: LogLevelInfo, Path: filepath.Join(t.TempDir(), "sigildns.log"),
+		MaxSizeMB: 5, KeepMB: 2,
+	}
+	if err := outside.Validate(); err == nil {
+		t.Fatal("log path outside the SigilDNS data directory accepted")
+	}
+
+	// A sibling prefix must not pass as being inside the directory.
+	sibling := Default()
+	sibling.Log = LogConfig{
+		Level: LogLevelInfo, Path: dir + "2" + string(filepath.Separator) + "sigildns.log",
+		MaxSizeMB: 5, KeepMB: 2,
+	}
+	if err := sibling.Validate(); err == nil {
+		t.Fatal("sibling-prefixed log path accepted")
+	}
+}
+
+// TestValidateListURL covers the filter-list source validator: only http(s) and
+// absolute drive paths are loadable by the LocalSystem service.
+func TestValidateListURL(t *testing.T) {
+	good := []string{
+		"https://example.com/hosts.txt",
+		"HTTP://example.com/hosts.txt",
+		`C:\lists\hosts.txt`,
+		`d:/lists/hosts.txt`,
+	}
+	for _, u := range good {
+		if err := ValidateListURL(u); err != nil {
+			t.Errorf("ValidateListURL(%q): %v", u, err)
+		}
+	}
+
+	bad := []string{
+		"",
+		"   ",
+		`\\attacker\share\hosts.txt`,
+		"//attacker/share/hosts.txt",
+		`\\.\PhysicalDrive0`,
+		`\\?\C:\lists\hosts.txt`,
+		`relative\hosts.txt`,
+		"/etc/hosts",
+		"ftp://example.com/hosts.txt",
+		`C:\lists\..\..\Windows\System32\drivers\etc\hosts`,
+	}
+	for _, u := range bad {
+		if err := ValidateListURL(u); err == nil {
+			t.Errorf("ValidateListURL(%q) accepted", u)
+		}
 	}
 }

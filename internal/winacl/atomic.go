@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // WriteFileAtomic writes data to path via a temp file in the same directory,
-// fsyncs it, renames it into place, fsyncs the directory, then restricts the
-// file to SYSTEM + Administrators.  The directory is created and secured before
-// the temp file exists so it never inherits a permissive ACL.  It is shared by
-// the config and state writers.
+// fsyncs it, restricts it to SYSTEM + Administrators, renames it into place and
+// fsyncs the directory.  Securing the directory before the temp file exists and
+// the temp file before the rename keeps an ACL failure non-destructive: a failed
+// save leaves the previous file untouched.  Shared by the config and state
+// writers.
 func WriteFileAtomic(path string, data []byte) (err error) {
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0o700); err != nil {
@@ -46,17 +48,32 @@ func WriteFileAtomic(path string, data []byte) (err error) {
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("closing temp file: %w", err)
 	}
-	if err = os.Rename(tmpName, path); err != nil {
+
+	// The rename preserves the DACL, so the committed file is never unsecured.
+	if err = SecureFile(tmpName); err != nil {
+		return fmt.Errorf("securing file: %w", err)
+	}
+	if err = renameWithRetry(tmpName, path); err != nil {
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
 
 	syncDir(dir)
 
-	if err = SecureFile(path); err != nil {
-		return fmt.Errorf("securing file: %w", err)
+	return nil
+}
+
+// renameWithRetry retries a transient sharing violation: Windows refuses to
+// replace a file another process holds open without FILE_SHARE_DELETE (AV,
+// indexer), even though the holder usually lets go within milliseconds.
+func renameWithRetry(oldPath, newPath string) (err error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = os.Rename(oldPath, newPath); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
-	return nil
+	return err
 }
 
 // syncDir fsyncs dir so the rename is durable.  Best-effort: opening a

@@ -31,6 +31,29 @@ func TestDPAPIRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHelperMainRejectsOutsidePathBeforeWrite pins the --apply containment
+// order: argv is caller-controlled and writeResult deletes the sibling .res, so
+// a path outside the staging dir must be refused without reading, deleting or
+// writing anything.
+func TestHelperMainRejectsOutsidePathBeforeWrite(t *testing.T) {
+	if _, err := stagingDir(); err != nil {
+		t.Skipf("staging dir unavailable: %v", err)
+	}
+
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.res")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := HelperMain(victim); err == nil {
+		t.Fatal("HelperMain accepted a path outside the staging directory")
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "keep" {
+		t.Fatalf("helper touched the target path: %q, %v", got, err)
+	}
+}
+
 // TestStagingSDDL pins the exact SDDL string (the real security invariant),
 // which is immune to Windows DACL canonicalisation on a file object.
 func TestStagingSDDL(t *testing.T) {

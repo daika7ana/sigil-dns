@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1013,7 +1014,14 @@ func TestApplyShouldReload(t *testing.T) {
 
 // TestApplyLogPatch covers the logging patch surface (LOGGING_PLAN §4.4).
 func TestApplyLogPatch(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "sigildns.log")
+	// ValidateLogPath only accepts the SigilDNS data directory, so point its
+	// non-Windows ProgramData resolution at a scratch tree.
+	t.Setenv("ProgramData", t.TempDir())
+	logDir := config.SystemDir()
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	logPath := filepath.Join(logDir, "sigildns.log")
 
 	cfg := config.Default()
 	req := Request{Action: ActionApply, UUID: "u", Patch: Patch{
@@ -1041,7 +1049,7 @@ func TestApplyLogPatch(t *testing.T) {
 
 	// Missing parent directory rejected: otherwise the service silently fails
 	// open to stderr and the user gets no file.
-	missing := filepath.Join(t.TempDir(), "absent", "sigildns.log")
+	missing := filepath.Join(logDir, "absent", "sigildns.log")
 	missReq := Request{Action: ActionApply, UUID: "u", Patch: Patch{LogPath: new(missing)}}
 	if err := applyRequest(config.Default(), missReq, "rev"); err == nil {
 		t.Fatal("log path with a missing parent directory accepted")

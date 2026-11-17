@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/winacl"
@@ -203,10 +204,20 @@ func AcquireLock(path string) (l *Lock, err error) {
 	return &Lock{file: f}, nil
 }
 
-// AcquireLockSecure takes the lock at path and, on Windows, restricts the lock
-// file to SYSTEM + Administrators.  It is for the service state lock; the GUI's
-// user-scope lock keeps the user's default ACL.
+// AcquireLockSecure takes the lock at path, creating and, on Windows,
+// restricting the containing directory and the lock file to SYSTEM +
+// Administrators.  It backs both admin-only locks (the service state lock and
+// the config apply lock) and may run before any save has created the data
+// directory; the GUI's user-scope lock keeps the user's default ACL.
 func AcquireLockSecure(path string) (l *Lock, err error) {
+	dir := filepath.Dir(path)
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating state dir: %w", err)
+	}
+	if err = winacl.SecureDir(dir); err != nil {
+		return nil, fmt.Errorf("securing state dir: %w", err)
+	}
+
 	l, err = AcquireLock(path)
 	if err != nil {
 		return nil, err

@@ -704,11 +704,19 @@ func ExtractIDs(provider string, proto Protocol, upstreams []string) (ids []stri
 			}
 		}
 
-		// No provider matched: a custom DoH endpoint may still hide its id in
-		// the path.  Shared/public hosts (e.g. ControlD freedns presets) carry
-		// no private id.
-		if schemeIsDoH(scheme) && !isSharedDoHHost(host) {
-			add(doHPathID(u))
+		// No provider matched: a custom endpoint may still hide its id in the
+		// DoH path (any position) or in the first host label of a DoT/DoQ
+		// subdomain.  Shared/public hosts (e.g. ControlD freedns presets)
+		// carry no private id.
+		if !isSharedDoHHost(host) {
+			switch {
+			case schemeIsDoH(scheme):
+				for _, seg := range doHPathIDs(u) {
+					add(seg)
+				}
+			case isDoT(pr):
+				add(customHostLabelID(host))
+			}
 		}
 	}
 
@@ -798,24 +806,42 @@ func isSharedDoHHost(host string) (ok bool) {
 // far beyond the credential it represents.
 const minGenericIDLen = 4
 
-// doHPathID returns the last path segment of a DoH URL, the location a private
-// id occupies for e.g. NextDNS/ControlD.
-func doHPathID(u string) (id string) {
+// doHPathIDs returns every path segment of a DoH URL, decoded.  A custom
+// endpoint may place its private id in any position, so each segment is a
+// candidate; add() drops public tokens and short values.
+func doHPathIDs(u string) (ids []string) {
 	p, err := url.Parse(u)
 	if err != nil {
-		return ""
+		return nil
 	}
 
-	path := strings.Trim(p.Path, "/")
-	if path == "" {
-		return ""
-	}
-	if i := strings.LastIndexByte(path, '/'); i >= 0 {
-		path = path[i+1:]
+	for _, seg := range strings.Split(strings.Trim(p.EscapedPath(), "/"), "/") {
+		if seg == "" {
+			continue
+		}
+		if decoded, dErr := url.PathUnescape(seg); dErr == nil && decoded != "" {
+			ids = append(ids, decoded)
+		}
 	}
 
-	return path
+	return ids
 }
+
+// customHostLabelID returns the first label of an unknown DoT/DoQ host.  Only a
+// subdomain of a registrable domain (id.some.example) is treated as an id; a
+// bare registrable domain (e.g. quad9.net) is a public endpoint.
+func customHostLabelID(host string) (id string) {
+	label, rest, ok := strings.Cut(host, ".")
+	if !ok || !strings.Contains(rest, ".") {
+		return ""
+	}
+
+	return label
+}
+
+// isDoT reports whether proto is a TLS/QUIC transport, whose id is a hostname
+// label rather than a path segment.
+func isDoT(proto Protocol) bool { return proto == DoT || proto == DoQ }
 
 // publicEndpoints are shared, id-less resolver tokens that must never become
 // scrub seeds (scrubbing them would corrupt ordinary log lines).

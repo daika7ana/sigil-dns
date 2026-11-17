@@ -3,12 +3,15 @@ package filter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestLoadAllFile(t *testing.T) {
@@ -48,6 +51,62 @@ func TestLoadAllHTTP(t *testing.T) {
 		t.Fatalf("LoadAll http: %v", err)
 	}
 	if len(raw) != 1 || !strings.Contains(string(raw[0].Text), "remote.test") {
+		t.Fatalf("raw = %+v", raw)
+	}
+}
+
+// TestLoadAllConcurrent: lists are fetched in parallel, so N slow sources cost
+// roughly one delay instead of N.
+func TestLoadAllConcurrent(t *testing.T) {
+	const n = 4
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		_, _ = fmt.Fprintf(w, "||list%s.test^\n", r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+
+	lists := make([]List, n)
+	for i := range lists {
+		lists[i] = List{Source: fmt.Sprintf("%s/%d", srv.URL, i)}
+	}
+
+	start := time.Now()
+	raw, err := LoadAll(context.Background(), lists)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(raw) != n {
+		t.Fatalf("loaded %d lists, want %d", len(raw), n)
+	}
+	if got := hits.Load(); got != n {
+		t.Fatalf("server hits = %d, want %d", got, n)
+	}
+	// Sequential would be ~1.2s; a concurrent pass is ~300ms.
+	if elapsed > 900*time.Millisecond {
+		t.Fatalf("loads did not run concurrently: %v", elapsed)
+	}
+}
+
+// TestLoadAllHTTPUpperScheme: config accepts an upper-case scheme, so the
+// loader must treat it as a URL rather than a local path.
+func TestLoadAllHTTPUpperScheme(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("||upper.test^\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	source := "HTTP://" + strings.TrimPrefix(srv.URL, "http://")
+
+	raw, err := LoadAll(context.Background(), []List{{Source: source}})
+	if err != nil {
+		t.Fatalf("LoadAll upper scheme: %v", err)
+	}
+	if len(raw) != 1 || !strings.Contains(string(raw[0].Text), "upper.test") {
 		t.Fatalf("raw = %+v", raw)
 	}
 }

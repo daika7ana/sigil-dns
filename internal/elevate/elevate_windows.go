@@ -180,6 +180,18 @@ func Apply(ctx context.Context, req Request) (res Result, err error) {
 // allowlisted patch, then drives the service over the verified control pipe.  It
 // writes its verdict to the sibling .res file.
 func HelperMain(reqPath string) (err error) {
+	// The request path is checked before anything is read or deleted: argv is
+	// caller-controlled, and writeResult removes the sibling .res.  A path that
+	// fails containment is not a request this helper staged, so it gets no
+	// verdict either.
+	dir, err := stagingDir()
+	if err != nil {
+		return err
+	}
+	if err = validateStagingRequest(reqPath, dir); err != nil {
+		return err
+	}
+
 	// Every early exit below still writes a verdict: the caller otherwise only
 	// sees its timeout and reports "helper did not report a result".
 	elevated, err := isElevated()
@@ -192,11 +204,6 @@ func HelperMain(reqPath string) (err error) {
 		return errors.New("--apply must run elevated")
 	}
 
-	dir, err := stagingDir()
-	if err != nil {
-		_ = writeResult(reqPath, Result{Err: "staging directory is unavailable"})
-		return err
-	}
 	data, err := readStagingRequest(reqPath, dir)
 	if err != nil {
 		_ = writeResult(reqPath, Result{Err: "request could not be read"})
@@ -290,49 +297,10 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	reload := false
 
 	if req.Action == ActionApply {
-		// Resolve the config path from the ProgramData KnownFolder inside the
-		// elevated helper: never trust %ProgramData% from the caller's env.
-		path := config.SystemPath()
-		if path == "" {
-			return Result{Err: "system configuration directory is unavailable"}
+		// Locked read-modify-write (see saveConfigPatch).
+		if res, changed, reload = saveConfigPatch(req); res.Err != "" {
+			return res
 		}
-
-		var before []byte
-		if raw, rErr := os.ReadFile(path); rErr == nil {
-			before = raw
-		}
-
-		cfg, err := config.Load(path)
-		if err != nil {
-			if !errors.Is(err, config.ErrNoConfig) {
-				return Result{Err: "config could not be loaded"}
-			}
-
-			cfg = config.Default()
-		}
-
-		// Snapshot the pre-apply config so a log-only edit can be told apart
-		// from a reload-worthy change (LOGGING_PLAN §1.6).
-		snapshot := cfg.Clone()
-
-		if err = applyRequest(cfg, req, ipc.Revision(path)); err != nil {
-			return Result{Err: err.Error()}
-		}
-
-		// Re-stat immediately before saving to close the check->save TOCTOU
-		// window: a write that landed during apply must abort, not be clobbered.
-		if err = checkRevision(req.ExpectedRevision, ipc.Revision(path)); err != nil {
-			return Result{Err: err.Error()}
-		}
-
-		// Save validates and ACLs the file.
-		if err = cfg.Save(path); err != nil {
-			return Result{Err: "config could not be saved"}
-		}
-
-		after, rErr := os.ReadFile(path)
-		changed = rErr == nil && !bytes.Equal(before, after)
-		reload = reloadRelevant(snapshot, cfg)
 	}
 
 	// Restore must never start the service: startup would enable interception
@@ -381,6 +349,75 @@ func runAction(ctx context.Context, req Request) (res Result) {
 	}
 
 	return Result{OK: true, Message: msg}
+}
+
+// saveConfigPatch performs the apply action's config read-modify-write and
+// reports what changed.  The whole read -> apply -> revision-check -> Save
+// sequence runs under one machine-wide lock: the revision is mtime+size, so two
+// elevated helpers could otherwise both pass checkRevision and the later rename
+// would silently drop the earlier edit.
+//
+// shortcut: the lock is a dedicated <config>.lock file, not the state lock;
+// the service holds the state lock for its whole session, so taking it here
+// would refuse every apply while the service runs.  Upgrade if the service
+// ever releases the state lock while enabled.
+func saveConfigPatch(req Request) (res Result, changed, reload bool) {
+	// Resolve the config path from the ProgramData KnownFolder inside the
+	// elevated helper: never trust %ProgramData% from the caller's env.
+	path := config.SystemPath()
+	if path == "" {
+		return Result{Err: "system configuration directory is unavailable"}, false, false
+	}
+
+	// The lock file lives next to the config, which may not exist yet on a
+	// first apply.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return Result{Err: "system configuration directory is unavailable"}, false, false
+	}
+
+	lock, err := state.AcquireLockSecure(state.LockPath(path))
+	if err != nil {
+		return Result{Err: "the configuration is being changed by another process; try again"}, false, false
+	}
+	defer func() { _ = lock.Release() }()
+
+	var before []byte
+	if raw, rErr := os.ReadFile(path); rErr == nil {
+		before = raw
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		if !errors.Is(err, config.ErrNoConfig) {
+			return Result{Err: "config could not be loaded"}, false, false
+		}
+
+		cfg = config.Default()
+	}
+
+	// Snapshot the pre-apply config so a log-only edit can be told apart
+	// from a reload-worthy change (LOGGING_PLAN §1.6).
+	snapshot := cfg.Clone()
+
+	if err = applyRequest(cfg, req, ipc.Revision(path)); err != nil {
+		return Result{Err: err.Error()}, false, false
+	}
+
+	// Re-stat immediately before saving to close the check->save TOCTOU
+	// window: a write that landed during apply must abort, not be clobbered.
+	if err = checkRevision(req.ExpectedRevision, ipc.Revision(path)); err != nil {
+		return Result{Err: err.Error()}, false, false
+	}
+
+	// Save validates and ACLs the file.
+	if err = cfg.Save(path); err != nil {
+		return Result{Err: "config could not be saved"}, false, false
+	}
+
+	after, rErr := os.ReadFile(path)
+	changed = rErr == nil && !bytes.Equal(before, after)
+
+	return Result{}, changed, reloadRelevant(snapshot, cfg)
 }
 
 // applyConfigChanged reloads a running service after a config-only apply.  It
