@@ -83,9 +83,15 @@ the description shows the remaining minutes until it expires on its own.
 **Logging** shows:
 
 - A level selector — **Off**, **Errors only**, **Normal**, or **Verbose** — and
-  a location field (blank uses the default beside `config.yaml`).
+  a location field (blank uses the default beside `config.yaml`, under
+  `%ProgramData%\SigilDNS`; a custom path must also live in that folder).
 - **Apply** writes the setting through the elevated helper and notes
   *"Takes effect on next service start."*
+- The **Open log file** and **Clear log file** buttons act only on a path from a
+  verified status read — the running service's pipe, or the admin-only
+  `config.yaml` while it is stopped. An unverified read (SCM, dial, or
+  pipe-identity failure) disables them, so the user-writable `gui.json` cache can
+  never point them at an arbitrary file.
 - A **live viewer** that tails the log file, with a **refresh** slider from
   **0 s (off)** to **30 s**. Opening the Logging page jumps to the newest line.
   **Verbose** may record DNS query names, so treat the log as sensitive.

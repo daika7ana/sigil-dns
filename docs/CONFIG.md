@@ -161,7 +161,7 @@ filtering:
   lists:
     - url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
       enabled: true
-    - url: /path/to/local/hosts.txt
+    - url: C:\lists\hosts.txt
       enabled: true
 ```
 
@@ -169,7 +169,7 @@ filtering:
 |---|---|---|---|
 | `enabled` | bool | `false` | Filtering is off unless this is true **and** at least one list is enabled. |
 | `lists` | list | empty | Each entry needs a non-empty `url`. |
-| `lists[].url` | string | — | An HTTP(S) URL or a local file path. |
+| `lists[].url` | string | — | An HTTP(S) URL or an absolute local drive path (for example `C:\lists\hosts.txt`). UNC (`\\server\share`) and device (`\\.\`, `\\?\`) paths are rejected. |
 | `lists[].enabled` | bool | `false` | Disabled lists are ignored. |
 | `block_response` | string | `0.0.0.0` | `0.0.0.0` or `nxdomain`. |
 | `block_ttl` | integer (uint32) | `3600` | TTL for hand-built blocked answers. Must be > 0. |
@@ -183,7 +183,9 @@ filtering:
 
 Lists are hosts-format and AdGuard/ABP syntax, loaded manually (`sigildns
 refresh` or the GUI's Update filter lists); no scheduled updater. Changing rules
-or lists flushes the resolver cache.
+or lists flushes the resolver cache. A list path carried over from an older
+version that is relative, UNC, or a device path now fails to load, so rewrite it
+as an absolute drive path.
 
 ## `log`
 
@@ -202,14 +204,16 @@ log:
 | Field | Type | Default | Rules |
 |---|---|---|---|
 | `level` | string | `off` | `off`, `error`, `info`, or `debug`. |
-| `path` | string | empty | Empty = `%ProgramData%\SigilDNS\sigildns.log`. A custom path must be absolute and not a `\\.\` device path. |
+| `path` | string | empty | Empty = `%ProgramData%\SigilDNS\sigildns.log`. A custom path must be absolute and **inside `%ProgramData%\SigilDNS`**; paths elsewhere are rejected because the SYSTEM service re-ACLs and rotates the file. |
 | `max_size_mb` | integer | `10` | Rotate when the file reaches this size (clamped). |
 | `keep_mb` | integer | `3` | After rotation keep the newest this many MB (clamped to `max_size_mb`). |
 
 Resolver ids and URL credentials (userinfo, query strings, `sdns://`) are
 **redacted at every level**. The `debug` level additionally records DNS query
 names and upstream traffic, so treat a `debug` log as sensitive; the log itself
-stays ACLed to SYSTEM + Administrators beside `config.yaml`.
+stays ACLed to SYSTEM + Administrators beside `config.yaml`. A log path carried
+over from an older version that points outside that folder now fails to load;
+clear it to use the default.
 
 ## Worked examples
 

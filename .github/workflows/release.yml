@@ -30,9 +30,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # CI already ran vet+test for this commit (it is on a branch). Re-running
-      # them here doubles the release time; fall back to running them only when
-      # no push CI run exists for this SHA (e.g. a tag on an unmerged commit). A
+      # CI already ran vet+test and the security gates for this commit (it is on
+      # a branch). Re-running them here doubles the release time; fall back to
+      # running them only when no push CI run exists for this SHA (e.g. a tag on
+      # an unmerged commit) — the fallback repeats the same gates as ci.yml. A
       # red or still-running push run blocks the release: it must not publish.
       - name: Check CI is green for this commit
         id: ci
@@ -89,6 +90,23 @@ jobs:
       - name: Test (gui)
         if: steps.ci.outputs.green != 'true'
         run: go test -tags gui -timeout 120s ./internal/gui/
+
+      # The fallback must cover the same blocking gates as ci.yml, otherwise a
+      # tag on an unmerged commit (no push CI run) ships unsecurity-checked.
+      - name: staticcheck
+        if: steps.ci.outputs.green != 'true'
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+
+      - name: govulncheck
+        if: steps.ci.outputs.green != 'true'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags gui ./...
+
+      # Race detection stays a ci.yml gate (Linux has the C toolchain it needs);
+      # the release fallback runs the two blocking security gates + vet/test.
+
+      - name: Build (tray)
+        if: steps.ci.outputs.green != 'true'
+        run: go build -tags tray ./...
 
       - name: Build (windows/amd64)
         shell: pwsh
@@ -192,7 +210,6 @@ jobs:
           Copy-Item 'install.ps1'                $stage -Force
           Copy-Item 'config.example.yaml'        $stage -Force
           Copy-Item 'README.md'                  $stage -Force
-          Copy-Item 'SPEC.md'                    $stage -Force
           Copy-Item 'CHANGELOG.md'               $stage -Force
           Copy-Item 'LICENSE'                    $stage -Force
           Copy-Item 'docs'                       $stage -Recurse -Force
@@ -223,7 +240,6 @@ jobs:
             'install.ps1'
             'config.example.yaml'
             'README.md'
-            'SPEC.md'
             'CHANGELOG.md'
             'LICENSE'
             'docs/CONFIG.md'

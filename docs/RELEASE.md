@@ -14,7 +14,7 @@ The release zip is `sigildns_<version>_windows_amd64.zip` and contains:
   headless `--apply` elevation helper.
 - `sigildns-gui.exe` — the GUI-subsystem configuration client (Status,
   Settings, Rules, Logging, and About), built `-tags gui -ldflags "-H windowsgui"`.
-- `config.example.yaml`, `README.md`, `SPEC.md`, `CHANGELOG.md`, `LICENSE`, and
+- `config.example.yaml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and
   `docs/` (the README links into it).
 - `install.ps1` — the single installer: next to the binaries it installs those
   files and shows an Install / Uninstall menu; started from the one-line URL it
@@ -130,7 +130,7 @@ The workflow lives at `.github/workflows/release.yml` and runs on
    still include function names and line numbers.
 4. **Optional signing** — signs **both** binaries (see below).
 5. Packages `dist/sigildns_<version>_windows_amd64.zip` containing both
-   binaries, `install.ps1`, `config.example.yaml`, `README.md`, `SPEC.md`,
+   binaries, `install.ps1`, `config.example.yaml`, `README.md`,
    `CHANGELOG.md`, `LICENSE`, and `docs/`.
 6. Writes `dist/SHA256SUMS.txt` — the SHA-256 of the zip, published alongside
    it (the zip itself is never signed).

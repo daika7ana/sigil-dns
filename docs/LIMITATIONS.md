@@ -5,6 +5,13 @@ normal Windows applications use. It does not, and without a kernel driver
 cannot, intercept traffic that never asks the OS resolver. This page is the
 honest version of that boundary.
 
+The data directory `%ProgramData%\SigilDNS` (holding `config.yaml`, `state.json`
+and the log) is owned by Administrators and ACLed to SYSTEM + Administrators on
+every save and service start. That closes a first-run race: as the folder's
+owner, a standard user who pre-created it holds implicit `WRITE_DAC` and could
+re-ACL it to read resolver ids. If you need a previous owner kept, delete or
+take ownership of the folder first.
+
 ## What is intercepted
 
 - Applications that resolve names through the standard OS resolver
@@ -155,6 +162,13 @@ unprotected. `status` then shows interception off; fix the conflicting tool and
 start the service again. If the auto-disable itself fails, the service keeps
 running with its resolver up and retries, because stopping would leave DNS
 pointed at a dead port.
+
+The same loop probes resolver health after enable. If the listener is bound but
+stops answering (a wedged resolver or a dead upstream), 3 consecutive failed
+checks take that same fail-closed path instead of leaving the machine pointed at
+a dead DNS port; a healthy check resets the count. The probe runs on the 45 s
+reconcile tick, so detection takes a little over two minutes. A resolver that is
+slow but still answers within the probe timeout is not considered unhealthy.
 
 ## Port 53 and ICS
 

@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `%ProgramData%\SigilDNS` is now owned by Administrators, not by whoever created it, so a standard user who pre-created the folder can no longer re-ACL it and read resolver ids (an existing foreign-owned directory is taken over; delete or re-own it first if that must not happen).
+- The log path must now be inside `%ProgramData%\SigilDNS`, so a config edit can no longer point the SYSTEM service at a file it would re-ACL and truncate on rotation, such as the hosts file.
+- Filter-list sources must now be HTTP(S) URLs or absolute drive paths; UNC and device paths are rejected so a patch cannot make the SYSTEM service authenticate out or read arbitrary files.
+- The elevated `--apply` helper validates the staging request path before any write, so an arbitrary argument can no longer delete or replace an unrelated `.res` file.
+- The GUI's Open/Clear log file actions need a verified status read instead of the user-writable cache, so a same-user process cannot point them at an executable or an arbitrary file to truncate.
+- The logon-task XML is staged in the admin-only data directory instead of `%TEMP%`, closing a race where a same-user process could swap in an arbitrary task command.
+- Concurrent admin config edits are serialized with a lock, so two simultaneous applies can no longer silently drop each other's change.
+- Config/state saves now apply the ACL before the rename and retry a transient Windows rename sharing violation, so a failed ACL step cannot leave a rejected change on disk and a file scanner cannot break a save.
+- The service now creates and secures its data directory before taking the state lock, so a manual install that skips `config init` can still start.
+- The reconcile loop now probes resolver health after enable and auto-disables after 3 consecutive failures, so a bound-but-wedged resolver can no longer leave the machine pointed at a dead DNS port while status reports healthy.
+- The status read no longer waits on the lifecycle mutex, and a failed bypass re-apply is retried with backoff instead of being frozen until restart.
+- `restore` now refuses to run against a live resolver, so one control-pipe call can no longer disarm a running service with no automatic recovery.
+- `$dnsrewrite` rules now answer PTR and TXT queries instead of returning an empty answer.
 - A rule left behind by a crashed service is no longer deleted before the next enable, so a crash-recovery boot no longer falls back to the adapters' DNS servers while the resolver starts.
 - The GUI offers **Restore now** while the service is stopped, so a leftover rule can be cleared without starting it.
 - The tray icon no longer vanishes silently at sign-in. The host now waits for Explorer's notification area and retries icon creation instead of exiting after ~4 s with no console, re-adds the icon when Explorer rebuilds it, and reports a mutex failure instead of treating it as "already running".

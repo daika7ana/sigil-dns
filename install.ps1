@@ -217,11 +217,6 @@ function Get-LatestRelease {
         Expand-Archive -LiteralPath $zip -DestinationPath $root
         $installer = Join-Path $root 'install.ps1'
         if (-not (Test-Path -LiteralPath $installer)) {
-            # shortcut: releases before the unified installer ship
-            # installer/setup.ps1; drop this fallback after the next release.
-            $installer = Join-Path $root 'installer/setup.ps1'
-        }
-        if (-not (Test-Path -LiteralPath $installer)) {
             throw "install.ps1 is missing from $($zipAsset.name)."
         }
 
@@ -371,8 +366,17 @@ function Install-SigilDns {
 
         if (Test-Path -LiteralPath $targetExe) {
             # Best-effort stop; a stopped/absent service returns non-zero, which
-            # is fine because we remove it next.
-            & $targetExe service stop 2>$null | Out-Null
+            # is fine because we remove it next.  Native stderr becomes a
+            # terminating error under $ErrorActionPreference='Stop', so silence
+            # it for this call only.
+            $pref = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & $targetExe service stop 2>$null | Out-Null
+            }
+            finally {
+                $ErrorActionPreference = $pref
+            }
 
             & $targetExe service uninstall
             if ($LASTEXITCODE -ne 0) {
@@ -515,19 +519,36 @@ function Uninstall-SigilDns {
 
     if (Test-Path -LiteralPath $targetExe) {
         # Stop first: the service's shutdown restores interception and releases
-        # the single-instance lock.
-        & $targetExe service stop 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "'$serviceName' service stop returned exit $LASTEXITCODE; restoring interception directly."
+        # the single-instance lock.  Silence native stderr for this best-effort
+        # call so it cannot become a terminating error under ErrorActionPreference.
+        $pref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $targetExe service stop 2>$null | Out-Null
+            $stopExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $pref
+        }
+        if ($stopExit -ne 0) {
+            Write-Warning "'$serviceName' service stop returned exit $stopExit; restoring interception directly."
         }
 
         # Clear any dirty/leftover interception from a crashed run, now that the
         # lock is free.  This is the authoritative cleanup and is idempotent even
         # with no state file, so a failure here must abort before anything is
         # deleted.
-        & $targetExe restore 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "'$serviceName' restore failed with exit $LASTEXITCODE; interception could not be proven removed, so the install was left in place."
+        $pref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $targetExe restore 2>$null | Out-Null
+            $restoreExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $pref
+        }
+        if ($restoreExit -ne 0) {
+            throw "'$serviceName' restore failed with exit $restoreExit; interception could not be proven removed, so the install was left in place."
         }
 
         if ($null -ne $existingService) {
@@ -677,20 +698,9 @@ if (-not $isAdmin) {
         if ($RemoveData) { $flags += '-RemoveData' }
         if ($DesktopShortcut) { $flags += '-DesktopShortcut' }
 
-        # shortcut: a release before the unified installer ships setup.ps1,
-        # which knows no -Quiet/-AddToPath/-OpenGui; drop with the fallback.
-        $legacy = (Split-Path -Leaf $release.Installer) -eq 'setup.ps1'
-        if (-not $legacy) {
-            if ($Quiet) { $flags += '-Quiet' }
-            if ($AddToPath) { $flags += '-AddToPath' }
-            if ($OpenGui) { $flags += '-OpenGui' }
-        }
-        elseif ($Quiet -and -not $Install -and -not $Uninstall) {
-            $flags += '-Install'
-        }
-        if ($legacy -and ($AddToPath -or $OpenGui)) {
-            Write-Warning "-AddToPath/-OpenGui need the updated installer; this release's setup.ps1 ignores them."
-        }
+        if ($Quiet) { $flags += '-Quiet' }
+        if ($AddToPath) { $flags += '-AddToPath' }
+        if ($OpenGui) { $flags += '-OpenGui' }
 
         foreach ($name in @('InstallDir', 'DataDir')) {
             if ($PSBoundParameters.ContainsKey($name)) {
@@ -778,9 +788,9 @@ try {
         $temp = $release.Temp
         $exePath = $release.Exe
         $guiPath = $release.GuiExe
-        # A legacy release ships setup.ps1, which takes no -Uninstall/-Quiet;
-        # leave the source unset rather than register a broken UninstallString.
-        if ((Split-Path -Leaf $release.Installer) -eq 'install.ps1') { $installerSource = $release.Installer }
+        # The release always ships the unified installer, which handles
+        # -Uninstall/-Quiet, so it can be the registered UninstallString.
+        $installerSource = $release.Installer
     }
 
     if ($doInstall) {

@@ -77,7 +77,7 @@ profiles:
     #   lists:
     #     - url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
     #       enabled: true
-    #     - url: /path/to/local/hosts.txt
+    #     - url: C:\lists\hosts.txt
     #       enabled: true
 
   # ---------------------------------------------------------------------------

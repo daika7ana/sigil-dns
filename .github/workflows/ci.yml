@@ -44,11 +44,13 @@ jobs:
       - run: go build -tags gui ./...
       - run: go vet ./...
       - run: go vet -tags gui ./...
+      - run: go vet -tags tray ./...
       # Security gate plus a linter.  Both are blocking: staticcheck has been
-      # clean since the v0.5.0 baseline.
+      # clean since the v0.5.0 baseline.  govulncheck is tag-aware here so the
+      # GUI-only dependencies are in its call graph.
       - name: govulncheck
         if: runner.os == 'Linux'
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags gui ./...
       - name: staticcheck
         if: runner.os == 'Linux'
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
@@ -58,7 +60,12 @@ jobs:
         run: go test -race -timeout 180s ./...
       # GUI headless smoke test (software renderer; no GPU/display needed).  Run
       # on both runners: Linux for fast feedback, Windows for the real target.
-      - run: go test -tags gui ./internal/gui/
+      - run: go test -tags gui -timeout 120s ./internal/gui/
+      # Same coverage under the race detector; Linux only, like the step above
+      # (-race needs cgo, i.e. a C toolchain).
+      - name: GUI race detector
+        if: runner.os == 'Linux'
+        run: go test -race -tags gui -timeout 120s ./internal/gui/
       # install.ps1 ships in the release zip and is also the one-line installer.
       # It is never executed by CI.
       - name: Parse PowerShell scripts

@@ -209,9 +209,10 @@ refresh (~90 min), MDM/Intune, VPN, and other DNS tools rewriting servers. Add:
 - a registry watcher (`RegNotifyChangeKeyValue` on
   `HKLM\...\Tcpip(6)\Parameters\Interfaces\*\NameServer`), and
 - a **45 s reconcile loop** comparing expected-vs-actual. After 3 consecutive
-  failed re-applies it auto-disables and stops the service (never leave it
-  running unprotected). If the auto-disable itself fails, the resolver stays up
-  and the loop keeps retrying, because stopping would point DNS at a dead port.
+  failed re-applies, or 3 consecutive failed resolver health probes, it
+  auto-disables and stops the service (never leave it running unprotected). If
+  the auto-disable itself fails, the resolver stays up and the loop keeps
+  retrying, because stopping would point DNS at a dead port.
   A successful re-apply also refreshes the persisted plain-DNS leak probe, so a
   changed adapter DNS configuration is reflected the next time interception is
   re-applied — but only then: a DHCP change alone leaves the rule intact and

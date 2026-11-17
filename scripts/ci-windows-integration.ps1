@@ -108,8 +108,8 @@ try {
     if (-not $rootRule) {
         throw "no catch-all ('.') NRPT rule for '$displayName'"
     }
-    if ($rootRule.NameServers -notcontains '127.0.0.1') {
-        throw "catch-all NRPT rule does not point at 127.0.0.1 (NameServers: $($rootRule.NameServers -join ','))"
+    if ($rootRule.NameServers -notcontains '127.0.0.1' -or $rootRule.NameServers -notcontains '::1') {
+        throw "catch-all NRPT rule does not point at 127.0.0.1 and ::1 (NameServers: $($rootRule.NameServers -join ','))"
     }
 
     $maxQueries = 3

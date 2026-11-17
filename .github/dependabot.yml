@@ -7,3 +7,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # Go modules: gets update PRs for the rest of go.mod.  go-winio is pinned
+  # deliberately (upgrading it has dragged a golang.org/x/* cascade before), so
+  # its bump stays a manual decision.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: github.com/Microsoft/go-winio
