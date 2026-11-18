@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-11-18
+
+### Fixed
+- The tray icon no longer fails silently at sign-in after an upgrade. `service uninstall` deletes the per-user `SigilDNS` logon task while the setting stays on in `gui.json`, so sign-in launched nothing; the GUI now re-registers the task at startup when the setting is on, which also refreshes the exe path after an upgrade. One GUI launch after upgrading restores it.
+- A brief upstream stall no longer counts as an unhealthy resolver. The stage-B health probe's fixed 5 s budget was shorter than a real fallback-answered resolution, so a success was recorded as `upstream unreachable` and three such stalls auto-disabled interception; it now outlasts the failover plus fallback budget when a fallback profile is configured.
+
 ## [0.8.1] - 2026-11-17
 
 ### Fixed

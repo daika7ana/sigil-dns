@@ -642,14 +642,26 @@ func (l *Lifecycle) resolverConfig() (cfg resolver.Config) {
 
 // healthCheck runs the two-stage health check against res.
 func (l *Lifecycle) healthCheck(ctx context.Context, res resolverHandle) (r health.Result) {
-	timeout := 10 * time.Second
-	c, cancel := context.WithTimeout(ctx, timeout)
+	// Stage B sends a real name upstream, so its probe must outlast a
+	// fallback-answered stall: that is a success, not an unreachable upstream.
+	// FailoverAfter is a deadline only with a fallback; otherwise the bound is
+	// the per-exchange upstream timeout.  The extra second is headroom.
+	probe := l.cfg.FailoverAfter + time.Second
+	if l.cfg.FallbackProfile != "" {
+		probe += l.cfg.FallbackTimeout
+	}
+	if probe < health.DefaultTimeout {
+		probe = health.DefaultTimeout
+	}
+	// Check runs stage A then B per address, so a dual-stack listener can use
+	// close to two probe budgets under one context.
+	c, cancel := context.WithTimeout(ctx, 2*probe+time.Second)
 	defer cancel()
 
 	return l.checkHealth(c, health.Target{
 		Synthetic: res.SyntheticName(),
 		UDPAddrs:  res.UDPAddrs(),
-		Timeout:   5 * time.Second,
+		Timeout:   probe,
 	})
 }
 

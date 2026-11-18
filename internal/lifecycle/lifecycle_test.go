@@ -930,3 +930,51 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("Health err = %v, want the check detail", err)
 	}
 }
+
+// TestHealthProbeOutlastsFailover: the stage-B budget covers a resolution that
+// burns the whole failover window before the fallback answers, which is a
+// success, not an "upstream unreachable" failure.
+func TestHealthProbeOutlastsFailover(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.cfg.FailoverAfter = 10 * time.Second
+	env.lc.cfg.FallbackTimeout = 5 * time.Second
+	env.lc.cfg.FallbackProfile = "backup"
+
+	var got health.Target
+	env.lc.checkHealth = func(_ context.Context, target health.Target) health.Result {
+		got = target
+
+		return health.Result{OK: true, Ours: true, IPv4: true, Detail: "ok"}
+	}
+	if err := env.lc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if err := env.lc.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if want := env.lc.cfg.FailoverAfter + env.lc.cfg.FallbackTimeout; got.Timeout <= want {
+		t.Fatalf("probe timeout %v does not exceed the failover window %v", got.Timeout, want)
+	}
+}
+
+// TestHealthProbeFloor: the config-independent lifecycle (restore) keeps the
+// 5 s probe floor when no failover settings are supplied.
+func TestHealthProbeFloor(t *testing.T) {
+	env := newTestEnv(t)
+
+	var got health.Target
+	env.lc.checkHealth = func(_ context.Context, target health.Target) health.Result {
+		got = target
+
+		return health.Result{OK: true, Ours: true, IPv4: true, Detail: "ok"}
+	}
+	if err := env.lc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if err := env.lc.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if got.Timeout != health.DefaultTimeout {
+		t.Fatalf("probe timeout = %v, want the %v floor", got.Timeout, health.DefaultTimeout)
+	}
+}

@@ -239,6 +239,15 @@ func run() (err error) {
 		s.Theme = themeSystem
 	}
 
+	// Every service uninstall deletes the logon task but keeps the per-user
+	// preference, so re-register it.  Guard on Tray too: a failed delete can
+	// leave StartWithWindows set with the tray off, which must not spawn an
+	// invisible host.
+	// shortcut: a failed re-registration is silent; the next GUI launch retries.
+	if s.Tray && s.StartWithWindows {
+		_ = setStartWithWindows(true)
+	}
+
 	app := &App{
 		guiPath:   path,
 		themePref: s.Theme,

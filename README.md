@@ -297,7 +297,8 @@ GUI exe with `--tray` at sign-in. Because the task runs with highest privileges,
 the tray host starts **elevated with no UAC prompt** — a documented user
 decision that extends the SPEC §15.3.8 exception. The task is explicit, pins the
 exe path it was enabled from (enable it from the installed copy), and is removed
-when the tray is disabled and by uninstall. The `--tray` command starts that
+when the tray is disabled and by uninstall (the next GUI launch re-creates it
+while the tray stays on). The `--tray` command starts that
 host in a `-tags gui` build; a `-tags tray` build remains a stub.
 
 ---

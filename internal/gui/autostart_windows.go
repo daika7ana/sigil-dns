@@ -3,12 +3,14 @@
 package gui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/config"
 )
@@ -101,7 +103,10 @@ func deleteAutostartTask() error {
 }
 
 func runSchtasks(args []string) error {
-	cmd := exec.Command("schtasks", args...)
+	// Bound the RPC so a wedged Task Scheduler cannot hang startup or a settings click.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "schtasks", args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("schtasks %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
