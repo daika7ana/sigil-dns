@@ -87,15 +87,16 @@ func sampleSnapshot() snapshot {
 	}
 }
 
-// stateCase is one render-state case: whether the Restore button is offered.
+// stateCase is one render-state case: which power control the header offers.
 type stateCase struct {
-	mk      func() snapshot
-	restore bool
+	mk     func() snapshot
+	action guiAction
 }
 
 // TestWindowRendersEachState renders every UI state headlessly and asserts the
-// frame is a real image, shows the single power control (and Restore only for
-// the crash-leftover state), and has no widget-ID or event findings.
+// frame is a real image, shows the header's single power control (Start for a
+// stopped service, Restore only for the crash-leftover state, nothing
+// otherwise), and has no widget-ID or event findings.
 func TestWindowRendersEachState(t *testing.T) {
 	cases := map[string]stateCase{
 		"running": {
@@ -129,14 +130,14 @@ func TestWindowRendersEachState(t *testing.T) {
 
 				return s
 			},
-			restore: true,
+			action: actionRestore,
 		},
 		"stopped-not-installed": {
 			mk: func() snapshot { return snapshot{trust: trustVerified, updated: time.Now()} },
 		},
 		"stopped-installed": {
-			// A stopped service may still have left the NRPT rule behind, so
-			// Restore is offered here too.
+			// A stopped service gets the control that starts it, so protection
+			// can be turned on from the Status page.
 			mk: func() snapshot {
 				s := sampleSnapshot()
 				s.running = false
@@ -144,7 +145,7 @@ func TestWindowRendersEachState(t *testing.T) {
 
 				return s
 			},
-			restore: true,
+			action: actionEnable,
 		},
 		"unverified": {
 			mk: func() snapshot { return snapshot{trust: trustUnverified, running: true, updated: time.Now()} },
@@ -184,22 +185,21 @@ func TestWindowRendersEachState(t *testing.T) {
 
 			root := w.TestRender(nil)
 
-			// No lifecycle control lives on the Status page: Start/Stop and
-			// Install/Uninstall are in Settings, and the header no longer
-			// carries a power button.
+			// One power control in the header: the case's action, and only it.
+			// Service Start/Stop and Install/Uninstall stay in Settings.
 			for _, id := range []string{
 				"gui:power",
-				"gui:action:enable", "gui:action:disable",
+				"gui:action:enable", "gui:action:disable", "gui:action:restore",
 				"gui:service:install", "gui:service:uninstall",
 				"gui:service:start", "gui:service:stop",
 			} {
-				if len(w.ResolveID(id)) != 0 {
-					t.Errorf("Status page must not render %q", id)
+				want := 0
+				if id == "gui:action:"+string(tc.action) {
+					want = 1
 				}
-			}
-
-			if tc.restore != (len(w.ResolveID("gui:action:restore")) > 0) {
-				t.Errorf("restore present = %v, want %v", !tc.restore, tc.restore)
+				if n := len(w.ResolveID(id)); n != want {
+					t.Errorf("%q rendered %d times, want %d", id, n, want)
+				}
 			}
 
 			// The SCM state badge now sits in the header, beside the app name.
@@ -338,7 +338,7 @@ func TestHeroStateStyles(t *testing.T) {
 	}
 }
 
-// TestPlanPower covers the header's Restore/note state matrix as data.
+// TestPlanPower covers the header's power-control/note state matrix as data.
 func TestPlanPower(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -347,36 +347,42 @@ func TestPlanPower(t *testing.T) {
 		running   bool
 		busy      bool
 		trusted   bool
-		restore   bool
+		action    guiAction
 		wantNote  bool
 	}{
-		{"running", kindRunning, true, true, false, true, false, false},
-		{"stopped-not-installed", kindStopped, false, false, false, true, false, true},
-		{"stopped-installed", kindStopped, true, false, false, true, true, true},
-		{"interception-off", kindStopped, true, true, false, true, false, true},
-		{"dirty-leftover", kindDirty, true, true, false, true, true, true},
-		{"degraded", kindDegraded, true, true, false, true, false, true},
-		{"unverified", kindUnverified, true, true, false, false, false, true},
-		{"busy", kindRunning, true, true, true, true, false, false},
+		{"running", kindRunning, true, true, false, true, "", false},
+		{"stopped-not-installed", kindStopped, false, false, false, true, "", true},
+		{"stopped-installed", kindStopped, true, false, false, true, actionEnable, true},
+		{"interception-off", kindStopped, true, true, false, true, "", true},
+		{"dirty-leftover", kindDirty, true, true, false, true, actionRestore, true},
+		{"degraded", kindDegraded, true, true, false, true, "", true},
+		{"unverified", kindUnverified, true, true, false, false, "", true},
+		{"busy", kindRunning, true, true, true, true, "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := planPower(tt.kind, tt.installed, tt.running, tt.busy, tt.trusted)
-			if got.restore != tt.restore {
-				t.Errorf("restore = %v, want %v", got.restore, tt.restore)
+			if got.action != tt.action {
+				t.Errorf("action = %q, want %q", got.action, tt.action)
 			}
 			if tt.wantNote != (got.note != "") {
 				t.Errorf("note = %q, wantNote = %v", got.note, tt.wantNote)
 			}
-			// Restore is offered for a crash leftover and for a stopped
-			// service, never for a healthy running state (Restore stops a
-			// running service).
-			if tt.kind == kindRunning && got.restore {
-				t.Fatal("a healthy running state must never offer Restore")
+			// The control always moves towards protection: a stopped service
+			// must offer Enable (not a Restore that repeats itself), and Restore
+			// is only for a crash leftover whose service is already running.
+			if tt.kind == kindRunning && got.action != "" {
+				t.Fatal("a healthy running state must never offer a power action")
 			}
-			if tt.kind == kindStopped && tt.running && got.restore {
+			if tt.kind == kindStopped && tt.running && got.action != "" {
 				t.Fatal("Restore must not be offered while the service runs")
+			}
+			if got.action == actionRestore && tt.kind != kindDirty {
+				t.Fatal("Restore is only for the dirty leftover state")
+			}
+			if tt.kind == kindStopped && tt.installed && !tt.running && got.action != actionEnable {
+				t.Fatalf("stopped-installed action = %q, want %q", got.action, actionEnable)
 			}
 		})
 	}

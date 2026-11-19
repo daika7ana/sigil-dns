@@ -153,8 +153,12 @@ Strict order:
    another resolver); the exact process is found with the manual recipe in
    docs/TROUBLESHOOTING.md.
 2. **Two-stage health check** (§9) — prove loopback→us, then prove upstream
-   (per family) with an uncached query.
-3. **Plain-DNS leak probe** (best-effort, Windows): ask each adapter's
+   (per family) with an uncached query. An upstream-only stage-B failure is
+   retried for a bounded window (§9): a boot start can beat the network, and an
+   ephemeral "no route yet" must not fail the start.
+3. **Plain-DNS leak probe** (best-effort, Windows; runs **concurrently** with
+   step 2 and is awaited before step 4 — bounded at 5 s, normally hidden behind
+   the health check): ask each adapter's
    configured non-loopback server directly for a random `.invalid` name. Any
    answer means an app that ignores NRPT can resolve outside the resolver. The
    result is persisted with the state; a probe that cannot run is recorded as
@@ -515,8 +519,19 @@ docs/CONFIG.md.
   running-but-off state. A failed enable stops the service and the stop path
   restores; a failed restore keeps the dirty marker for the next start. A
   configuration error exits cleanly so the SCM does not restart a hopeless boot.
-- **Enable**: §4.3 strict order (bind → two-stage health check → leak probe →
-  state+dirty → apply → flush → system-path verify). If apply or the
+  A boot start can beat the network: the stage-B failure is retried for a
+  bounded window (10 s from the first failure, 2 s apart) while the listener is
+  **ours** and only the upstream is unreachable, so an ephemeral "no route yet"
+  does not fail the start. The window opens on the first failure, so a slow
+  first attempt (upstream timing out rather than refusing) still gets a retry
+  before the start is declared failed. A foreign owner of :53 is never retried.
+  A start that observes the system already shutting down (`SM_SHUTTINGDOWN`)
+  does not enable at all: it reports StopPending and exits 0, so an SCM restart
+  racing a shutdown cannot leave a rule pointing at a resolver that is about to
+  disappear.
+- **Enable**: §4.3 strict order (bind → two-stage health check → state+dirty →
+  apply → flush → system-path verify); the leak probe runs concurrently with the
+  health check (§4.3 step 3). If apply or the
   system-path verify fails, restore whatever was partially applied and stop the
   resolver; if the restore also fails, keep the resolver up (DNS must not point
   at a dead port) and leave the dirty marker. A **foreign catch-all NRPT rule**
@@ -540,7 +555,8 @@ docs/CONFIG.md.
   in which case Windows precedence explains the miss and the service warns and
   keeps running (§4.1). This is the check that distinguishes "NRPT rule exists"
   from "Windows actually uses it" — the drift probe only observes the rules.
-- **Leak probe**: on enable and on every drift re-apply, the adapters' configured
+- **Leak probe**: runs concurrently with the enable health check (§4.3 step 3) and
+  on every drift re-apply; the adapters' configured
   non-loopback servers are asked directly over UDP/53. An answer is recorded in
   the state file and surfaced on the status pipe as `leak` (checked/open/
   servers/checked_at), and the Status hero renders it as a chip: `DNS leak path
@@ -552,8 +568,20 @@ docs/CONFIG.md.
   drops the verdict when interception goes off. It is an indicator, not
   enforcement: closing the path needs the firewall/WFP option below, and DoH
   from an app is never visible to it.
-- **Crash/kill**: the dirty marker forces restore on the next start. SCM failure
+- **Crash/kill**: the rule survives and the dirty marker keeps DNS fail-closed;
+  the next start replaces our tagged rule, and any stop restores. SCM failure
   actions restart the service (5 s, 10 s, 30 s).
+- **System shutdown**: the service accepts **pre-shutdown**
+  (`SERVICE_ACCEPT_PRESHUTDOWN`) and restores interception on that notification,
+  while the DNS client/CIM provider is still alive, under an 8 s budget —
+  inside the SCM's 10 s default pre-shutdown window, which we never raise. The
+  legacy SHUTDOWN arm keeps the 3 s cap, because an overrunning stop is
+  terminated by the SCM's `WaitToKillServiceTimeout` (5 s default); a user stop
+  is unbounded. A restore that still fails records the deferral as a warning,
+  leaves the state dirty, and the next start repairs it by replacing the tagged
+  rule (above). Neither arm is ever reported as a service failure — a non-zero
+  exit would trigger the recovery actions and restart the service during
+  shutdown.
 - **Exit**: always restore; flush.
 - **Uninstall is ordered and fail-closed** (`uninstallPlan`/`uninstallSequence`):
   restore interception → stop the service → **verify** interception is actually
@@ -765,8 +793,9 @@ not a status viewer.
   About).
   - **Status**: a dashboard — a state hero with an illustration, then
     Connection Info, Filtering, Filter lists, and Cache & bootstrap cards
-    (stacking at narrow widths); the header keeps only the **Restore now**
-    action for a crash-leftover dirty state. The Filtering card shows the
+    (stacking at narrow widths); the header keeps a single power control —
+    **Turn on protection** for an installed but stopped service, **Restore now**
+    for a crash-leftover dirty state. The Filtering card shows the
     session's query/blocked counters and, while filtering is on and the service
     is running, a **Pause filtering** control that becomes **Resume filtering**
     with the countdown while paused (15-minute auto-expiry).
@@ -936,8 +965,9 @@ Status: **phases 0–8 are implemented.**
    per-rule `enabled`, `*.` wildcard hint); `refresh_lists` re-downloads lists
    live (GUI "Update filter lists", CLI `refresh`).
 6. **Enable/disable/degrade UX** — **Start / Stop** in the Settings service
-   card, service management via the helper, the dirty **Restore now** header
-   action, and the five-page surface.
+   card, service management via the helper, the header's **Turn on protection**
+   (stopped) and **Restore now** (dirty leftover) actions, and the five-page
+   surface.
 7. **Packaging** — go-gui binary (no cgo), a one-line `install.ps1`
    (install/upgrade/uninstall, `-Quiet`), the GUI + Start-Menu shortcut, and the
    About **Updates** card (release check with a checksum-verified download; the

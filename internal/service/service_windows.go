@@ -37,7 +37,7 @@ func (h *handler) Execute(
 	changes chan<- svc.Status,
 ) (svcSpecificEC bool, exitCode uint32) {
 	const (
-		accepts   = svc.AcceptStop | svc.AcceptShutdown
+		accepts   = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown
 		waitHint  = 2 * 60 * 1000 // ms; Start checks in every 10 s
 		checkStep = 10 * time.Second
 	)
@@ -47,6 +47,15 @@ func (h *handler) Execute(
 	// (the exact state this service must never have).  Checkpoint every 10 s so
 	// the SCM does not trip its start budget while PowerShell/NRPT is slow.
 	changes <- svc.Status{State: svc.StartPending, Accepts: accepts, CheckPoint: 1, WaitHint: waitHint}
+
+	// A start can race an in-progress shutdown; enabling interception would
+	// leave a rule pointing at a resolver that is about to disappear.
+	if shutdownProbe() {
+		h.agent.logger.Info("system is shutting down; not starting")
+		changes <- svc.Status{State: svc.StopPending}
+
+		return false, 0
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -65,6 +74,28 @@ func (h *handler) Execute(
 			errCh = nil
 
 			if err != nil {
+				// A stop that is already waiting means this start was aborted,
+				// not broken — usually a machine shutdown.  Finish it as a
+				// stop: a non-zero exit would queue the SCM's recovery actions
+				// against a machine that is going down.  Agent.Start restored
+				// on its own failure path already.  Interrogates are answered
+				// and skipped: only a real stop request aborts the start.
+				for {
+					c, ok := pendingRequest(r)
+					if !ok {
+						break
+					}
+
+					if c.Cmd != svc.Interrogate {
+						changes <- svc.Status{State: svc.StopPending}
+						h.stop(c.Cmd)
+
+						return false, 0
+					}
+
+					changes <- c.CurrentStatus
+				}
+
 				h.agent.logger.Error("service start failed", "err", err)
 				changes <- svc.Status{State: svc.StopPending}
 
@@ -87,37 +118,73 @@ func (h *handler) Execute(
 			// never left running with interception off.
 			changes <- svc.Status{State: svc.StopPending}
 			cancel()
-			h.stop(false)
+			h.stop(svc.Stop)
 			return false, 0
 		case c, ok := <-r:
 			if !ok {
 				cancel()
-				h.stop(false)
+				h.stop(svc.Stop)
 				return false, 0
 			}
 
 			switch c.Cmd {
 			case svc.Interrogate:
 				changes <- c.CurrentStatus
-			case svc.Stop, svc.Shutdown:
+			case svc.Stop, svc.Shutdown, svc.PreShutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-				h.stop(c.Cmd == svc.Shutdown)
+				h.stop(c.Cmd)
+
 				return false, 0
 			}
 		}
 	}
 }
 
-// shutdownRestoreBudget caps the restore attempt on the shutdown path.  The SCM
-// terminates a service that overruns its stop budget (5 s by default), so a
-// blocked PowerShell must not hold the shutdown screen, and the warning line,
-// until then.  Giving up early loses nothing: the state stays dirty and the
-// next start retries.  It caps the restore itself, not the whole stop: the wait
-// for a service that is still starting, and the wait for a lifecycle call
-// already in flight (a list download, say), are not context-aware and can still
-// outlast it.
+// preshutdownRestoreBudget caps the restore attempt on the preshutdown path.
+// Preshutdown is the primary path: it arrives while DnsClient/CIM are still
+// alive, so the restore normally succeeds.  The budget must stay under the
+// SCM's preshutdown time-out, which defaults to 10 s on every build since
+// Windows 10 1703 (we never raise it) — past it the SCM resumes shutting down
+// and can kill the process mid-restore.
+const preshutdownRestoreBudget = 8 * time.Second
+
+// shutdownRestoreBudget caps the restore attempt on the legacy SHUTDOWN path.
+// The SCM terminates a service that overruns WaitToKillServiceTimeout (5 s by
+// default), so a blocked PowerShell must not hold the shutdown screen, and the
+// warning line, until then.  Giving up early loses nothing: the state stays
+// dirty and the next start retries.  It caps the restore itself, not the whole
+// stop: the wait for a service that is still starting, and the wait for a
+// lifecycle call already in flight (a list download, say), are not
+// context-aware and can still outlast it.
 const shutdownRestoreBudget = 3 * time.Second
+
+// restoreBudget is how long a stop of the given kind may spend restoring
+// interception.  Preshutdown arrives while DnsClient/CIM are alive; the legacy
+// shutdown notification arrives later and must fit inside the SCM's
+// WaitToKillServiceTimeout.  A user stop is not bounded: nothing is waiting for
+// it to finish.
+func restoreBudget(c svc.Cmd) time.Duration {
+	switch c {
+	case svc.PreShutdown:
+		return preshutdownRestoreBudget
+	case svc.Shutdown:
+		return shutdownRestoreBudget
+	}
+
+	return 0
+}
+
+// pendingRequest reports a control request that is already waiting, which the
+// SCM can only do by blocking on an unbuffered send.
+func pendingRequest(r <-chan svc.ChangeRequest) (c svc.ChangeRequest, ok bool) {
+	select {
+	case c, ok = <-r:
+	default:
+	}
+
+	return c, ok
+}
 
 // stop restores interception and logs a cleanup failure.  A stop the user (or
 // drift) asked for must exit 0 even if cleanup failed: returning a failure
@@ -128,11 +195,15 @@ const shutdownRestoreBudget = 3 * time.Second
 // provider that may already be gone).  The state stays dirty, so the next start
 // retries the restore, and the machine is going down anyway — a warning, not an
 // error.
-func (h *handler) stop(shutdown bool) {
+//
+// c is the control request that caused the stop; it selects the restore budget
+// and whether a failure is a shutdown deferral rather than an error.
+func (h *handler) stop(c svc.Cmd) {
 	ctx := context.Background()
-	if shutdown {
+	shutdown := c != svc.Stop
+	if budget := restoreBudget(c); shutdown && budget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, shutdownRestoreBudget)
+		ctx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
 	}
 

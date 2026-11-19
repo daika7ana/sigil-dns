@@ -60,24 +60,32 @@ const (
 	actionSaveLog guiAction = "log:save"
 )
 
-// powerState is the header's crash-recovery affordance: whether the one-click
-// Restore is offered and the guidance note shown under the app name.
+// powerState is the header's single power control: the action it runs (empty
+// when nothing is offered) and the guidance note shown under the app name.
 type powerState struct {
-	restore bool
-	note    string
+	action guiAction
+	note   string
 }
 
-// planPower maps the state onto the header's Restore affordance and note.  This
-// is the one place the state->header matrix lives, so it is pure and directly
+// planPower maps the state onto the header's power control and note.  This is
+// the one place the state->header matrix lives, so it is pure and directly
 // testable.
 //
-// Restore is offered for the crash-leftover case (kindDirty) and for a stopped,
-// installed service: a stop or power loss can leave the rule pointing at no
-// resolver, and Start cannot clear that when the service will not start.  Never
-// while the service runs — the helper stops it first (elevate.ActionRestore).
-// Protection is turned on from Settings.
+// The control always moves towards protection: a stopped, installed service
+// offers Enable, which starts it and applies interception, and only the
+// crash-leftover case (kindDirty) offers Restore, which stops the service and
+// verifies the rule is gone.  That Restore leaves the service stopped, so the
+// header then shows Enable — the intended flow.  Restore is never offered while
+// interception is on.
 func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powerState) {
-	ps.restore = (kind == kindDirty || (kind == kindStopped && installed && !running)) && trusted && !busy
+	switch {
+	case !trusted || busy:
+		// A gated or in-flight action is not offered.
+	case kind == kindDirty:
+		ps.action = actionRestore
+	case kind == kindStopped && installed && !running:
+		ps.action = actionEnable
+	}
 
 	switch {
 	case !trusted:
@@ -91,7 +99,7 @@ func planPower(kind statusKind, installed, running, busy, trusted bool) (ps powe
 	case kind == kindStopped && running:
 		ps.note = "The service is running but protection is off."
 	case kind == kindStopped:
-		ps.note = "Start the service in Settings, or use Restore now if DNS stopped working after a crash."
+		ps.note = "Starting the service turns protection on."
 	case kind == kindDegraded:
 		ps.note = "The resolver needs attention. Check Settings."
 	}
@@ -110,14 +118,14 @@ type actionMeta struct {
 	fail    string
 }
 
-// actionMetas is the presentation for the known actions.  Enable/Restore are
-// the primary call to action; Stop/Rename/the service-management buttons are
-// deliberately Secondary (routine, not destructive, and their disabled state
-// reads as greyed rather than a pale filled-primary); Uninstall/Delete are the
-// destructive actions.
+// actionMetas is the presentation for the known actions.  Turn on protection /
+// Restore now are the primary call to action; Stop/Rename/the service-management
+// buttons are deliberately Secondary (routine, not destructive, and their
+// disabled state reads as greyed rather than a pale filled-primary);
+// Uninstall/Delete are the destructive actions.
 var actionMetas = map[guiAction]actionMeta{
-	actionEnable: {"Enable", gogui.ButtonPrimary,
-		"Waiting for administrator approval to enable protection\u2026", "Enabled", "Could not enable protection"},
+	actionEnable: {"Turn on protection", gogui.ButtonPrimary,
+		"Waiting for administrator approval to turn on protection\u2026", "Enabled", "Could not enable protection"},
 	actionRestore: {"Restore now", gogui.ButtonPrimary,
 		"Waiting for administrator approval to restore DNS settings\u2026", "DNS settings restored", "Could not restore DNS settings"},
 	actionInstall: {"Install", gogui.ButtonSecondary,

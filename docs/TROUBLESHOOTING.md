@@ -146,7 +146,11 @@ address:
 
 Stage B runs per family. IPv6-upstream failure alone does **not** abort enabling
 (IPv4 is required; a dead IPv6 path is surfaced in the detail). If IPv4 is down,
-enabling aborts.
+enabling aborts — but only after the stage-B failure has been retried for about
+10 s (2 s apart) while our listener is still the one answering, because a boot
+start can beat the network. Each retry logs `health check not ready;
+retrying`. A stage-A failure (a foreign owner of :53) is never retried; it fails
+at once.
 
 Quick manual check:
 
@@ -161,8 +165,10 @@ sigildns run --upstream https://dns.quad9.net/dns-query --bootstrap 9.9.9.9:53
 
 The service writes the dirty marker after applying interception and clears it
 only after a clean restore. A crash, `kill`, or power loss therefore leaves
-`dirty: true`. The build stores no adapter snapshot: the next service start
-deletes our NRPT rule first (if present), then re-enables from a clean baseline.
+`dirty: true`; a normal shutdown restores interception before the machine goes
+down. The build stores no adapter snapshot: the next service start never removes
+a leftover rule first, it replaces our tagged rule, so DNS keeps failing closed
+until the resolver listens.
 
 To recover manually:
 
@@ -277,10 +283,20 @@ Get-Process explorer,sigildns-gui -ErrorAction SilentlyContinue |
 - `service start` timing out at the SCM's ~30 s start budget: the service stays
   in **StartPending** and checkpoints every 10 s while crash recovery and
   enable run, so a slow PowerShell health check does not trip error 1053.
-  Running is reported only after interception is on. If recovery or enable
-  fails, the service **stops** (log says `service start failed`) — it is never
-  left running with interception off. A bad config exits cleanly, without the
-  SCM's restart loop, so fix the file and start it again.
+  Running is reported only after interception is on. An unreachable upstream is
+  retried for about 10 s before the start is declared failed, so a boot start
+  does not need a recovery restart. If recovery or enable fails, the service
+  **stops** (log says `service start failed`) — it is never left running with
+  interception off. A bad config exits cleanly, without the SCM's restart loop,
+  so fix the file and start it again.
+- A start that observes the system already shutting down
+  (`SM_SHUTTINGDOWN`) does not enable at all: it logs `system is shutting down;
+  not starting` and exits 0, so no rule is left pointing at a resolver that is
+  about to disappear. A start that fails while a stop or shutdown is already
+  waiting is treated as aborted — it stops and exits 0, and the recovery actions
+  do not restart it. Such an aborted start can still log `enable failed; stopping
+  service`: that line comes from the failed enable itself, not from a broken
+  service.
 - Recovery actions are configured to restart the service on failure (5 s, 10 s,
   30 s). A loop of restarts usually means a port-53 conflict or an unreachable
   upstream.

@@ -56,7 +56,7 @@ per-adapter churn, no driver. See [SPEC.md](SPEC.md) for the full design.
 - **Blocklists** — hosts-format and AdGuard/ABP lists, with `0.0.0.0`/`::` or
   NXDOMAIN block responses.
 - **Clean enable / disable / restore** — NRPT is added on enable and removed on
-  disable; `restore` recovers after a crash.
+  disable or a normal shutdown; `restore` recovers after a crash.
 - **Drift auto-reconcile** — a registry watcher plus a 45 s reconcile loop
   re-apply interception if Windows, GPO, or another tool rewrites it.
 - **Crash recovery** — a rule left by a crashed session stays applied through
@@ -235,12 +235,16 @@ sigildns status
 ```
 
 Starting the service always enables interception (bind → two-stage health check
-→ leak probe → state + dirty marker → NRPT → flush → verify the system resolver
-actually reaches us); the SCM state stays Starting until that finishes, and
-a running service is never left with protection off. If enabling fails the
+with the leak probe running alongside it → state + dirty marker → NRPT → flush →
+verify the system resolver actually reaches us); the SCM state stays Starting
+until that finishes, and a running service is never left with protection off. A
+boot start can beat the network, so an unreachable upstream is retried briefly
+before the start is declared failed. If enabling fails the
 service stops; a bad config exits cleanly so fix it and start again, while other
-failures are retried by the SCM recovery actions. Read status as JSON to confirm
-`"mode": "on"`; `"leak"` reports whether the machine's configured DNS servers
+failures are retried by the SCM recovery actions — a start that races a shutdown
+stops cleanly instead, so nothing restarts against a machine that is going down.
+Read status as JSON to confirm `"mode": "on"`; `"leak"` reports whether the
+machine's configured DNS servers
 still answer plain DNS directly (an app could bypass Sigil DNS that way — see
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)).
 

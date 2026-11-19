@@ -1120,9 +1120,10 @@ func bootstrapLine(t gogui.Theme, line string) gogui.View {
 }
 
 // header is the app's identity band: the app mark, the title with its service
-// state badge, and the status caption on the left, and the only real header
-// action (Restore, when a crash leftover needs cleaning up) on the right.  It
-// takes the background tone — chrome is background, cards are panel.  The
+// state badge, and the status caption on the left, and the header's one action
+// on the right — the control that moves the service towards protection: start
+// it when it is stopped, clean up a crash leftover when DNS is still redirected.
+// It takes the background tone — chrome is background, cards are panel.  The
 // Auto/Light/Dark picker lives in Settings → Appearance.
 func header(t gogui.Theme, app *App, mark int) gogui.View {
 	ps := powerStateFor(t, app)
@@ -1136,13 +1137,13 @@ func header(t gogui.Theme, app *App, mark int) gogui.View {
 	}
 
 	controls := []gogui.View{}
-	if ps.restore {
+	if ps.action != "" {
+		action := ps.action
 		controls = append(controls, gogui.Button(gogui.ButtonCfg{
-			ID:       "gui:action:restore",
-			Variant:  gogui.ButtonPrimary,
-			Label:    "Restore now",
-			Disabled: app.busy,
-			OnClick:  func(ctx gogui.EventCtx) { runAction(ctx, actionRestore) },
+			ID:      "gui:action:" + string(action),
+			Variant: actionVariant(action),
+			Label:   actionLabel(action),
+			OnClick: func(ctx gogui.EventCtx) { runAction(ctx, action) },
 		}))
 	}
 
@@ -1229,8 +1230,8 @@ func markPixels(scale float32) int {
 	return int(brandSize*scale + 0.5)
 }
 
-// powerStateFor resolves the header's Restore affordance and guidance note for
-// the current snapshot.
+// powerStateFor resolves the header's power control and guidance note for the
+// current snapshot.
 func powerStateFor(t gogui.Theme, app *App) powerState {
 	return planPower(statusVisualFor(app.snap, t).kind,
 		app.snap.installed, app.snap.running, app.busy, canEdit(app.snap))

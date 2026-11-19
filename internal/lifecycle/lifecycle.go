@@ -94,6 +94,13 @@ type Lifecycle struct {
 	// shorten it; production keeps FilteringPauseDuration.
 	pauseDuration time.Duration
 
+	// healthRetryWindow is how long Enable keeps retrying an upstream-not-ready
+	// health check (a boot race: the service starts before the network is up).
+	// healthRetryDelay is the pause between attempts.  Fields so tests can
+	// shorten them; production keeps the constants below.
+	healthRetryWindow time.Duration
+	healthRetryDelay  time.Duration
+
 	// pauseMu guards pauseTimer and pauseSeq.  pauseSeq invalidates a timer
 	// callback that had already started when a pause was replaced or canceled.
 	pauseMu    sync.Mutex
@@ -131,6 +138,9 @@ func New(cfg Config) (l *Lifecycle) {
 		checkHealth:   health.Check,
 		lookupHost:    net.DefaultResolver.LookupHost,
 		probeNRPT:     intercept.ProbeNRPT,
+
+		healthRetryWindow: 10 * time.Second,
+		healthRetryDelay:  2 * time.Second,
 	}
 	l.flushDNS = l.flush
 	l.leakProbe = l.detectLeak
@@ -147,6 +157,12 @@ func (l *Lifecycle) detectLeak(ctx context.Context) (lk state.Leak) {
 
 	r, err := intercept.DetectLeak(c)
 	if err != nil {
+		// An abandoned probe (the enable stopped waiting for it) is not a probe
+		// failure, and its error would only bury the enable error.
+		if ctx.Err() != nil {
+			return state.Leak{}
+		}
+
 		l.logger.WarnContext(ctx, "plain-DNS leak probe failed", "err", err)
 
 		return state.Leak{}
@@ -208,8 +224,36 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return err
 	}
 
-	// 3. Two-stage health check.
+	// 3. Two-stage health check.  It is retried only while the failure is an
+	// upstream still not ready (a boot race before the network is up); a foreign
+	// listener on :53 never becomes ours, so it fails at once.  The leak probe
+	// runs alongside it — warning-only metadata, so its PowerShell time must not
+	// add to the health check's serial runtime.
+	probeCtx, stopProbe := context.WithCancel(ctx)
+	defer stopProbe()
+	leakCh := make(chan state.Leak, 1)
+	go func() { leakCh <- l.leakProbe(probeCtx) }()
+
+	// The window opens on the first failure, so a slow first attempt (an upstream
+	// that times out rather than refusing) still gets its retry.
+	var deadline time.Time
+
 	hr := l.healthCheck(ctx, res)
+	for !hr.OK && hr.Ours && l.healthRetryWindow > 0 && (deadline.IsZero() || time.Now().Before(deadline)) {
+		if deadline.IsZero() {
+			deadline = time.Now().Add(l.healthRetryWindow)
+		}
+
+		l.logger.WarnContext(ctx, "health check not ready; retrying", "detail", hr.Detail)
+		select {
+		case <-ctx.Done():
+			_ = l.stopResolver(ctx)
+
+			return ctx.Err()
+		case <-time.After(l.healthRetryDelay):
+		}
+		hr = l.healthCheck(ctx, res)
+	}
 	if !hr.OK {
 		_ = l.stopResolver(ctx)
 
@@ -217,7 +261,7 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	}
 
 	// 4. Persist the atomic dirty marker.
-	lk := l.leakProbe(ctx)
+	lk := <-leakCh
 
 	st := &state.State{
 		SchemaVersion: state.SchemaVersion,

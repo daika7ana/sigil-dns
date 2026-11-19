@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Boot starts no longer fail while Windows is still bringing the network up: the upstream health check is retried for about 10 s (2 s apart) while our own listener is the one answering. A foreign owner of :53 still fails at once.
+- A start that races a shutdown now stops without enabling, instead of leaving a rule pointed at a resolver that is about to disappear.
+- Shutdown restores DNS. The service takes the pre-shutdown notification, which Windows sends while the DNS client and CIM are still alive, and restores within 8 s (the SCM allows 10 s). Previously only the late shutdown notification arrived, so the rule survived the reboot.
+- The Status header no longer offers **Restore now** while the service is stopped: it restored DNS but never started the service, so a second click repeated the message. A stopped service now offers **Turn on protection**; **Restore now** stays for a crash leftover.
+
+### Changed
+- The plain-DNS leak probe runs alongside the enable health check instead of after it, so a slow PowerShell/WMI probe no longer adds its full runtime. It is still awaited before the state is saved (bounded at 5 s).
+
 ## [0.8.2] - 2026-11-18
 
 ### Fixed

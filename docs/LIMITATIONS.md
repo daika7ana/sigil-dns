@@ -51,13 +51,16 @@ an on-path attacker; prefer DoH/DoT/DoQ if that matters.
 
 ### Boot window
 
-A clean `stop` or `disable` removes the rule, so between boot and the next enable
-lookups use the adapters' DNS servers; the window is the service start plus
-resolver startup (filter download, health check). A start-order change cannot
-remove it — a boot-start driver is out of scope. A crash leftover is not removed
-first, so those boots stay fail-closed, and it is recoverable without a start
-(`sigildns restore`, or **Restore now** in the GUI). A zero window would mean
-keeping the rule while stopped: no DNS at all if the service never starts.
+A clean `stop`, `disable`, or normal shutdown removes the rule, so between boot
+and the next enable lookups use the adapters' DNS servers; the window is the
+service start plus resolver startup (filter download, health check, and up to
+about 10 s of upstream retry when the network is not up yet). A start-order
+change cannot remove it — a boot-start driver is out of scope. A crash leftover
+is not removed first, so those boots stay fail-closed, and it is recoverable
+without a start (`sigildns restore`; the GUI offers **Restore now** only while
+the service is running with a leftover to clean up). A zero
+window would mean keeping the rule while stopped: no DNS at all if the service
+never starts.
 
 ### New or transient adapters
 
@@ -197,8 +200,8 @@ Network inspection software (host firewalls, IPS/DPI, some EDR suites) may:
 
 DoQ needs UDP/853 and is the most likely to be blocked on restrictive networks;
 fall back to DoT or DoH if an upstream reports unhealthy. If every upstream
-fails, the two-stage health check fails and `enable` aborts, leaving DNS
-untouched.
+fails, the two-stage health check fails (after a short retry) and `enable`
+aborts, leaving DNS untouched.
 
 Unsigned builds get extra scrutiny from these products: an unknown binary that
 installs a LocalSystem service and rewrites NRPT rules matches several

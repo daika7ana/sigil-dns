@@ -25,6 +25,9 @@ type fakeAgentLC struct {
 	stErr        error
 	enableCalls  int
 	disableCalls int
+	// disableBudget is the time Disable had left on its context, so a test can
+	// tell which restore budget the caller used.  Zero when the ctx had none.
+	disableBudget time.Duration
 }
 
 func (f *fakeAgentLC) Status() (st *state.State, err error) { return f.st, f.stErr }
@@ -39,8 +42,11 @@ func (f *fakeAgentLC) Enable(context.Context) (err error) {
 	return f.enableErr
 }
 
-func (f *fakeAgentLC) Disable(context.Context) (err error) {
+func (f *fakeAgentLC) Disable(ctx context.Context) (err error) {
 	f.disableCalls++
+	if d, ok := ctx.Deadline(); ok {
+		f.disableBudget = time.Until(d)
+	}
 
 	return f.disableErr
 }

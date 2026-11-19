@@ -39,9 +39,11 @@ and masked resolver id, then **Filtering**,
 three-column grid with the top row, so their edges line up at every width. It is
 a read-only view of real data — provider, variant, and
 protocol are **labels** (`Cloudflare / Malware blocking / DoH`), and the resolver id is
-**masked** — `•••• (set)` or `Not set`, never the value. A **Restore now** header
-action appears only for a crash-leftover dirty state; service **Start** / **Stop**
-lives in the **Settings** service card. At the minimum window width the top row
+**masked** — `•••• (set)` or `Not set`, never the value. One **header** control
+appears only when it can change something: **Turn on protection** while the
+service is installed but stopped, and **Restore now** for a crash-leftover dirty
+state. Service **Start** / **Stop** lives in the **Settings** service card. At
+the minimum window width the top row
 stacks and the cache card takes the full width.
 
 The **Filtering** card also shows this session's **queries** and **blocked**
@@ -150,7 +152,8 @@ The system tray icon is **off by default**. Settings → **Window & tray** has:
 | Control | Shown when | Action |
 |---|---|---|
 | **Start / Stop** (Settings service card) | service installed | Start interception (and the service) / stop it. |
-| **Restore now** | Restore needed / Needs attention | Clean up stale interception; stops a running service and verifies the NRPT rule is gone. |
+| **Turn on protection** (Status header) | service installed but stopped | Start the service and apply interception. |
+| **Restore now** (Status header) | Restore needed | Clean up stale interception; stops a running service and verifies the NRPT rule is gone. |
 | **Install / Uninstall service** | Settings | Register or remove the Windows service. |
 | **Add / Rename / Delete profile** | Settings | Manage profiles (delete is refused for the active profile). |
 | **Save** | Settings, draft dirty | Apply the profile editor via the elevated helper. |

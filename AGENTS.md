@@ -66,7 +66,8 @@ with no window/GL).
 dirty marker + single-instance lock) · `intercept` (NRPT via PowerShell; the per-adapter
 fallback in SPEC §4.2 is **not implemented**) · `resolver` (embedded dnsproxy + filter +
 per-domain rules) · `filter` (urlfilter wrapper) · `providers` (presets) · `config` (YAML) ·
-`ipc` (dual named pipes) · `service` (SCM host) · `drift` (registry watch + reconcile) ·
+`ipc` (dual named pipes) · `service` (SCM host; pre-shutdown is the DNS-restore path, 8 s budget
+inside the SCM's 10 s default, legacy shutdown 3 s) · `drift` (registry watch + reconcile) ·
 `elevate` (one-shot UAC helper + allowlisted config patch) · `gui` (`gui` tag, go-gui
 **config client**, five pages Status/Settings/Rules/Logging/About, plus a separate opt-in
 tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
@@ -142,10 +143,15 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
 ## Invariants — do not break
 - **A running service always has interception on.** Service start always enables; the SCM
   state stays StartPending until recovery + enable succeed. Any startup/reload/drift
-  failure stops the service instead of leaving it running with protection off.
-- **Enable order:** bind listeners → two-stage health check → persist state + dirty marker
-  → apply interception (NRPT) → flush DNS. Never touch DNS settings before the resolver is
-  proven listening.
+  failure stops the service instead of leaving it running with protection off. A stage-B
+  (upstream-only) health failure is retried for a bounded 10 s window first — a boot start
+  can beat the network — and a start that sees `SM_SHUTTINGDOWN` returns before enabling.
+  A start that fails while a stop/shutdown request is already waiting is an aborted start:
+  stop, exit 0, no SCM recovery actions (a genuine failure exits 1, except
+  `ErrConfigUnavailable`).
+- **Enable order:** bind listeners → two-stage health check (leak probe in parallel) →
+  persist state + dirty marker → apply interception (NRPT) → flush DNS. Never touch DNS
+  settings before the resolver is proven listening.
 - **Never re-snapshot while dirty** — applies only if/when the per-adapter fallback
   (SPEC §4.2) is implemented: restore from the persisted snapshot first; re-snapshotting a
   loopbacked system captures `127.0.0.1` as the "original" and loses the user's real DNS.

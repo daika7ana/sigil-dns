@@ -1883,9 +1883,10 @@ func TestSettingsOfflineNoticeWraps(t *testing.T) {
 	}
 }
 
-// TestStatusHasNoLifecycleControls proves the Status page carries no lifecycle
-// controls — Start/Stop and Install/Uninstall live in Settings, and the header
-// has no power button — and that the header shows the service state badge.
+// TestStatusHasNoLifecycleControls proves a healthy Status page carries no
+// lifecycle controls — Start/Stop and Install/Uninstall live in Settings, and
+// the header's power control only appears when it has something to change — and
+// that the header shows the service state badge.
 func TestStatusHasNoLifecycleControls(t *testing.T) {
 	w, root := layoutFor(t, statusApp(), defaultWidth, defaultHeight)
 
@@ -1908,20 +1909,42 @@ func TestStatusHasNoLifecycleControls(t *testing.T) {
 	assertNoFindings(t, w)
 }
 
-// TestStatusRestoreOnlyForDirtyLeftover proves Restore is offered only for the
-// crash-leftover state (!Enabled && Dirty), never beside a healthy session.
-func TestStatusRestoreOnlyForDirtyLeftover(t *testing.T) {
-	healthy := statusApp()
-	if n := len(renderIDs(t, healthy, "gui:action:restore")); n != 0 {
-		t.Fatalf("healthy running showed %d Restore buttons", n)
+// TestStatusPowerControlMatrix proves the header carries exactly the control
+// that moves towards protection: Start for a stopped, installed service, Restore
+// only for the crash-leftover state, and nothing beside a healthy or
+// not-installed session.
+func TestStatusPowerControlMatrix(t *testing.T) {
+	tests := []struct {
+		name   string
+		app    *App
+		enable int
+		rest   int
+	}{
+		{"healthy-running", statusApp(), 0, 0},
+		{"stopped-installed", func() *App {
+			app := statusApp()
+			app.snap = stoppedInstalledSnapshot()
+
+			return app
+		}(), 1, 0},
+		{"dirty-leftover", func() *App {
+			app := statusApp()
+			app.snap.status.Enabled = false
+			app.snap.status.Mode = "off"
+
+			return app
+		}(), 0, 1},
 	}
 
-	dirty := statusApp()
-	dirty.snap.status.Enabled = false
-	dirty.snap.status.Mode = "off"
-
-	if n := len(renderIDs(t, dirty, "gui:action:restore")); n != 1 {
-		t.Fatalf("dirty-leftover showed %d Restore buttons, want 1", n)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if n := len(renderIDs(t, tc.app, "gui:action:enable")); n != tc.enable {
+				t.Errorf("Start controls = %d, want %d", n, tc.enable)
+			}
+			if n := len(renderIDs(t, tc.app, "gui:action:restore")); n != tc.rest {
+				t.Errorf("Restore controls = %d, want %d", n, tc.rest)
+			}
+		})
 	}
 }
 

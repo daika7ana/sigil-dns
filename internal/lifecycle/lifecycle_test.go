@@ -910,6 +910,8 @@ func TestRestoreClearsLeak(t *testing.T) {
 // nil for a healthy one, and the check detail on failure.
 func TestHealth(t *testing.T) {
 	env := newTestEnv(t)
+	env.lc.healthRetryWindow = 0 // a deliberate failure must not sleep out the boot-retry window
+
 	ctx := context.Background()
 
 	if err := env.lc.Health(ctx); !errors.Is(err, ErrNotRunning) {
@@ -976,5 +978,87 @@ func TestHealthProbeFloor(t *testing.T) {
 	}
 	if got.Timeout != health.DefaultTimeout {
 		t.Fatalf("probe timeout = %v, want the %v floor", got.Timeout, health.DefaultTimeout)
+	}
+}
+
+// TestEnableRetriesHealthWhileUpstreamNotReady: a boot race leaves the upstream
+// unreachable on the first check; Enable retries and succeeds, and the check
+// runs exactly twice.
+func TestEnableRetriesHealthWhileUpstreamNotReady(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.healthRetryWindow = 5 * time.Second
+	env.lc.healthRetryDelay = time.Millisecond
+
+	calls := 0
+	env.lc.checkHealth = func(context.Context, health.Target) health.Result {
+		calls++
+		*env.events = append(*env.events, "health")
+		if calls == 1 {
+			return health.Result{OK: false, Ours: true, Detail: "upstream unreachable"}
+		}
+
+		return health.Result{OK: true, Ours: true, IPv4: true, Detail: "ok"}
+	}
+
+	if err := env.lc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("health checks = %d, want 2", calls)
+	}
+	if n := countEvents(*env.events, "health"); n != 2 {
+		t.Fatalf("health events = %d, want 2", n)
+	}
+}
+
+// TestEnableDoesNotRetryForeignListener: a foreign process on :53 never becomes
+// ours, so a stage-A failure must fail the enable immediately.
+func TestEnableDoesNotRetryForeignListener(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.healthRetryWindow = time.Minute
+	env.lc.healthRetryDelay = time.Millisecond
+
+	calls := 0
+	env.lc.checkHealth = func(context.Context, health.Target) health.Result {
+		calls++
+
+		return health.Result{OK: false, Ours: false, Detail: "foreign listener"}
+	}
+
+	err := env.lc.Enable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "health check failed") {
+		t.Fatalf("Enable err = %v, want a health-check failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("health checks = %d, want 1 (no retry for a foreign listener)", calls)
+	}
+	if env.lc.res != nil {
+		t.Fatal("resolver should have been stopped")
+	}
+}
+
+// TestEnableHealthRetryWindowExpires: with no retry budget, a permanently
+// unready upstream gets one attempt and the enable fails.
+func TestEnableHealthRetryWindowExpires(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.healthRetryWindow = 0
+	env.lc.healthRetryDelay = time.Millisecond
+
+	calls := 0
+	env.lc.checkHealth = func(context.Context, health.Target) health.Result {
+		calls++
+
+		return health.Result{OK: false, Ours: true, Detail: "upstream unreachable"}
+	}
+
+	err := env.lc.Enable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "health check failed") {
+		t.Fatalf("Enable err = %v, want a health-check failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("health checks = %d, want 1", calls)
+	}
+	if env.ic.enabled != 0 {
+		t.Fatalf("intercept enabled = %d, want 0", env.ic.enabled)
 	}
 }
