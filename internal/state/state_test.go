@@ -133,10 +133,14 @@ func TestLockIgnoresLeftoverFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLock over leftover file: %v", err)
 	}
-	defer func() { _ = l.Release() }()
 
 	// AcquireLock no longer rewrites the file (the old pid write was the
 	// truncate primitive a planted hardlink abused), so the leftover stays.
+	// Read after Release: Windows byte-range locks block concurrent reads of
+	// the locked file, and Release deliberately leaves it in place.
+	if err := l.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading lock: %v", err)

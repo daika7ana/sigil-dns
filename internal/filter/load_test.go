@@ -82,8 +82,10 @@ func TestLoadAllRejectsPlainHTTP(t *testing.T) {
 	if hits.Load() != 0 {
 		t.Fatalf("plain http source was fetched %d times, want 0", hits.Load())
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("err = %v, want a missing-local-file failure", err)
+	// Only that it fails as a local path: on POSIX the open is ENOENT, on
+	// Windows the ':' makes it a different (still failing) open error.
+	if err == nil || !strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("err = %v, want a local-file failure naming the source", err)
 	}
 }
 
