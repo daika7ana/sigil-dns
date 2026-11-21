@@ -63,6 +63,8 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	ctx, cancel := context.WithTimeout(ctx, loadTimeout)
 	defer cancel()
 
+	lists = dedupeSources(lists)
+
 	type result struct {
 		data []byte
 		err  error
@@ -107,6 +109,21 @@ func LoadAll(ctx context.Context, lists []List) (raw []RawList, err error) {
 	}
 
 	return raw, errors.Join(failures...)
+}
+
+// dedupeSources drops repeated sources, preserving first-occurrence order, so a
+// duplicated list is fetched once per refresh.
+func dedupeSources(lists []List) (out []List) {
+	seen := make(map[string]struct{}, len(lists))
+	for _, l := range lists {
+		if _, ok := seen[l.Source]; ok && l.Source != "" {
+			continue
+		}
+		seen[l.Source] = struct{}{}
+		out = append(out, l)
+	}
+
+	return out
 }
 
 // listFailure carries the static, source-free message while keeping the
@@ -281,10 +298,11 @@ func isBinary(data []byte) (ok bool) {
 	return bytes.IndexByte(data, 0) >= 0
 }
 
-// isURL reports whether source is an HTTP(S) URL.  Schemes are
-// case-insensitive (RFC 3986), matching the config validation.
+// isURL reports whether source is an HTTPS URL.  Plain HTTP is deliberately
+// rejected: a hostile network could inject $dnsrewrite rules into a list.
+// Schemes are case-insensitive (RFC 3986), matching the config validation.
 func isURL(source string) (ok bool) {
 	source = strings.ToLower(source)
 
-	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+	return strings.HasPrefix(source, "https://")
 }

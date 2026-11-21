@@ -37,7 +37,11 @@ const (
 // and NRPT interception.  interlock must be the mutex the service lifecycle
 // holds for enable/disable/reload, so a re-apply cannot race a disable.
 func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func(), interlock *sync.Mutex, health func(context.Context) error) (r *Reconciler) {
-	s := &system{statePath: statePath, interlock: interlock}
+	if logger == nil {
+		logger = slog.Default().With("component", "drift")
+	}
+
+	s := &system{statePath: statePath, interlock: interlock, logger: logger}
 
 	return NewReconciler(Options{
 		Prober: s, Applier: s, Disabler: s, Logger: logger, OnDisable: onDisable, Health: health,
@@ -48,6 +52,7 @@ func NewSystemReconciler(statePath string, logger *slog.Logger, onDisable func()
 type system struct {
 	statePath string
 	interlock *sync.Mutex
+	logger    *slog.Logger
 }
 
 // lock returns the matching unlock, or a no-op when no interlock is wired.
@@ -65,17 +70,21 @@ func (s *system) lock() (unlock func()) {
 func (s *system) Probe(ctx context.Context) (obs Observation, err error) {
 	st, err := state.NewStore(s.statePath).Load()
 	if err != nil {
-		if errors.Is(err, state.ErrNoState) {
-			return Observation{}, nil
-		}
-
+		// While the service runs with interception on, state.json must exist:
+		// its absence is an attack or an accident.  Returning an empty
+		// observation here would silently disable all supervision.
 		return Observation{}, err
 	}
 	if st.Mode != state.ModeOn {
 		return Observation{}, nil
 	}
 
-	nrpt, nErr := intercept.ProbeNRPT(ctx)
+	// Bound the CIM/PowerShell probe like Apply/Disable: a hung DnsClient call
+	// must not wedge the single supervision goroutine forever.
+	probeCtx, cancel := context.WithTimeout(ctx, interceptTimeout)
+	defer cancel()
+
+	nrpt, nErr := intercept.ProbeNRPT(probeCtx)
 	if nErr != nil {
 		return Observation{}, nErr
 	}
@@ -155,10 +164,11 @@ func (s *system) Disable(ctx context.Context) (err error) {
 	}
 
 	store := state.NewStore(s.statePath)
-	if err = store.MarkClean(); err != nil && !errors.Is(err, state.ErrNoState) {
-		// MarkClean quarantines and replaces a corrupt file itself, so no
-		// special case is needed here.
-		return err
+	if mErr := store.MarkClean(); mErr != nil && !errors.Is(mErr, state.ErrNoState) {
+		// The NRPT rules are already gone, so this is not a failed disable:
+		// report it, but never make the caller keep the service running as if
+		// the machine were still protected.  The next start rewrites state.
+		s.logger.Warn("state cleanup after disable failed; next start will retry", "err", mErr)
 	}
 
 	return nil

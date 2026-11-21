@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/daika7ana/sigil-dns/internal/providers"
 	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/state"
 )
 
 func TestDefault(t *testing.T) {
@@ -234,17 +236,16 @@ func TestLoadMissingAndBadYAML(t *testing.T) {
 		t.Fatal("Load bad YAML = nil, want error")
 	}
 
-	// An empty file is still an all-defaults config (decoder returns io.EOF).
-	empty := filepath.Join(t.TempDir(), "empty.yaml")
-	if err := os.WriteFile(empty, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := Load(empty)
-	if err != nil {
-		t.Fatalf("Load empty file: %v", err)
-	}
-	if c.SchemaVersion != SchemaVersion || len(c.Profiles) == 0 {
-		t.Fatalf("empty file did not default: %+v", c)
+	// An empty, whitespace-only, or comments-only file is rejected: silently
+	// defaulting would hide a truncated or wiped config.
+	for _, content := range [][]byte{nil, []byte("  \n\t\n"), []byte("# only a comment\n")} {
+		empty := filepath.Join(t.TempDir(), "empty.yaml")
+		if err := os.WriteFile(empty, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(empty); err == nil {
+			t.Fatalf("Load(%q) = nil, want an empty-config error", content)
+		}
 	}
 }
 
@@ -638,6 +639,31 @@ func TestInitIdempotence(t *testing.T) {
 	}
 }
 
+// TestInitRefusesWhileLocked verifies Init takes the same lock the elevated
+// helper holds, so it cannot write a config while a save is in flight.
+func TestInitRefusesWhileLocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+
+	lock, err := state.AcquireLock(state.LockPath(path))
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+
+	if err := Init(path); err == nil {
+		t.Fatal("Init succeeded while the config lock was held")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Init wrote a config under a held lock: %v", err)
+	}
+
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := Init(path); err != nil {
+		t.Fatalf("Init after release: %v", err)
+	}
+}
+
 // TestProfileOps covers the structural profile operations and every reject
 // case.
 func TestProfileOps(t *testing.T) {
@@ -918,6 +944,7 @@ func TestValidDomain(t *testing.T) {
 	invalid := []string{
 		"*", "*.", "/", "a/b", "a b", "a\x00b",
 		"example..com", ".example.com", "example.com..",
+		"corp:443", "example.com:443",
 		strings.Repeat("a", 64) + ".com",
 		strings.Repeat(strings.Repeat("a", 63)+".", 4),
 	}
@@ -1131,6 +1158,21 @@ func TestLogConfigValidate(t *testing.T) {
 		t.Fatalf("valid log config rejected: %v", err)
 	}
 
+	// The log must not alias the config/state files or their locks: the
+	// service truncates and rotates it.
+	for _, system := range []string{SystemPath(), SystemStatePath()} {
+		if system == "" {
+			continue
+		}
+		for _, name := range []string{filepath.Base(system), filepath.Base(system) + ".lock"} {
+			alias := Default()
+			alias.Log = LogConfig{Level: LogLevelInfo, Path: filepath.Join(dir, name), MaxSizeMB: 5, KeepMB: 2}
+			if err := alias.Validate(); err == nil {
+				t.Fatalf("log path aliasing %q accepted", name)
+			}
+		}
+	}
+
 	// A log path outside the SigilDNS data directory would let LocalSystem
 	// truncate and re-ACL an arbitrary file (for example the hosts file).
 	outside := Default()
@@ -1158,7 +1200,7 @@ func TestLogConfigValidate(t *testing.T) {
 func TestValidateListURL(t *testing.T) {
 	good := []string{
 		"https://example.com/hosts.txt",
-		"HTTP://example.com/hosts.txt",
+		"HTTPS://example.com/hosts.txt",
 		`C:\lists\hosts.txt`,
 		`d:/lists/hosts.txt`,
 	}
@@ -1178,6 +1220,8 @@ func TestValidateListURL(t *testing.T) {
 		`relative\hosts.txt`,
 		"/etc/hosts",
 		"ftp://example.com/hosts.txt",
+		"http://example.com/hosts.txt",
+		"HTTP://example.com/hosts.txt",
 		`C:\lists\..\..\Windows\System32\drivers\etc\hosts`,
 	}
 	for _, u := range bad {

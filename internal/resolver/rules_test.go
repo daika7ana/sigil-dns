@@ -136,6 +136,29 @@ func TestValidateRuleUpstream(t *testing.T) {
 	}
 }
 
+// TestValidateRuleDomain: the per-domain domain must pass the same dnsproxy
+// parser the reload path runs, so an invalid value fails the save instead of
+// stopping the service at the next reload.
+func TestValidateRuleDomain(t *testing.T) {
+	for _, d := range []string{"example.com", "*.example.com", "example.com.", ".", ""} {
+		if err := ValidateRuleDomain(d); err != nil {
+			t.Errorf("ValidateRuleDomain(%q) = %v, want nil", d, err)
+		}
+	}
+
+	// The parser is lenient about %, @ and \ (verified empirically); the colon
+	// class is what it rejects, and ValidDomain's cheap checks stay the guard
+	// for the rest.
+	for _, d := range []string{"corp:443"} {
+		if err := ValidateRuleDomain(d); err == nil {
+			t.Errorf("ValidateRuleDomain(%q) = nil, want an error", d)
+		}
+	}
+	if err := ValidateRuleDomain("EXAMPLE.COM"); err != nil {
+		t.Errorf("ValidateRuleDomain(%q) = %v, want nil (uppercase is normalized)", "EXAMPLE.COM", err)
+	}
+}
+
 // TestRulesRoutingEndToEnd routes names through per-domain upstreams.
 func TestRulesRoutingEndToEnd(t *testing.T) {
 	const (

@@ -144,6 +144,7 @@ func (a *App) ensureDraft() {
 		a.profiles = []string{a.active}
 	}
 	a.seeded = true
+	a.draftEdited = false
 }
 
 // seedDefault presents and pre-selects the built-in default profile on a fresh
@@ -155,6 +156,7 @@ func (a *App) seedDefault() {
 	a.selected = d.name
 	a.draft = d
 	a.seeded = true
+	a.draftEdited = false
 }
 
 // seed folds a fresh poll into the App.  The profile list and the active name
@@ -168,7 +170,9 @@ func (a *App) seed(s snapshot) {
 
 // refreshProfiles updates the profile list and the active name from the
 // effective summary.  If the selected profile vanished (renamed or deleted
-// elsewhere), the editor falls back to the active profile.
+// elsewhere), the editor falls back to the active profile; an untouched draft
+// is reseeded in place so a service-side change shows up instead of reading as
+// phantom edits.  An edited draft is never clobbered by a poll.
 func (a *App) refreshProfiles() {
 	sum := a.summary()
 	if sum == nil {
@@ -183,10 +187,16 @@ func (a *App) refreshProfiles() {
 		a.active = active
 	}
 
-	if a.selected != "" && len(names) > 0 && !slices.Contains(names, a.selected) {
+	if a.selected == "" || len(names) == 0 {
+		return
+	}
+	if !slices.Contains(names, a.selected) {
 		a.selected = a.active
 		a.draft = draftFromSummary(sum, a.selected)
 		a.seeded = true
+		a.draftEdited = false
+	} else if !a.draftEdited {
+		a.draft = draftFromSummary(sum, a.selected)
 	}
 }
 
@@ -635,7 +645,7 @@ func filteringFields(t gogui.Theme, d profileDraft, disabled bool, floor float32
 // is a settings row — its title and descriptor on the left, the switch on the
 // right — matching the Window & tray switches.
 func cacheFields(t gogui.Theme, d profileDraft, disabled bool) []gogui.View {
-	return []gogui.View{
+	fields := []gogui.View{
 		settingRow(t, "Cache",
 			"Keeps recent answers so repeat lookups are faster.",
 			gogui.Switch(gogui.SwitchCfg{
@@ -657,6 +667,12 @@ func cacheFields(t gogui.Theme, d profileDraft, disabled bool) []gogui.View {
 		}),
 		bootstrapField(t, d, disabled),
 	}
+	if bootstrapStale(&d) {
+		fields = append(fields, captionID(t, "gui:edit:bootstrap:hint",
+			"These bootstrap addresses were not recomputed for this selection; they are kept while it cannot expand."))
+	}
+
+	return fields
 }
 
 // groupDivider separates two field groups in the editor card, so the grouping
@@ -1141,6 +1157,7 @@ func updateDraft(ctx gogui.EventCtx, fn func(*profileDraft)) {
 	app := gogui.State[App](ctx.Window)
 	fn(&app.draft)
 	app.seeded = true
+	app.draftEdited = true
 	ctx.Window.InvalidateLayout()
 }
 
@@ -1190,6 +1207,7 @@ func setSelectedProfile(ctx gogui.EventCtx, vals []string) {
 	app.draft = draftFromSummary(app.summary(), name)
 	app.listInput = ""
 	app.seeded = true
+	app.draftEdited = false
 	ctx.Window.InvalidateLayout()
 }
 
@@ -1215,6 +1233,7 @@ func addList(ctx gogui.EventCtx) {
 	app.draft.lists = append(app.draft.lists, listDraft{url: url, enabled: true, idx: -1})
 	app.listInput = ""
 	app.seeded = true
+	app.draftEdited = true
 	ctx.Window.InvalidateLayout()
 }
 
@@ -1405,9 +1424,8 @@ func renameProfile(w *gogui.Window, from, to string) {
 	}
 
 	var draft *profileDraft
-	if app.draftDirty() {
-		d := app.draft
-		draft = &d
+	if d := app.editedDraft(); d != nil {
+		draft = d
 	}
 
 	runProfileOp(w, profileOp{kind: opRename, name: from, to: to}, draft)

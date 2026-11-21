@@ -73,10 +73,12 @@ func loadSettings(path string) (s settings) {
 	return s
 }
 
-// saveSettings writes gui.json, creating the parent directory if needed.
+// saveSettings writes gui.json, creating the parent directory if needed.  The
+// write goes through a temp file and a rename so a crash mid-write can never
+// truncate the existing settings.
 func saveSettings(path string, s settings) (err error) {
 	if dir := filepath.Dir(path); dir != "" {
-		if err = os.MkdirAll(dir, 0o755); err != nil {
+		if err = os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
@@ -86,5 +88,15 @@ func saveSettings(path string, s settings) (err error) {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o600)
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+
+		return err
+	}
+
+	return nil
 }

@@ -7,14 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Resolver ids can no longer leak into IPC error messages (and from there into the GUI) when logging is off, the default: the scrubbing boundary is now always seeded.
+- A standard user who pre-creates the data directory can no longer plant a hardlink as the lock or log file to make the SYSTEM service truncate or re-ACL an arbitrary file; multiply-linked files are refused before any write.
+- Filter-list sources must now be **HTTPS** URLs or absolute drive paths; plain `http://` is rejected. A plaintext list is an answer-injection channel (`$dnsrewrite`), and every other path in the product is encrypted. **Breaking:** configs with `http://` list URLs now fail to load — move the list to HTTPS.
+- The elevated helper's verdict file is now DPAPI-sealed, so a process running as the same user cannot forge a "success" result the GUI trusts.
+
 ### Fixed
 - Boot starts no longer fail while Windows is still bringing the network up: the upstream health check is retried for about 10 s (2 s apart) while our own listener is the one answering. A foreign owner of :53 still fails at once.
 - A start that races a shutdown now stops without enabling, instead of leaving a rule pointed at a resolver that is about to disappear.
 - Shutdown restores DNS. The service takes the pre-shutdown notification, which Windows sends while the DNS client and CIM are still alive, and restores within 8 s (the SCM allows 10 s). Previously only the late shutdown notification arrived, so the rule survived the reboot.
 - The Status header no longer offers **Restore now** while the service is stopped: it restored DNS but never started the service, so a second click repeated the message. A stopped service now offers **Turn on protection**; **Restore now** stays for a crash leftover.
+- Hand-written provider labels (free-form per docs/CONFIG.md, e.g. `NextDNS`) no longer break every GUI save: an unknown label is kept as display text instead of failing the write, and a custom profile without a typed URL no longer gets a protocol error for a control that is not on screen.
+- A zero-byte or wiped `config.yaml` now fails loudly instead of silently enabling the default profile.
+- Drift supervision no longer goes blind: a missing state file now counts as a probe failure and three consecutive failures stop the service (which restores DNS) rather than continuing unprotected; the NRPT probe is also time-bounded like every other PowerShell call, and a foreign NRPT rule no longer hides a wedged resolver.
+- A pre-shutdown request that arrives during a drift stop now gets its 8 s restore budget instead of an unbounded restore that Windows kills mid-way.
+- A control pipe that stops accepting no longer leaves the service Running but uncontrollable: the service now restarts and rebinds.
+- A failed restore on a user stop is retried once under a bound, and the log now names `sigildns restore` as the recovery.
+- Renaming a profile no longer re-applies a stale editor buffer over a config the service just changed, or silently drops edits on a legacy summary; an untouched editor now refreshes from the live config instead of reading as edited.
+- `gui.json` is written atomically, so a crash mid-write can no longer reset your preferences or leave an orphaned tray task at sign-in.
+- A second download of the same release no longer deletes the verified file when the plain name is held open; it falls back to `<name>-1.zip` and up.
+- The GUI no longer reports "Resolver ID: set" for presets that have no private id (ControlD free, for example).
 
 ### Changed
 - The plain-DNS leak probe runs alongside the enable health check instead of after it, so a slow PowerShell/WMI probe no longer adds its full runtime. It is still awaited before the state is saved (bounded at 5 s).
+- The status pipe now allows 64 connections with a 2 s first-read deadline, so one misbehaving local process cannot starve the tray's status view.
+- A per-domain rule domain is validated with the same parser the service uses at reload, so an invalid value fails the save instead of stopping the service later.
+- Pre-release tags (e.g. `v1.2.3-rc.1`) now stamp the exe's fixed numeric version fields instead of leaving the committed 0.7.1.
 
 ## [0.8.2] - 2026-11-18
 

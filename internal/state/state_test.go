@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -135,16 +135,41 @@ func TestLockIgnoresLeftoverFile(t *testing.T) {
 	}
 	defer func() { _ = l.Release() }()
 
-	// The pid stays diagnostic: the current owner rewrites it.  Read through
-	// the owning handle: Windows blocks a second handle from the locked region.
-	buf := make([]byte, 64)
-	n, err := l.file.ReadAt(buf, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
+	// AcquireLock no longer rewrites the file (the old pid write was the
+	// truncate primitive a planted hardlink abused), so the leftover stays.
+	data, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatalf("reading lock: %v", err)
 	}
-	data := buf[:n]
-	if want := strconv.Itoa(os.Getpid()); !strings.Contains(string(data), want) {
-		t.Fatalf("lock pid = %q, want %q", strings.TrimSpace(string(data)), want)
+	if string(data) != "not-a-pid\n" {
+		t.Fatalf("leftover lock rewritten: %q", data)
+	}
+}
+
+// TestAcquireLockRefusesHardlink verifies a pre-planted hardlink at the lock
+// path is refused without touching its target.
+func TestAcquireLockRefusesHardlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("writing target: %v", err)
+	}
+
+	path := filepath.Join(dir, "state.json.lock")
+	if err := os.Link(target, path); err != nil {
+		t.Skipf("hardlinks unsupported: %v", err)
+	}
+
+	if _, err := AcquireLock(path); !errors.Is(err, winacl.ErrHardlink) {
+		t.Fatalf("AcquireLock = %v, want ErrHardlink", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading target: %v", err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("hardlink target modified: %q", data)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/daika7ana/sigil-dns/internal/providers"
 	"github.com/daika7ana/sigil-dns/internal/resolver"
+	"github.com/daika7ana/sigil-dns/internal/state"
 	"github.com/daika7ana/sigil-dns/internal/winacl"
 
 	"gopkg.in/yaml.v3"
@@ -154,13 +155,27 @@ func ValidateLogPath(path string) (err error) {
 		return errors.New("log path must be inside the SigilDNS data directory")
 	}
 
+	// The service truncates and rotates the log, so it must not alias the
+	// config/state files or their locks (which share this directory).
+	base := filepath.Base(path)
+	for _, system := range []string{SystemPath(), SystemStatePath()} {
+		if system == "" {
+			continue
+		}
+		systemBase := filepath.Base(system)
+		if strings.EqualFold(base, systemBase) || strings.EqualFold(base, systemBase+".lock") {
+			return errors.New("log path must not name a system file")
+		}
+	}
+
 	return nil
 }
 
 // ValidateListURL rejects anything internal/filter would open as a local file
-// other than an absolute drive path: it accepts only http(s) URLs and drive
+// other than an absolute drive path: it accepts only https URLs and drive
 // paths, so a patch or a config can never hand the LocalSystem service a UNC
-// path (outbound NTLM) or a device path.
+// path (outbound NTLM), a device path, or a plaintext list an on-path attacker
+// can rewrite.
 func ValidateListURL(raw string) (err error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -174,11 +189,11 @@ func ValidateListURL(raw string) (err error) {
 	}
 
 	lower := strings.ToLower(s)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+	if strings.HasPrefix(lower, "https://") {
 		return nil
 	}
 	if !isDrivePath(s) {
-		return errors.New("filter list url must be http(s) or an absolute drive path")
+		return errors.New("filter list url must be https or an absolute drive path")
 	}
 	for _, seg := range strings.FieldsFunc(s[2:], func(r rune) bool { return r == '\\' || r == '/' }) {
 		if seg == "." || seg == ".." {
@@ -330,7 +345,13 @@ func Load(path string) (c *Config, err error) {
 	c = &Config{}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err = dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
+	if err = dec.Decode(c); err != nil {
+		// An empty, whitespace-only, or comments-only document decodes to EOF;
+		// treating it as defaults would hide a truncated or wiped config.
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("config file is empty")
+		}
+
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
@@ -394,8 +415,19 @@ func (c *Config) Save(path string) (err error) {
 }
 
 // Init writes a default config to path if none exists.  It never clobbers an
-// existing file and returns ErrExists in that case.
+// existing file and returns ErrExists in that case.  It takes the same lock the
+// elevated helper holds around its config writes, so it cannot race a save.
 func Init(path string) (err error) {
+	lock, err := state.AcquireLockSecure(state.LockPath(path))
+	if err != nil {
+		if errors.Is(err, state.ErrLocked) {
+			return errors.New("the configuration is being changed by another process; try again")
+		}
+
+		return fmt.Errorf("locking config: %w", err)
+	}
+	defer func() { _ = lock.Release() }()
+
 	if _, err = os.Stat(path); err == nil {
 		return ErrExists
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -795,6 +827,12 @@ func ValidDomain(d string) (err error) {
 		if len(label) > 63 {
 			return errors.New("domain label is too long")
 		}
+	}
+
+	// Chain the parser the reload path runs, so a value that passes save-time
+	// validation cannot fail later at resolver construction (fail-closed start).
+	if err = resolver.ValidateRuleDomain(d); err != nil {
+		return errors.New("domain contains an unsupported character")
 	}
 
 	return nil

@@ -534,3 +534,105 @@ func TestReconcileBypassRetryAfterBackoff(t *testing.T) {
 		t.Fatalf("disable calls = %d, want 0", got)
 	}
 }
+
+// TestReconcilerProbeFailuresStopSupervision: supervision cannot see anything
+// while probing fails, so N consecutive errors stop the loop via the service
+// stop path (OnDisable), which restores interception.
+func TestReconcilerProbeFailuresStopSupervision(t *testing.T) {
+	probeErr := errors.New("state file missing")
+	p := &fakeProber{fn: func(int) (Observation, error) { return Observation{}, probeErr }}
+	stopped := false
+
+	r := NewReconciler(Options{
+		Prober: p, Interval: time.Millisecond,
+		OnDisable: func() { stopped = true },
+	})
+
+	attempts := 0
+	for i := 0; i < maxProbeFails-1; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatalf("reconcile stopped after %d probe failures", i+1)
+		}
+	}
+	if stopped {
+		t.Fatal("OnDisable ran before the failure threshold")
+	}
+
+	if stop := r.reconcile(context.Background(), &attempts); !stop {
+		t.Fatal("reconcile did not stop after repeated probe failures")
+	}
+	if !stopped {
+		t.Error("OnDisable not called after persistent probe failures")
+	}
+}
+
+// TestReconcilerProbeSuccessResetsFailures: one successful probe clears the
+// streak, so a flapping probe never stops a healthy service.
+func TestReconcilerProbeSuccessResetsFailures(t *testing.T) {
+	probeErr := errors.New("state file missing")
+	p := &fakeProber{fn: func(call int) (Observation, error) {
+		if call == 3 {
+			return okObs(), nil
+		}
+
+		return Observation{}, probeErr
+	}}
+	stopped := false
+
+	r := NewReconciler(Options{
+		Prober: p, Interval: time.Millisecond,
+		OnDisable: func() { stopped = true },
+	})
+
+	attempts := 0
+	for i := 0; i < 5; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatalf("reconcile stopped at call %d although a success reset the streak", i+1)
+		}
+	}
+	if stopped {
+		t.Fatal("OnDisable ran although the streak was reset")
+	}
+
+	if stop := r.reconcile(context.Background(), &attempts); !stop {
+		t.Fatal("reconcile did not stop after three consecutive failures")
+	}
+	if !stopped {
+		t.Error("OnDisable not called after the reset streak reached the threshold")
+	}
+}
+
+// TestReconcilerConflictStillChecksHealth: a VPN catch-all suppresses drift
+// auto-apply, but it must not suppress resolver-health detection.
+func TestReconcilerConflictStillChecksHealth(t *testing.T) {
+	conflict := Observation{
+		Expected: State{NRPTOurs: true, Namespaces: []string{""}},
+		Actual:   State{NRPTOurs: true, Namespaces: []string{""}, NRPTConflicts: []string{"vpn|."}},
+	}
+	p := &fakeProber{fn: func(int) (Observation, error) { return conflict, nil }}
+	dis := &fakeDisabler{}
+	stopped := false
+
+	r := NewReconciler(Options{
+		Prober: p, Disabler: dis, Interval: time.Millisecond,
+		Health:    func(context.Context) error { return errors.New("upstream timeout") },
+		OnDisable: func() { stopped = true },
+	})
+
+	attempts := 0
+	for i := 0; i < r.maxHealthFails-1; i++ {
+		if stop := r.reconcile(context.Background(), &attempts); stop {
+			t.Fatalf("reconcile stopped on conflict before the health threshold (%d)", i+1)
+		}
+	}
+	if got := dis.disables.Load(); got != 0 {
+		t.Fatalf("disable calls = %d, want 0 before the health threshold", got)
+	}
+
+	if stop := r.reconcile(context.Background(), &attempts); !stop {
+		t.Fatal("reconcile did not stop on conflict after repeated health failures")
+	}
+	if !stopped {
+		t.Error("OnDisable not called after a conflict-path health disable")
+	}
+}

@@ -115,10 +115,30 @@ func (h *handler) Execute(
 			}
 		case <-h.agent.Done():
 			// Persistent drift could not be reconciled; stop so the service is
-			// never left running with interception off.
+			// never left running with interception off.  A control request
+			// already queued selects the restore budget: do not rob a queued
+			// pre-shutdown of its 8 s window.
 			changes <- svc.Status{State: svc.StopPending}
 			cancel()
-			h.stop(svc.Stop)
+
+			stopCmd := svc.Stop
+			for {
+				c, ok := pendingRequest(r)
+				if !ok {
+					break
+				}
+
+				if c.Cmd != svc.Interrogate {
+					stopCmd = c.Cmd
+
+					break
+				}
+
+				changes <- c.CurrentStatus
+			}
+
+			h.stop(stopCmd)
+
 			return false, 0
 		case c, ok := <-r:
 			if !ok {
@@ -158,6 +178,10 @@ const preshutdownRestoreBudget = 8 * time.Second
 // lifecycle call already in flight (a list download, say), are not
 // context-aware and can still outlast it.
 const shutdownRestoreBudget = 3 * time.Second
+
+// userStopRetryBudget bounds the single retry after a failed user-stop
+// restore.
+const userStopRetryBudget = 10 * time.Second
 
 // restoreBudget is how long a stop of the given kind may spend restoring
 // interception.  Preshutdown arrives while DnsClient/CIM are alive; the legacy
@@ -207,13 +231,24 @@ func (h *handler) stop(c svc.Cmd) {
 		defer cancel()
 	}
 
-	if err := h.agent.Stop(ctx); err != nil {
+	err := h.agent.Stop(ctx)
+	if err != nil && !shutdown {
+		// A user stop is not bounded, but a transient CIM/PowerShell hiccup
+		// must not leave the machine loopbacked to a dead resolver: retry once
+		// under a bound.  This keeps exit-0 semantics (see above).
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), userStopRetryBudget)
+		defer retryCancel()
+
+		err = h.agent.Stop(retryCtx)
+	}
+
+	if err != nil {
 		if shutdown {
 			h.agent.logger.Warn("interception restore deferred to next service start", "err", err)
 
 			return
 		}
-		h.agent.logger.Error("service stop failed", "err", err)
+		h.agent.logger.Error("service stop failed; run 'sigildns restore' to undo interception", "err", err)
 	}
 }
 

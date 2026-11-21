@@ -321,6 +321,9 @@ func (r *Resolver) RefreshLists(ctx context.Context) (err error) {
 // reloadFilter loads the lists and swaps in a new filter state.
 func (r *Resolver) reloadFilter(ctx context.Context, fc FilterConfig) (err error) {
 	if !fc.Enabled || len(fc.Lists) == 0 {
+		if fc.Enabled {
+			r.logger.WarnContext(ctx, "filtering is enabled but no list is enabled; nothing will be blocked")
+		}
 		r.setFilterState(nil)
 		r.ClearCache()
 
@@ -480,6 +483,32 @@ func ValidateRuleUpstream(u string) (err error) {
 	}
 	if parseErr != nil {
 		return errors.New("invalid per-domain upstream")
+	}
+
+	return nil
+}
+
+// ValidateRuleDomain reports whether d is a per-domain rule domain the dnsproxy
+// parser accepts.  It runs the same parser parseRules runs at reload, so a
+// value that passes here cannot fail later at resolver construction (which
+// would stop the service, per the fail-closed invariant).  The error is
+// static, so no value can leak into a caller-visible message.
+func ValidateRuleDomain(d string) (err error) {
+	d = strings.TrimSuffix(strings.TrimSpace(d), ".")
+	if d == "" {
+		// The documented unqualified form (also written ".").
+		return nil
+	}
+
+	conf, parseErr := proxy.ParseUpstreamsConfig(
+		[]string{"[/" + d + "/]udp://192.0.2.1"},
+		&upstream.Options{},
+	)
+	if conf != nil {
+		_ = conf.Close()
+	}
+	if parseErr != nil {
+		return errors.New("invalid per-domain domain")
 	}
 
 	return nil
@@ -777,15 +806,26 @@ func (u *boundedUpstream) Exchange(ctx context.Context, req *dns.Msg) (resp *dns
 		ch <- result{r, e}
 	}()
 
-	select {
-	case res := <-ch:
+	deliver := func(res result) (*dns.Msg, error) {
 		if res.err == nil && res.resp != nil && u.onSuccess != nil {
 			u.onSuccess(time.Since(start))
 		}
 
 		return res.resp, res.err
+	}
+
+	select {
+	case res := <-ch:
+		return deliver(res)
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		// A response landing exactly on the deadline must not be discarded just
+		// because select also saw the cancellation.
+		select {
+		case res := <-ch:
+			return deliver(res)
+		default:
+			return nil, ctx.Err()
+		}
 	}
 }
 

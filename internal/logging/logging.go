@@ -58,7 +58,9 @@ func Open(opts Options) (l *slog.Logger, closer io.Closer, err error) {
 		return stderrLogger(slog.LevelInfo, opts.Secrets), nil, levelErr
 	}
 	if off {
-		return slog.New(slog.DiscardHandler), nil, nil
+		// Keep the redacting handler in place even with no file log: the IPC
+		// error boundary reads its id seeds.
+		return slog.New(redact.Handler(slog.DiscardHandler, opts.Secrets)), nil, nil
 	}
 
 	path := strings.TrimSpace(opts.Path)
@@ -78,6 +80,17 @@ func Open(opts Options) (l *slog.Logger, closer io.Closer, err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return stderrLogger(level, opts.Secrets), nil, fmt.Errorf("opening log file: %w", err)
+	}
+
+	// A pre-planted hardlink would make rotation truncate and re-ACL an
+	// unrelated file, so refuse it before writing.
+	if hErr := winacl.RefuseHardlink(f); hErr != nil {
+		_ = f.Close()
+		if fresh {
+			_ = os.Remove(path)
+		}
+
+		return stderrLogger(level, opts.Secrets), nil, fmt.Errorf("checking log file: %w", hErr)
 	}
 
 	// A log with an inherited ACL must never be written to (it can carry query

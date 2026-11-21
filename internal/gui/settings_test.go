@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1121,11 +1122,23 @@ func TestProviderDetailStatesTheRequirement(t *testing.T) {
 // a save/load through gui.json, including a negative X (a monitor left of the
 // primary).
 func TestSettingsPositionRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gui.json")
+	dir := filepath.Join(t.TempDir(), "sigildns")
+	path := filepath.Join(dir, "gui.json")
 	want := settings{Width: 1280, Height: 720, Theme: themeDark, X: -1200, Y: 40}
 
 	if err := saveSettings(path, want); err != nil {
 		t.Fatalf("saveSettings: %v", err)
+	}
+
+	// The write is atomic and, off Windows, the directory is user-private
+	// (Windows synthesizes dir permissions from attributes, so skip it there).
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left behind: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("dir mode = %v, %v, want 0700", fi, err)
+		}
 	}
 
 	got := loadSettings(path)
@@ -1487,5 +1500,103 @@ func TestServiceControlFollowsInterception(t *testing.T) {
 			}
 			assertNoFindings(t, w)
 		})
+	}
+}
+
+// TestRefreshProfilesReseedsUneditedDraft proves a service-side change shows up
+// in an untouched editor instead of reading as phantom edits.
+func TestRefreshProfilesReseedsUneditedDraft(t *testing.T) {
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.seed(profilesSnapshot())
+	if app.draft.variant != "secure" {
+		t.Fatalf("seeded variant = %q, want secure", app.draft.variant)
+	}
+
+	next := profilesSnapshot()
+	next.summary.Profiles[1].Variant = "noblock"
+	app.seed(next)
+
+	if app.draft.variant != "noblock" {
+		t.Fatalf("variant = %q, want the refreshed noblock", app.draft.variant)
+	}
+}
+
+// TestRefreshProfilesKeepsEditedDraft proves a poll never clobbers edits.
+func TestRefreshProfilesKeepsEditedDraft(t *testing.T) {
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.seed(profilesSnapshot())
+	app.draftEdited = true
+	app.draft.provider = providers.AdGuard
+
+	next := profilesSnapshot()
+	next.summary.Profiles[1].Variant = "noblock"
+	app.seed(next)
+
+	if app.draft.provider != providers.AdGuard {
+		t.Fatalf("provider = %q, want the edited adguard", app.draft.provider)
+	}
+}
+
+// TestEditedDraftGate proves a rename carries the buffer only after an edit;
+// the comparison is against the edit flag, not the live summary (a legacy
+// summary has no per-profile values to compare with).
+func TestEditedDraftGate(t *testing.T) {
+	app := &App{draft: profileDraft{name: "work"}}
+	if app.editedDraft() != nil {
+		t.Fatal("an untouched draft must not travel with a rename")
+	}
+
+	app.draftEdited = true
+	got := app.editedDraft()
+	if got == nil || got.name != "work" {
+		t.Fatalf("edited draft = %+v, want work", got)
+	}
+}
+
+// TestBootstrapStale covers the hint condition: a non-empty box for a
+// selection that cannot expand is stale — including custom, whose leftover
+// box resolves the custom upstream's hostname.
+func TestBootstrapStale(t *testing.T) {
+	tests := []struct {
+		name string
+		d    profileDraft
+		want bool
+	}{
+		{"cannot expand", profileDraft{provider: providers.UBlockDNS, variant: "profile", protocol: "doh", bootstrap: "1.1.1.1"}, true},
+		{"empty box", profileDraft{provider: providers.UBlockDNS, variant: "profile", protocol: "doh"}, false},
+		{"custom without url", profileDraft{provider: providers.Custom, variant: "custom", bootstrap: "1.1.1.1"}, true},
+		{"expands", profileDraft{provider: providers.Quad9, variant: "secure", protocol: "doh", bootstrap: "9.9.9.9"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bootstrapStale(&tt.d); got != tt.want {
+				t.Fatalf("bootstrapStale = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBootstrapHintRendersOnlyWhenStale proves the conditional hint leaves the
+// default editor unchanged.
+func TestBootstrapHintRendersOnlyWhenStale(t *testing.T) {
+	app := &App{themePref: themeSystem, refresh: make(chan struct{}, 1)}
+	app.seed(profilesSnapshot())
+	app.page = pageSettings
+
+	w := newSettingsWindow(t, app)
+	w.TestRender(nil)
+	if n := len(w.ResolveID("gui:edit:bootstrap:hint")); n != 0 {
+		t.Fatalf("hint rendered %d times for a seedable selection, want 0", n)
+	}
+
+	app.draft = profileDraft{
+		name: "work", provider: providers.UBlockDNS, variant: "profile",
+		protocol: "doh", bootstrap: "1.1.1.1", rulesKnown: true,
+	}
+	w.InvalidateLayout()
+	w.TestRender(nil)
+	if n := len(w.ResolveID("gui:edit:bootstrap:hint")); n != 1 {
+		t.Fatalf("hint rendered %d times for a stale box, want 1", n)
 	}
 }

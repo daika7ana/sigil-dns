@@ -31,6 +31,11 @@ const (
 	// service down.
 	defaultMaxHealthFails = 3
 
+	// maxProbeFails is how many consecutive probe errors stop supervision.
+	// After that we cannot tell whether interception is still on, so the
+	// service must stop rather than run blind.
+	maxProbeFails = 3
+
 	// bypassRetryIntervals spaces retries of a bypass-only exemption that could
 	// not be applied.  It is best-effort, so keep the rate low.
 	bypassRetryIntervals = 10
@@ -281,6 +286,9 @@ type Reconciler struct {
 	// serialized, so no lock is needed.
 	healthFails int
 
+	// probeFails counts consecutive probe errors.  Same serialization.
+	probeFails int
+
 	// bypassRetryAt is when a failed bypass-only re-apply may be retried.  A
 	// permanently rejected exemption is best-effort and must never auto-disable
 	// protection, but one transient failure must not freeze it until restart.
@@ -355,10 +363,28 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 
 	obs, err := r.prober.Probe(ctx)
 	if err != nil {
-		r.logger.WarnContext(ctx, "drift probe failed", "err", err)
+		r.probeFails++
+		if r.probeFails < maxProbeFails {
+			r.logger.WarnContext(ctx, "drift probe failed", "err", err, "consecutive", r.probeFails)
 
-		return false
+			return false
+		}
+
+		// A persistent probe failure means supervision is blind: it cannot
+		// tell whether interception is still on.  Stop the service so the
+		// stop path restores interception (a failing probe may not even know
+		// what to disable).
+		r.logger.ErrorContext(ctx, "drift probe failing persistently; stopping supervision",
+			"consecutive", r.probeFails, "err", err)
+
+		if r.onDisable != nil {
+			r.onDisable()
+		}
+
+		return true
 	}
+
+	r.probeFails = 0
 
 	switch Decide(obs.Expected, obs.Actual) {
 	case DecisionOK:
@@ -377,6 +403,11 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 			"conflicting NRPT rule detected; not fighting it (VPN/other DNS tool)",
 			"rules", obs.Actual.NRPTConflicts,
 		)
+
+		// A VPN catch-all must not hide a wedged resolver.
+		if r.checkHealth(ctx, obs) {
+			return true
+		}
 
 	case DecisionApply:
 		// Only a bypass exemption is missing and it failed recently: it is

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Protocol is an upstream transport.
@@ -108,8 +109,11 @@ var controlDFreePresets = []Variant{
 	{Name: "uncensored", Description: "uncensored"},
 }
 
-// Registry returns the provider catalog for listing.
-func Registry() (ps []Provider) {
+// Registry returns the provider catalog.  It is built once and shared; callers
+// must not mutate the returned slice.
+func Registry() (ps []Provider) { return registry() }
+
+var registry = sync.OnceValue(func() []Provider {
 	quad9 := Provider{
 		Name:           Quad9,
 		Description:    "Quad9 (DNSSEC-validating, dual-stack)",
@@ -223,7 +227,7 @@ func Registry() (ps []Provider) {
 	}
 
 	return []Provider{quad9, cloudflare, adguard, google, nextdns, controld, openbld, ublockdns, custom}
-}
+})
 
 // Lookup finds a provider by name.
 func Lookup(name string) (p Provider, ok bool) {

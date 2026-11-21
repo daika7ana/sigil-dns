@@ -153,6 +153,10 @@ type App struct {
 	selected string
 	draft    profileDraft
 	seeded   bool
+	// draftEdited marks that the user changed the buffer after it was seeded,
+	// so a poll may reseed an untouched draft but a rename carries an edited
+	// one.
+	draftEdited bool
 
 	// listInput is the not-yet-added filter-list URL typed into the editor's
 	// add-list field.  It is transient UI state: it becomes a draft row on Add,

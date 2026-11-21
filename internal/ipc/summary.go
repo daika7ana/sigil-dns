@@ -230,7 +230,7 @@ func Summarize(cfg *config.Config) (sum ConfigSummary) {
 		})
 	}
 
-	sum.IDSet = anyIDSet(p.Upstreams)
+	sum.IDSet = profileIDSet(p)
 
 	return sum
 }
@@ -298,9 +298,12 @@ func summarizeProfile(name string, active bool, p config.Profile) (s ProfileSumm
 // profileIDSet is the provider-aware id detector: when provider metadata is
 // present it trusts providers.ExtractID (so a ControlD free preset, whose path
 // is a shared name, is not mistaken for a private id); otherwise it falls back
-// to the path heuristic.  It never returns or logs the id.
+// to the path heuristic.  A provider label the registry does not know is
+// display text (docs/CONFIG.md allows free-form labels), not metadata, so it
+// takes the same heuristic fallback.  It never returns or logs the id.
 func profileIDSet(p config.Profile) (ok bool) {
-	if strings.TrimSpace(p.Provider) == "" {
+	provider := strings.TrimSpace(p.Provider)
+	if _, known := providers.Lookup(provider); provider == "" || !known {
 		return anyIDSet(p.Upstreams)
 	}
 

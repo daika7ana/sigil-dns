@@ -6,8 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/daika7ana/sigil-dns/internal/redact"
+	"github.com/daika7ana/sigil-dns/internal/winacl"
 )
 
 // TestOpenOffOpensNoFile verifies level off returns a discard logger and never
@@ -243,13 +247,54 @@ func TestOpenExpandsTabsInStringValues(t *testing.T) {
 	}
 }
 
-// TestUpdateSecretsOffIsNoop verifies a no-op on the discard logger.
-func TestUpdateSecretsOffIsNoop(t *testing.T) {
-	l, _, err := Open(Options{Level: "off"})
+// TestOpenOffKeepsSeeds verifies the off logger still carries the redaction
+// seeds the IPC error boundary reads, and accepts reseeding.
+func TestOpenOffKeepsSeeds(t *testing.T) {
+	l, _, err := Open(Options{Level: "off", Secrets: []string{"NEWID"}})
 	if err != nil {
 		t.Fatalf("Open(off): %v", err)
 	}
 
-	UpdateSecrets(l, []string{"NEWID"})
-	l.Info("still discarded")
+	if got := redact.Secrets(l.Handler()); !slices.Contains(got, "NEWID") {
+		t.Fatalf("off logger seeds = %v, want NEWID", got)
+	}
+
+	UpdateSecrets(l, []string{"OTHERID"})
+	if got := redact.Secrets(l.Handler()); !slices.Contains(got, "OTHERID") {
+		t.Fatalf("off logger reseed = %v, want OTHERID", got)
+	}
+}
+
+// TestOpenRefusesHardlink verifies a pre-planted hardlink at the log path is
+// refused without truncating or deleting its target.
+func TestOpenRefusesHardlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("writing target: %v", err)
+	}
+
+	path := filepath.Join(dir, "sigildns.log")
+	if err := os.Link(target, path); err != nil {
+		t.Skipf("hardlinks unsupported: %v", err)
+	}
+
+	l, closer, err := Open(Options{Level: "info", Path: path})
+	if !errors.Is(err, winacl.ErrHardlink) {
+		t.Fatalf("Open = %v, want ErrHardlink", err)
+	}
+	if l == nil {
+		t.Fatal("hardlink refusal returned a nil logger")
+	}
+	if closer != nil {
+		t.Fatal("hardlink refusal returned a file closer")
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading target: %v", err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("hardlink target modified: %q", data)
+	}
 }

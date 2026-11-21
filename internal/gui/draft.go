@@ -3,7 +3,6 @@
 package gui
 
 import (
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -235,26 +234,18 @@ func profileNames(profiles []ipc.ProfileSummary) (names []string) {
 	return names
 }
 
-// selectedSummary is the summary of the profile the editor is focused on.
-func (a *App) selectedSummary() (p ipc.ProfileSummary, ok bool) {
-	sum := a.summary()
-	if sum == nil {
-		return ipc.ProfileSummary{}, false
+// editedDraft returns the editor buffer to carry alongside a rename, or nil
+// when the user has not touched it since it was seeded.  The buffer is
+// returned as a copy: the request reads it on a goroutine while the frame
+// thread keeps owning the live one.
+func (a *App) editedDraft() *profileDraft {
+	if !a.draftEdited {
+		return nil
 	}
 
-	return findProfile(sum.Profiles, selectedProfile(a))
-}
+	d := a.draft
 
-// draftDirty reports whether the editor buffer differs from the selected
-// profile's sanitized values — i.e. whether there are unsaved edits to carry
-// alongside a rename.  The draft carries slices, so a plain == cannot be used.
-func (a *App) draftDirty() (dirty bool) {
-	p, ok := a.selectedSummary()
-	if !ok {
-		return false
-	}
-
-	return !reflect.DeepEqual(a.draft, draftForProfile(p))
+	return &d
 }
 
 // parseBootstrap splits a comma-separated list, trimming whitespace and
@@ -302,6 +293,20 @@ func syncBootstrap(d *profileDraft) {
 	if ep, ok := expansion(d); ok {
 		d.bootstrap = strings.Join(ep.Bootstrap, ", ")
 	}
+}
+
+// bootstrapStale reports whether the box holds addresses the current selection
+// cannot justify — the previous provider's, left behind because expansion fails.
+// Custom is included: switched to custom, the box still carries the previous
+// provider's addresses and they resolve the custom upstream's hostname.
+func bootstrapStale(d *profileDraft) bool {
+	if strings.TrimSpace(d.bootstrap) == "" {
+		return false
+	}
+
+	_, ok := expansion(d)
+
+	return !ok
 }
 
 // parseMiB reads a cache size in MiB.  A blank or invalid value is 0, which

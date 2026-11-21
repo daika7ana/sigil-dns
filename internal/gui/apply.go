@@ -138,6 +138,9 @@ func runRequest(w *gogui.Window, req applyRequest) {
 			a := gogui.State[App](win)
 			if res.ok {
 				a.reflectFilteringAction(req.action)
+				// The applied buffer is the new baseline; the next poll reseeds
+				// it from the fresh summary.
+				a.draftEdited = false
 			}
 			a.busy = false
 			a.busyNote = ""

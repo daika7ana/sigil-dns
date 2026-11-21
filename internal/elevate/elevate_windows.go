@@ -168,7 +168,12 @@ func Apply(ctx context.Context, req Request) (res Result, err error) {
 	}
 	_ = os.Remove(resPath)
 
-	if err = json.Unmarshal(data, &res); err != nil {
+	plain, err := dpapiUnprotect(data)
+	if err != nil {
+		return Result{}, errors.New("helper did not report a verifiable result")
+	}
+
+	if err = json.Unmarshal(plain, &res); err != nil {
 		return Result{}, fmt.Errorf("decoding helper result: %w", err)
 	}
 
@@ -1003,6 +1008,14 @@ func writeResult(reqPath string, res Result) (err error) {
 	body, err := json.Marshal(res)
 	if err != nil {
 		return err
+	}
+
+	// The result is sealed like the request: the staging directory is
+	// user-writable, so an unelevated process must not be able to plant or
+	// rewrite a verdict the admin-collecting caller trusts as fact.
+	body, err = dpapiProtect(body)
+	if err != nil {
+		return fmt.Errorf("sealing result: %w", err)
 	}
 
 	resPath := strings.TrimSuffix(reqPath, ".req") + ".res"

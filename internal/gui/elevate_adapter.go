@@ -156,22 +156,31 @@ func draftName(d *profileDraft) (name string) {
 }
 
 // patchFromDraft builds the allowlisted per-profile patch from the editor
-// buffer.  Provider/Variant/Protocol are always set (the helper re-expands the
-// endpoints); ID is set only when typed (nil = keep, SPEC §15.2); URL only for
-// the custom provider and only when filled; Bootstrap and the filtering/cache
-// blocks carry the draft's values.
+// buffer.  Provider/Variant/Protocol are sent only for a label the registry
+// knows (the helper re-expands the endpoints); a hand-written label such as the
+// docs' "NextDNS" is free-form display text (docs/CONFIG.md), so omitting the
+// three keeps the stored labels and upstreams instead of failing the save.  ID
+// is set only when typed (nil = keep, SPEC §15.2); URL only for the custom
+// provider and only when filled; Bootstrap and the filtering/cache blocks carry
+// the draft's values.
 func patchFromDraft(d profileDraft) elevate.ProfilePatch {
 	provider := strings.TrimSpace(d.provider)
-	pp := elevate.ProfilePatch{
-		Provider: new(provider),
-		Variant:  new(strings.TrimSpace(d.variant)),
-		Protocol: new(strings.TrimSpace(d.protocol)),
+	pp := elevate.ProfilePatch{}
+	if _, ok := providers.Lookup(provider); ok {
+		pp.Provider = new(provider)
+		pp.Variant = new(strings.TrimSpace(d.variant))
+		// The custom provider's transport comes from its URL below, never from
+		// the picker: a blank protocol would be rejected by the helper.
+		if provider != providers.Custom {
+			pp.Protocol = new(strings.TrimSpace(d.protocol))
+		}
 	}
 
 	// The id is sent only for a provider/variant that uses one, so a value
-	// typed before switching to a no-id provider can never travel.  A blank
-	// field still means "keep" (SPEC §15.2).
-	if needsResolverID(provider, d.variant) {
+	// typed before switching to a no-id provider can never travel.  An id also
+	// requires an explicit provider (helper validateShape), so an unknown label
+	// drops it.  A blank field still means "keep" (SPEC §15.2).
+	if pp.Provider != nil && needsResolverID(provider, d.variant) {
 		if id := strings.TrimSpace(d.id); id != "" {
 			pp.ID = new(id)
 		}

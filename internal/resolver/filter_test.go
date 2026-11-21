@@ -64,11 +64,14 @@ func startFilteredResolver(t *testing.T, upstreamAddr, listPath, blockResponse s
 // list download, so a canceled start cannot wait for the fetch timeout.
 func TestNewCancelsListLoading(t *testing.T) {
 	started := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
 		<-r.Context().Done()
 	}))
 	defer srv.Close()
+	oldClient := http.DefaultClient
+	http.DefaultClient = srv.Client()
+	defer func() { http.DefaultClient = oldClient }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -196,10 +195,11 @@ func AcquireLock(path string) (l *Lock, err error) {
 		return nil, fmt.Errorf("acquiring lock: %w", err)
 	}
 
-	// The pid is diagnostic only; the OS lock is authoritative.
-	_ = f.Truncate(0)
-	_, _ = f.Seek(0, io.SeekStart)
-	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	if err = winacl.RefuseHardlink(f); err != nil {
+		_ = f.Close()
+
+		return nil, fmt.Errorf("checking lock: %w", err)
+	}
 
 	return &Lock{file: f}, nil
 }

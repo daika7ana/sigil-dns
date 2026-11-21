@@ -16,17 +16,23 @@ import (
 )
 
 // TestStopLogLevels pins where a failed restore is reported: a plain stop is an
-// error, a system shutdown is a warning (the state stays dirty and the next
-// start retries, so it is not actionable at shutdown).
+// error (after one bounded retry) with a recovery hint, a system shutdown is a
+// warning (the state stays dirty and the next start retries, so it is not
+// actionable at shutdown).
 func TestStopLogLevels(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		cmd   svc.Cmd
-		level string
-		msg   string
+		name      string
+		cmd       svc.Cmd
+		level     string
+		msg       string
+		wantCalls int
 	}{
-		{name: "stop", cmd: svc.Stop, level: "level=ERROR", msg: `msg="service stop failed"`},
-		{name: "shutdown", cmd: svc.Shutdown, level: "level=WARN", msg: `msg="interception restore deferred`},
+		{
+			name: "stop", cmd: svc.Stop, level: "level=ERROR",
+			msg:       `msg="service stop failed; run 'sigildns restore' to undo interception"`,
+			wantCalls: 2,
+		},
+		{name: "shutdown", cmd: svc.Shutdown, level: "level=WARN", msg: `msg="interception restore deferred`, wantCalls: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
@@ -40,6 +46,10 @@ func TestStopLogLevels(t *testing.T) {
 
 			h := &handler{agent: agent}
 			h.stop(tc.cmd)
+
+			if lc.disableCalls != tc.wantCalls {
+				t.Fatalf("Disable calls = %d, want %d", lc.disableCalls, tc.wantCalls)
+			}
 
 			got := buf.String()
 			for _, want := range []string{tc.level, tc.msg} {

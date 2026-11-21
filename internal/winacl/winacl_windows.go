@@ -9,6 +9,7 @@ package winacl
 import (
 	"errors"
 	"fmt"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -20,6 +21,26 @@ const secureSDDL = `D:P(A;;GA;;;SY)(A;;GA;;;BA)`
 
 // errReparsePoint is static so it stays path-free for unelevated callers.
 var errReparsePoint = errors.New("winacl: refusing to secure a reparse point")
+
+// ErrHardlink is returned by RefuseHardlink for a multiply-linked file.  It is
+// static so it stays path-free for unelevated callers.
+var ErrHardlink = errors.New("winacl: refusing a multiply-linked file")
+
+// RefuseHardlink rejects f when it has more than one hard link.  A standard
+// user who pre-creates a directory can plant the service's lock or log path as
+// a hardlink to a SYSTEM-writable file; opening and truncating it would then
+// destroy or re-ACL that target.
+func RefuseHardlink(f *os.File) error {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
+		return fmt.Errorf("winacl: reading link count: %w", err)
+	}
+	if info.NumberOfLinks > 1 {
+		return ErrHardlink
+	}
+
+	return nil
+}
 
 // SecureFile restricts path (a file) to SYSTEM + Administrators.
 func SecureFile(path string) (err error) {

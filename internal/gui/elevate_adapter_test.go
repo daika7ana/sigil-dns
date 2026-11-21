@@ -573,3 +573,40 @@ func ptrSlice(s *[]string) (v []string) {
 
 	return *s
 }
+
+// TestPatchFromDraftProviderLabels pins the free-form label rule: provider
+// labels are display text (docs/CONFIG.md) and the registry is the only
+// authority the helper accepts.
+func TestPatchFromDraftProviderLabels(t *testing.T) {
+	t.Run("unknown label leaves labels and upstreams alone", func(t *testing.T) {
+		pp := patchFromDraft(profileDraft{
+			name: "w", provider: "NextDNS", variant: "ultralow", protocol: "doh", id: "abc123",
+		})
+		if pp.Provider != nil || pp.Variant != nil || pp.Protocol != nil {
+			t.Fatalf("provider/variant/protocol = %v/%v/%v, want all nil",
+				pp.Provider, pp.Variant, pp.Protocol)
+		}
+		// The helper rejects an id without an explicit provider.
+		if pp.ID != nil {
+			t.Fatalf("id = %v, want nil without a provider", *pp.ID)
+		}
+	})
+
+	t.Run("custom without a URL sends no protocol", func(t *testing.T) {
+		pp := patchFromDraft(profileDraft{name: "c", provider: providers.Custom, variant: "custom", protocol: "doh"})
+		if pp.Provider == nil || *pp.Provider != providers.Custom {
+			t.Fatalf("provider = %v, want custom", pp.Provider)
+		}
+		if pp.Protocol != nil {
+			t.Fatalf("protocol = %v, want nil", *pp.Protocol)
+		}
+	})
+
+	t.Run("registry provider sends all three", func(t *testing.T) {
+		pp := patchFromDraft(profileDraft{name: "q", provider: providers.Quad9, variant: "secure", protocol: "doh"})
+		if ptrOr(pp.Provider) != providers.Quad9 || ptrOr(pp.Variant) != "secure" || ptrOr(pp.Protocol) != "doh" {
+			t.Fatalf("provider/variant/protocol = %q/%q/%q",
+				ptrOr(pp.Provider), ptrOr(pp.Variant), ptrOr(pp.Protocol))
+		}
+	})
+}

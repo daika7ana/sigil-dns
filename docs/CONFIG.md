@@ -169,7 +169,7 @@ filtering:
 |---|---|---|---|
 | `enabled` | bool | `false` | Filtering is off unless this is true **and** at least one list is enabled. |
 | `lists` | list | empty | Each entry needs a non-empty `url`. |
-| `lists[].url` | string | — | An HTTP(S) URL or an absolute local drive path (for example `C:\lists\hosts.txt`). UNC (`\\server\share`) and device (`\\.\`, `\\?\`) paths are rejected. |
+| `lists[].url` | string | — | An HTTPS URL or an absolute local drive path (for example `C:\lists\hosts.txt`). Plain `http://` (a DNS answer-injection channel), UNC (`\\server\share`) and device (`\\.\`, `\\?\`) paths are rejected. |
 | `lists[].enabled` | bool | `false` | Disabled lists are ignored. |
 | `block_response` | string | `0.0.0.0` | `0.0.0.0` or `nxdomain`. |
 | `block_ttl` | integer (uint32) | `3600` | TTL for hand-built blocked answers. Must be > 0. |

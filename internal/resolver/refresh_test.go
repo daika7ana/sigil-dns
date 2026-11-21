@@ -36,3 +36,27 @@ func TestRefreshListsRebuildsFilter(t *testing.T) {
 		t.Errorf("after refresh blocked.test = %s, want forwarded 192.0.2.1", got)
 	}
 }
+
+// TestRefreshListsFailureKeepsFilter pins the safety property that a failed
+// refresh leaves the previous filter engine in place.
+func TestRefreshListsFailureKeepsFilter(t *testing.T) {
+	upstream, _ := startUpstream(t, "192.0.2.1")
+	list := writeList(t, "||blocked.test^\n")
+
+	r, qaddr := startFilteredResolver(t, upstream, list, BlockResponseZero)
+
+	if got := firstA(t, query(t, qaddr, "blocked.test.", dns.TypeA)); got != "0.0.0.0" {
+		t.Fatalf("before refresh blocked.test = %s, want 0.0.0.0", got)
+	}
+
+	if err := os.Remove(list); err != nil {
+		t.Fatalf("removing list: %v", err)
+	}
+	if err := r.RefreshLists(context.Background()); err == nil {
+		t.Fatal("RefreshLists succeeded with a missing list source")
+	}
+
+	if got := firstA(t, query(t, qaddr, "blocked.test.", dns.TypeA)); got != "0.0.0.0" {
+		t.Errorf("failed refresh dropped the old filter: blocked.test = %s, want 0.0.0.0", got)
+	}
+}

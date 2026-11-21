@@ -406,7 +406,10 @@ func (a *Agent) startIPC() (err error) {
 	control := ipc.NewServer(a.lc, a.logger).SetConfigPath(a.configPath).SetReloader(a.lc).SetRestorer(a.lc).SetListRefresher(a.lc).SetCacheClearer(a.lc).SetPauser(a.lc).SetResumer(a.lc)
 	go func() {
 		if sErr := ipc.Serve(ctx, ln, control, ipc.AdminAuthorizer); sErr != nil {
+			// A Running-but-uncontrollable service is worse than a restart:
+			// stop and let the SCM recovery actions rebind the pipe.
 			a.logger.Error("ipc control serve stopped", "err", sErr)
+			a.RequestStop()
 		}
 	}()
 	a.logger.Info("ipc control listening", "endpoint", a.endpoint)
@@ -428,7 +431,7 @@ func (a *Agent) startStatusPipe(ctx context.Context) {
 	}
 	a.sln = sln
 
-	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus().SetConfigPath(a.configPath).SetStatsReporter(a.lc)
+	status := ipc.NewServer(a.lc, a.logger).SanitizeStatus().SetConfigPath(a.configPath).SetStatsReporter(a.lc).SetConnLimits(64, 2*time.Second)
 	go func() {
 		if sErr := ipc.Serve(ctx, sln, status, ipc.ReadOnlyAuthorizer); sErr != nil {
 			a.logger.Error("ipc status serve stopped", "err", sErr)

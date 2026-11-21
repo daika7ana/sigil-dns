@@ -229,6 +229,11 @@ profiles:
 	if !zebra.IDSet {
 		t.Error("zebra (nextdns) id_set should be true")
 	}
+
+	// The top-level value is the active profile's, computed the same way.
+	if sum.IDSet != sum.Profiles[1].IDSet {
+		t.Errorf("top-level id_set = %v, per-profile = %v", sum.IDSet, sum.Profiles[1].IDSet)
+	}
 }
 
 // TestPerDomainSummaryEnabled proves the per-rule enabled flag is reported and
@@ -446,5 +451,39 @@ func TestSanitizedConfigError(t *testing.T) {
 	}
 	if got := SanitizedConfigError(errors.New("yaml: line 3: https://dns.nextdns.io/SECRET123")); strings.Contains(got, "SECRET123") {
 		t.Errorf("SanitizedConfigError leaked a secret: %q", got)
+	}
+}
+
+// TestConfigSummaryIDSetMatchesProfile proves the top-level id_set uses the same
+// provider-aware detector as the per-profile value: a ControlD free preset
+// (/p0) carries no private id even though its DoH path is non-standard.
+func TestConfigSummaryIDSetMatchesProfile(t *testing.T) {
+	body := `schema_version: 1
+profile: free
+profiles:
+  free:
+    provider: controld
+    variant: p0
+    protocol: doh
+    upstreams: [https://freedns.controld.com/p0]
+`
+	path := writeConfigFile(t, body)
+
+	srv := NewServer(&fakeLifecycle{}, nil).SetConfigPath(path)
+	resp := srv.Handle(context.Background(), Caller{Admin: false},
+		Request{Version: ProtocolVersion, Method: MethodConfigSummary})
+	if !resp.OK {
+		t.Fatalf("config_summary: %+v", resp)
+	}
+
+	var sum ConfigSummary
+	if err := json.Unmarshal(resp.Data, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.IDSet {
+		t.Error("top-level id_set should be false for a ControlD free preset")
+	}
+	if len(sum.Profiles) != 1 || sum.Profiles[0].IDSet {
+		t.Fatalf("per-profile id_set = %+v, want one profile with false", sum.Profiles)
 	}
 }

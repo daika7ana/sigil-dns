@@ -155,6 +155,20 @@ func (s *Server) SanitizeStatus() *Server {
 	return s
 }
 
+// SetConnLimits caps concurrent connections and bounds each request.  Used on
+// permissive listeners (the status pipe, which any local user may dial) so
+// slow or silent clients cannot hold every slot for a full request timeout.
+func (s *Server) SetConnLimits(maxConns int, timeout time.Duration) *Server {
+	if maxConns > 0 {
+		s.maxConns = maxConns
+	}
+	if timeout > 0 {
+		s.requestTimeout = timeout
+	}
+
+	return s
+}
+
 // SetConfigPath sets the config file path used by config_summary.  The service
 // sets it to the fixed default path.
 func (s *Server) SetConfigPath(path string) *Server {

@@ -40,11 +40,12 @@ func TestLoadAllFile(t *testing.T) {
 }
 
 func TestLoadAllHTTP(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("||remote.test^\n"))
 	}))
 	t.Cleanup(srv.Close)
+	useTLSClient(t, srv)
 
 	raw, err := LoadAll(context.Background(), []List{{Source: srv.URL}})
 	if err != nil {
@@ -55,18 +56,72 @@ func TestLoadAllHTTP(t *testing.T) {
 	}
 }
 
+// useTLSClient routes the loader's default client through srv's trusted
+// transport; production code keeps using http.DefaultClient.
+func useTLSClient(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	old := http.DefaultClient
+	http.DefaultClient = srv.Client()
+	t.Cleanup(func() { http.DefaultClient = old })
+}
+
+// TestLoadAllRejectsPlainHTTP: an http:// source is not a URL; it is treated as
+// a local path and never fetched (a hostile network could inject $dnsrewrite).
+func TestLoadAllRejectsPlainHTTP(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("||plain.test^\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := LoadAll(context.Background(), []List{{Source: srv.URL}})
+	if err == nil {
+		t.Fatal("expected an error for an http:// source")
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("plain http source was fetched %d times, want 0", hits.Load())
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %v, want a missing-local-file failure", err)
+	}
+}
+
+// TestLoadAllDedupesSources: a repeated source is fetched once per refresh.
+func TestLoadAllDedupesSources(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("||dup.test^\n"))
+	}))
+	t.Cleanup(srv.Close)
+	useTLSClient(t, srv)
+
+	raw, err := LoadAll(context.Background(), []List{{Source: srv.URL}, {Source: srv.URL}})
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server hits = %d, want 1", got)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("raw lists = %d, want 1", len(raw))
+	}
+}
+
 // TestLoadAllConcurrent: lists are fetched in parallel, so N slow sources cost
 // roughly one delay instead of N.
 func TestLoadAllConcurrent(t *testing.T) {
 	const n = 4
 
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		time.Sleep(300 * time.Millisecond)
 		_, _ = fmt.Fprintf(w, "||list%s.test^\n", r.URL.Path)
 	}))
 	t.Cleanup(srv.Close)
+	useTLSClient(t, srv)
 
 	lists := make([]List, n)
 	for i := range lists {
@@ -95,12 +150,13 @@ func TestLoadAllConcurrent(t *testing.T) {
 // TestLoadAllHTTPUpperScheme: config accepts an upper-case scheme, so the
 // loader must treat it as a URL rather than a local path.
 func TestLoadAllHTTPUpperScheme(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("||upper.test^\n"))
 	}))
 	t.Cleanup(srv.Close)
+	useTLSClient(t, srv)
 
-	source := "HTTP://" + strings.TrimPrefix(srv.URL, "http://")
+	source := "HTTPS://" + strings.TrimPrefix(srv.URL, "https://")
 
 	raw, err := LoadAll(context.Background(), []List{{Source: source}})
 	if err != nil {
@@ -136,10 +192,11 @@ func TestLoadAllKeepsGoodLists(t *testing.T) {
 }
 
 func TestLoadRejectsNonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	t.Cleanup(srv.Close)
+	useTLSClient(t, srv)
 
 	source := srv.URL + "/ads.txt?token=secret"
 	_, err := LoadAll(context.Background(), []List{{Source: source}})

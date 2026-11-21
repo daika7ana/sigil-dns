@@ -995,3 +995,28 @@ func waitUpdatePhase(t *testing.T, w *gogui.Window, app *App, want updatePhase) 
 
 	t.Fatalf("update phase = %v, want %v", app.update.phase, want)
 }
+
+// TestPlaceDownloadFallsBackToSiblingName proves a verified download is not
+// discarded when the plain target name is unavailable.  A directory at the
+// target makes os.Rename fail like a Windows sharing violation does.
+func TestPlaceDownloadFallsBackToSiblingName(t *testing.T) {
+	dir := t.TempDir()
+	part := filepath.Join(dir, ".sigildns-x.part")
+	if err := os.WriteFile(part, []byte("zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sigildns.zip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := placeDownload(part, dir, "sigildns.zip")
+	if err != nil {
+		t.Fatalf("placeDownload: %v", err)
+	}
+	if want := filepath.Join(dir, "sigildns-1.zip"); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if b, err := os.ReadFile(got); err != nil || string(b) != "zip" {
+		t.Fatalf("payload = %q, %v", b, err)
+	}
+}

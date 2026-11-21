@@ -443,8 +443,8 @@ func downloadUpdateDefault(ctx context.Context, asset, sums releaseAsset) (strin
 		return "", errUpdateChecksum
 	}
 
-	final := filepath.Join(dir, name)
-	if err := os.Rename(part, final); err != nil {
+	final, err := placeDownload(part, dir, name)
+	if err != nil {
 		_ = os.Remove(part)
 
 		return "", err
@@ -453,6 +453,28 @@ func downloadUpdateDefault(ctx context.Context, asset, sums releaseAsset) (strin
 	markDownloaded(final)
 
 	return final, nil
+}
+
+// placeDownload renames the verified .part into dir under name, falling back to
+// "<stem>-1.zip" … "<stem>-9.zip" when the plain name is taken (an Explorer
+// window or a scanner holding it).  The verified bytes are only discarded by the
+// caller when every sibling name fails too.
+func placeDownload(part, dir, name string) (final string, err error) {
+	final = filepath.Join(dir, name)
+	if err = os.Rename(part, final); err == nil {
+		return final, nil
+	}
+
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; i <= 9; i++ {
+		alt := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
+		if err = os.Rename(part, alt); err == nil {
+			return alt, nil
+		}
+	}
+
+	return "", err
 }
 
 // startUpdateCheck runs one check off the frame thread and posts the outcome

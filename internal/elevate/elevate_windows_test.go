@@ -3,6 +3,7 @@
 package elevate
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,4 +116,37 @@ func TestSecureUserOnlyACL(t *testing.T) {
 		t.Fatalf("current user cannot open %s for read/write: %v", path, err)
 	}
 	_ = windows.CloseHandle(h)
+}
+
+// TestWriteResultIsSealed proves the helper's verdict is protected like the
+// request: a caller reading .res must decrypt it before trusting it.
+func TestWriteResultIsSealed(t *testing.T) {
+	dir := t.TempDir()
+	reqPath := filepath.Join(dir, "abc.req")
+	want := Result{OK: true, Message: "applied"}
+
+	if err := writeResult(reqPath, want); err != nil {
+		t.Fatalf("writeResult: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "abc.res"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if strings.Contains(string(data), "applied") {
+		t.Fatal("result was written in plaintext")
+	}
+
+	plain, err := dpapiUnprotect(data)
+	if err != nil {
+		t.Fatalf("dpapiUnprotect: %v", err)
+	}
+
+	var got Result
+	if err := json.Unmarshal(plain, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.OK || got.Message != want.Message {
+		t.Fatalf("result = %+v, want %+v", got, want)
+	}
 }
