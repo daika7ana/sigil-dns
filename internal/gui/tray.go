@@ -58,28 +58,15 @@ func (t *trayState) isMinimized() bool {
 // trayMenu is the right-click menu.  The status row leads and is disabled: it
 // reports the service state, so a stopped or unverified service is never shown
 // as protected.
-//
-// shortcut: go-gui v0.92.0 resolves a Win32 tray click
-// through its menuNodes slice, whose element 0 is the root.  A click on item i
-// therefore fires item i-1's ID, and item 0 fires nothing.  The IDs below are
-// shifted one item down, with the disabled status row first and a separator
-// after it, so each action item fires the ID it appears to own.  Re-check this
-// mapping on a go-gui upgrade; a fixed library would need the natural IDs (and
-// would let Open lead again).
 func trayMenu(status string) []gogui.NativeMenuItemCfg {
 	return []gogui.NativeMenuItemCfg{
-		// Status is disabled: index 0 fires nothing.
 		{Text: status, Disabled: true},
-		// The click on Open Sigil DNS (index 2) reads this separator's ID.
-		{ID: trayActionOpen, Separator: true},
-		// The click on Open log file (index 3) reads this row's ID.
-		{ID: trayActionLog, Text: "Open Sigil DNS"},
-		// The click on Clear DNS cache (index 4) reads this row's ID.
-		{ID: trayActionFlush, Text: "Open log file"},
-		{Text: "Clear DNS cache"},
-		// The click on Exit (index 6) reads this separator's ID.
-		{ID: trayActionExit, Separator: true},
-		{Text: "Exit"},
+		{Separator: true},
+		{ID: trayActionOpen, Text: "Open Sigil DNS"},
+		{ID: trayActionLog, Text: "Open log file"},
+		{ID: trayActionFlush, Text: "Clear DNS cache"},
+		{Separator: true},
+		{ID: trayActionExit, Text: "Exit"},
 	}
 }
 

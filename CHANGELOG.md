@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The GUI no longer reports "Resolver ID: set" for presets that have no private id (ControlD free, for example).
 
 ### Changed
+- Updated go-gui to v0.98.0. Its Win32 tray menu now fires the item that was clicked and it enables the standard tooltip itself, so the tray menu uses the natural item IDs and the private-window tooltip workaround is gone. Tray behaviour is otherwise unchanged.
 - The plain-DNS leak probe runs alongside the enable health check instead of after it, so a slow PowerShell/WMI probe no longer adds its full runtime. It is still awaited before the state is saved (bounded at 5 s).
 - The status pipe now allows 64 connections with a 2 s first-read deadline, so one misbehaving local process cannot starve the tray's status view.
 - A per-domain rule domain is validated with the same parser the service uses at reload, so an invalid value fails the save instead of stopping the service later.

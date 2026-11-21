@@ -209,10 +209,10 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
 `AdguardTeam/dnsproxy v0.86.0` (engine; needs Go ≥1.26.8; **no `Config.BootstrapDNS`** —
 bootstrap is `upstream.Options.Bootstrap`, and `Upstream.Exchange` takes
 `(ctx, *dns.Msg)` — check the pinned tag's source, not docs) ·
-`AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.92.0` (GUI + tray
-backend; pre-1.0, pin deliberately; its Win32 tray menu resolves a click through the
-root-prefixed `menuNodes` slice, so `internal/gui/tray.go` shifts the menu IDs by one, and
-it never sets `NIF_SHOWTIP`, so `tray_tooltip_windows.go` enables the standard tooltip —
-re-check both on upgrade; `trayhost_windows.go` uses the public `gui/backend/sni` API
-directly) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3 historically
+`AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.98.0` (GUI +
+tray backend; pre-1.0, pin deliberately; since v0.98.0 the Win32 tray menu is built
+from the same node list a click resolves through, so `internal/gui/tray.go` uses the
+natural item IDs, and the library sets `NIF_SHOWTIP` itself — the old shift and
+tooltip workarounds are gone; `trayhost_windows.go` uses the public `gui/backend/sni`
+API directly) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3 historically
 dragged a `golang.org/x/*` upgrade cascade, so re-check on upgrade).

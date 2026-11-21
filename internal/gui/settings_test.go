@@ -1181,36 +1181,29 @@ func TestTrayMenuHasExpectedActions(t *testing.T) {
 	if !items[0].Disabled || items[0].Text != "Service: Running" {
 		t.Errorf("item 0 = %+v, want the disabled current status", items[0])
 	}
-	if !items[1].Separator || items[1].ID != trayActionOpen {
-		t.Errorf("item 1 = %+v, want the Open separator", items[1])
+	if !items[1].Separator || items[1].ID != "" {
+		t.Errorf("item 1 = %+v, want a plain separator", items[1])
 	}
 
 	want := []string{"Open Sigil DNS", "Open log file", "Clear DNS cache"}
 	for i, text := range want {
-		if got := items[i+2]; got.Text != text || got.Disabled {
-			t.Errorf("item %d = %+v, want enabled %q", i+2, got, text)
+		if got := items[i+2]; got.Text != text || got.Disabled || got.ID == "" {
+			t.Errorf("item %d = %+v, want enabled %q with its own ID", i+2, got, text)
 		}
 	}
-	if !items[5].Separator || items[5].ID != trayActionExit {
-		t.Errorf("item 5 = %+v, want the Exit separator", items[5])
+	if !items[5].Separator || items[5].ID != "" {
+		t.Errorf("item 5 = %+v, want a plain separator", items[5])
 	}
-	if items[6].Text != "Exit" || items[6].Separator {
-		t.Errorf("item 6 = %+v, want Exit", items[6])
+	if items[6].Text != "Exit" || items[6].ID != trayActionExit {
+		t.Errorf("item 6 = %+v, want Exit with its own ID", items[6])
 	}
 }
 
-// TestTrayMenuIDsCompensateGoGUIRoot pins the workaround for go-gui v0.92.0's
-// Win32 tray menu: a click on item i resolves through menuNodes[i], whose
-// element 0 is the root, so it fires item i-1's ID.  If a go-gui upgrade fixes
-// that, this test still passes but the real menu will be wrong: the shortcut
-// comment on trayMenu is the reminder to re-check it.
-func TestTrayMenuIDsCompensateGoGUIRoot(t *testing.T) {
+// TestTrayMenuIDsMatchRows pins the natural menu IDs: go-gui v0.98.0 builds
+// the Win32 menu from the same node list a click resolves through, so a click
+// on a row fires the ID that row carries.
+func TestTrayMenuIDsMatchRows(t *testing.T) {
 	items := trayMenu("Service: Running")
-
-	nodes := []string{""} // go-gui's root menuNode
-	for _, it := range items {
-		nodes = append(nodes, it.ID)
-	}
 
 	want := map[int]string{
 		2: trayActionOpen,
@@ -1218,12 +1211,9 @@ func TestTrayMenuIDsCompensateGoGUIRoot(t *testing.T) {
 		4: trayActionFlush,
 		6: trayActionExit,
 	}
-	for click, action := range want {
-		if click >= len(nodes) {
-			t.Fatalf("click %d has no menu node", click)
-		}
-		if got := nodes[click]; got != action {
-			t.Errorf("click on item %d fires %q, want %q", click, got, action)
+	for row, action := range want {
+		if got := items[row]; got.ID != action {
+			t.Errorf("row %d carries ID %q, want %q", row, got.ID, action)
 		}
 	}
 }

@@ -142,7 +142,6 @@ var trayHostWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr
 	case taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg && activeTrayIcon != nil:
 		// The shell dropped the icon and never reports it.
 		activeTrayIcon.readd()
-		applyTrayTooltip(windowTitle)
 
 		return 0
 	}
@@ -242,7 +241,6 @@ func RunTrayHost() (err error) {
 	}
 	// Stop the poller before the icon goes: a late update must not re-create it.
 	defer func() { cancel(); icon.remove() }()
-	applyTrayTooltip(windowTitle) // sni does not set NIF_SHOWTIP
 
 	// The window exists before the icon does; marking it only now lets the
 	// GUI tell a started host from one that failed and is about to exit.
@@ -251,7 +249,6 @@ func RunTrayHost() (err error) {
 
 	go pollTrayHost(ctx, newSource(), host, func(status string) {
 		icon.update(status)
-		applyTrayTooltip(windowTitle) // an update rewrites the tip flags
 	})
 
 	var msg msgW
