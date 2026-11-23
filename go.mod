@@ -6,7 +6,7 @@ require (
 	github.com/AdguardTeam/dnsproxy v0.86.0
 	github.com/AdguardTeam/urlfilter v0.23.4
 	github.com/Microsoft/go-winio v0.6.4
-	github.com/go-gui-org/go-gui v0.98.0
+	github.com/go-gui-org/go-gui v0.99.1
 	github.com/miekg/dns v1.1.73
 	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -21,7 +21,7 @@ require (
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500 // indirect
 	github.com/dlclark/regexp2/v2 v2.13.2 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
-	github.com/go-gui-org/go-glyph v1.28.0 // indirect
+	github.com/go-gui-org/go-glyph v1.29.2 // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/godbus/dbus/v5 v5.2.4 // indirect

@@ -25,8 +25,9 @@ import (
 // window closes; Open relaunches the GUI.
 //
 // The host's hidden control window is its single-instance guard and exit
-// channel; it must be top-level, or the shell's TaskbarCreated broadcast never
-// reaches it.  Elevated like the GUI, so UIPI stops a lower-integrity WM_CLOSE.
+// channel.  It stays top-level because the GUI finds it with FindWindowW,
+// which cannot see a message-only window.  Elevated like the GUI, so UIPI
+// stops a lower-integrity WM_CLOSE.
 const (
 	trayHostClass = "SigilDNS.TrayHost"
 
@@ -96,8 +97,6 @@ var (
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = kernel32.NewProc("CreateMutexW")
 	procCloseHandle      = kernel32.NewProc("CloseHandle")
-
-	procRegisterWindowMessageW = user32.NewProc("RegisterWindowMessageW")
 )
 
 // wndClassExW mirrors WNDCLASSEXW.
@@ -128,20 +127,10 @@ type msgW struct {
 
 type pointW struct{ x, y int32 }
 
-// taskbarCreatedMsg is the shell's TaskbarCreated id, or 0 before registration.
-var taskbarCreatedMsg uintptr
-
-// trayHostWndProc re-adds the icon when the shell rebuilds its notification
-// area; WM_CLOSE destroys the window and the resulting WM_DESTROY ends the loop.
+// trayHostWndProc ends the message loop on WM_DESTROY.
 var trayHostWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr) uintptr {
-	switch {
-	case msg == wmDestroy:
+	if msg == wmDestroy {
 		procPostQuitMessage.Call(0)
-
-		return 0
-	case taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg && activeTrayIcon != nil:
-		// The shell dropped the icon and never reports it.
-		activeTrayIcon.readd()
 
 		return 0
 	}
@@ -149,17 +138,6 @@ var trayHostWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr
 
 	return r
 })
-
-// registerTaskbarCreated returns the shell's TaskbarCreated message id.
-func registerTaskbarCreated() uintptr {
-	name, err := syscall.UTF16PtrFromString("TaskbarCreated")
-	if err != nil {
-		return 0
-	}
-	id, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(name)))
-
-	return id
-}
 
 // waitForShellTray waits up to timeout for the shell's notification area, and
 // returns early on an exit request: it runs before the message loop.
@@ -208,9 +186,6 @@ func RunTrayHost() (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	// Before the window, so a TaskbarCreated broadcast cannot arrive unhandled.
-	taskbarCreatedMsg = registerTaskbarCreated()
-
 	hwnd, err := createTrayHostWindow()
 	if err != nil {
 		return err
@@ -222,7 +197,6 @@ func RunTrayHost() (err error) {
 
 	host := &trayHost{}
 	icon := &trayHostIcon{onAction: func(action string) { host.action(hwnd, action) }}
-	activeTrayIcon = icon
 
 	waitForShellTray(hwnd, trayHostShellWait)
 
@@ -262,8 +236,8 @@ func RunTrayHost() (err error) {
 	}
 }
 
-// trayHostIcon owns the live tray icon: the shell drops it when Explorer
-// restarts, so it has to be addable again under a new id.
+// trayHostIcon owns the live tray icon: the shell can refuse one while it
+// rebuilds, so startup retries the create.
 type trayHostIcon struct {
 	mu       sync.Mutex
 	tray     sni.Tray
@@ -273,10 +247,6 @@ type trayHostIcon struct {
 	status   string
 	onAction func(string)
 }
-
-// activeTrayIcon is the icon the TaskbarCreated handler re-adds; set before the
-// message loop runs.
-var activeTrayIcon *trayHostIcon
 
 // add creates the icon at status.
 func (i *trayHostIcon) add(status string) error {
@@ -300,17 +270,7 @@ func (i *trayHostIcon) create() error {
 	return nil
 }
 
-// readd re-creates the icon after the shell rebuilt its notification area.
-func (i *trayHostIcon) readd() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	i.tray.Remove(i.id)
-	_ = i.create()
-}
-
-// update refreshes the tooltip, and creates the icon again if the last create
-// failed — the shell can refuse one while it rebuilds.
+// update refreshes the tooltip.
 func (i *trayHostIcon) update(status string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -319,11 +279,6 @@ func (i *trayHostIcon) update(status string) {
 		return
 	}
 	i.status = status
-	if !i.live {
-		_ = i.create()
-
-		return
-	}
 	i.tray.Update(i.id, trayConfig(status))
 }
 
@@ -524,7 +479,7 @@ func trayHostWindow() (hwnd uintptr) {
 
 // trayHostReady reports whether the host's icon exists.  The control window
 // alone is created before the icon, so only the property the host sets after
-// tr.Create means the tray is usable.
+// `tray.Create` means the tray is usable.
 func trayHostReady() bool {
 	hwnd := trayHostWindow()
 	if hwnd == 0 {
@@ -621,8 +576,9 @@ func stopTrayHost() {
 	}
 }
 
-// createTrayHostWindow creates the host's hidden top-level control window; a
-// message-only one would not receive the shell's TaskbarCreated broadcast.
+// createTrayHostWindow creates the host's hidden top-level control window;
+// FindWindowW, which the GUI uses to find the host, cannot see a
+// message-only one.
 func createTrayHostWindow() (hwnd uintptr, err error) {
 	hinst, _, _ := procGetModuleHandleW.Call(0)
 	class, err := syscall.UTF16PtrFromString(trayHostClass)

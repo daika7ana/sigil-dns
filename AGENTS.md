@@ -93,9 +93,11 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
     `SigilDNS`: user-bound trigger, `InteractiveToken`, `HighestAvailable`, launching
     `--tray` with no UAC at sign-in — SPEC §15.3.8 exception; removed when the tray is
     disabled and by uninstall), `trayhost_windows.go` (**separate no-window tray process**:
-    `sni.Tray` icon/menu, 5 s status poll; a message-only control window is its
-    single-instance guard and exit channel; ~25–30 MB, so the GUI exits on close /
-    minimize-to-tray instead of keeping the OpenGL window process alive).
+    `sni.Tray` icon/menu, 5 s status poll; a hidden top-level control window is how
+    the GUI finds the host (FindWindowW) and asks it to exit (WM_CLOSE), while the
+    session mutex `Local\SigilDNS.TrayHost` is the single-instance guard; ~25–30 MB,
+    so the GUI exits on close / minimize-to-tray instead of keeping the OpenGL
+    window process alive).
 - **Icon art** lives in the top-level `assets` package (`//go:embed appicon-*.png`;
   per-size frames plus the 256 px master because the GL backend cannot antialias a vector
   mark). The exe resource icon is `assets/sigildns.ico`.
@@ -209,10 +211,13 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
 `AdguardTeam/dnsproxy v0.86.0` (engine; needs Go ≥1.26.8; **no `Config.BootstrapDNS`** —
 bootstrap is `upstream.Options.Bootstrap`, and `Upstream.Exchange` takes
 `(ctx, *dns.Msg)` — check the pinned tag's source, not docs) ·
-`AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.98.0` (GUI +
+`AdguardTeam/urlfilter v0.23.4` (**GPL-3.0**) · `go-gui-org/go-gui v0.99.1` (GUI +
 tray backend; pre-1.0, pin deliberately; since v0.98.0 the Win32 tray menu is built
 from the same node list a click resolves through, so `internal/gui/tray.go` uses the
 natural item IDs, and the library sets `NIF_SHOWTIP` itself — the old shift and
-tooltip workarounds are gone; `trayhost_windows.go` uses the public `gui/backend/sni`
+tooltip workarounds are gone; since v0.99.0 text hinting is OFF by default
+(`WindowCfg.EnableTextHinting` opts in) and the `sni` backend owns its tray window
+and the TaskbarCreated re-add after an Explorer restart, so `trayhost_windows.go`
+has no broadcast handling of its own but still uses the public `gui/backend/sni`
 API directly) · `Microsoft/go-winio v0.6.4` (**deliberately pinned** — v0.6.3 historically
 dragged a `golang.org/x/*` upgrade cascade, so re-check on upgrade).

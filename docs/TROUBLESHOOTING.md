@@ -271,7 +271,7 @@ Get-Process explorer,sigildns-gui -ErrorAction SilentlyContinue |
   the shell. The host now waits for the notification area and retries, so update
   first; on an old build, toggle **System tray icon** off and on once.
 - A live process and no icon: the shell dropped the icon (Explorer restarted) —
-  the host re-adds it when Explorer announces the rebuilt notification area, so
+  the tray library re-adds it when Explorer announces the rebuilt notification area, so
   update if this persists. Otherwise the icon may be in Windows 11's overflow
   flyout: Settings → Personalization → Taskbar → **Other system tray icons**.
 - Closing the window removes the icon when **Close to tray** is off: the tray

@@ -1333,9 +1333,8 @@ func TestCloseWindowTrayHost(t *testing.T) {
 	}
 }
 
-// TestTrayConfigCarriesTooltip proves the tray config carries the app name;
-// a Windows-only shim turns it into the standard tooltip (sni omits
-// NIF_SHOWTIP, which would otherwise suppress it).
+// TestTrayConfigCarriesTooltip proves the tray config carries the app name,
+// which the library shows as the standard tooltip (it sets NIF_SHOWTIP itself).
 func TestTrayConfigCarriesTooltip(t *testing.T) {
 	cfg := trayConfig("Service: Running")
 	if cfg.Tooltip != windowTitle {

@@ -97,7 +97,7 @@ The GUI and README surface this table; it is a product boundary, not a bug.
 | Filtering | `github.com/AdguardTeam/urlfilter` v0.23.4 (`DNSEngine`) | **GPL-3.0** → whole app GPLv3 |
 | Windows service | `golang.org/x/sys/windows/svc` | BSD-3 |
 | IPC | `github.com/Microsoft/go-winio` v0.6.4 (deliberately pinned) | MIT |
-| GUI + tray | `github.com/go-gui-org/go-gui` v0.92.0 (`SystemTrayCfg`) | MIT |
+| GUI + tray | `github.com/go-gui-org/go-gui` v0.99.1 (`sni.Tray`) | MIT |
 | Config | YAML (`gopkg.in/yaml.v3`) | MIT/Apache |
 | State | JSON (stdlib), atomic write, ACL SYSTEM+Admins | — |
 
@@ -705,7 +705,7 @@ Public DNS, OpenBLD, and uBlockDNS presets. Details in §15.4.
 - **Quad9 ECS variants / captive portals** — ECS leaks a prefix (opt-in only);
   captive-portal back-off is implemented but remains a rough edge.
 - **GPLv3 obligations** — ship LICENSE + source; documented in README.
-- **go-gui is pre-1.0** — pin (`v0.92.0`), update deliberately. The GUI is a
+- **go-gui is pre-1.0** — pin (`v0.99.1`), update deliberately. The GUI is a
   client, so swapping the shell does not touch the service core.
 
 ---
@@ -721,7 +721,7 @@ than reimplement it.
 
 ## 15. GUI — go-gui
 
-**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.92.0`.** Chosen over
+**Toolkit: `github.com/go-gui-org/go-gui` (MIT), pinned `v0.99.1`.** Chosen over
 Wails and verified by a hello-world spike cross-built on Linux and run on Win11
 24H2.
 
@@ -730,7 +730,7 @@ Wails and verified by a hello-world spike cross-built on Linux and run on Win11
   needed only for the macOS Metal backend, which is irrelevant here.
 - Rejected: Wails v2 (needs Node + the WebView2 runtime), Fyne/systray
   (cgo/MinGW), and a hand-rolled `Shell_NotifyIcon` tray — the icon uses
-  go-gui's built-in `SystemTrayCfg` / `SetSystemTray`, so it adds no dependency
+  go-gui's `gui/backend/sni`, so it adds no dependency
   and needs no extra cgo.
 - Risk: go-gui is **pre-1.0** and releases frequently. Pin the version and
   update deliberately.

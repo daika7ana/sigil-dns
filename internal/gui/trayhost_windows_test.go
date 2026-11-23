@@ -36,8 +36,8 @@ func TestTrayHostControlWindow(t *testing.T) {
 	}
 	defer procDestroyWindow.Call(hwnd)
 
-	// FindWindowW sees top-level windows only: this also pins the window type
-	// the TaskbarCreated broadcast needs.
+	// FindWindowW sees top-level windows only: this pins the window type the
+	// GUI needs to find.
 	if got := trayHostWindow(); got != hwnd {
 		t.Fatalf("control window = %#x, want %#x (must be a top-level window)", got, hwnd)
 	}
