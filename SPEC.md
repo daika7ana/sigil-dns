@@ -155,7 +155,12 @@ Strict order:
 2. **Two-stage health check** (§9) — prove loopback→us, then prove upstream
    (per family) with an uncached query. An upstream-only stage-B failure is
    retried for a bounded window (§9): a boot start can beat the network, and an
-   ephemeral "no route yet" must not fail the start.
+   ephemeral "no route yet" must not fail the start. Before the first enable of
+   each service start, and only after the listeners are accepted, enable waits
+   up to 8 s for an IPv4 default route: a cold boot beats DHCPv4, and
+   dnsproxy's lazy first upstream dial would otherwise pin the unroutable IPv6
+   address and stall. The wait is never a failure — enable proceeds
+   regardless.
 3. **Plain-DNS leak probe** (best-effort, Windows; runs **concurrently** with
    step 2 and is awaited before step 4 — bounded at 5 s, normally hidden behind
    the health check): ask each adapter's
@@ -178,6 +183,36 @@ Strict order:
 
 Never touch NRPT until the resolver is proven listening *and* forwarding. The
 "keep the user online" guarantee must not depend on rollback succeeding.
+
+#### Deferred: interception from the logon screen
+
+The service (SCM auto-start) starts before the logon UI, but interception
+switches on only at step 5: between service start and NRPT apply, Windows
+resolves via the adapter's configured servers in plaintext, and the first
+enable's v4 wait widens that window by up to 8 s. (With no v4 route yet, a
+v4-addressed router DNS is unreachable anyway — only a v6-advertised DNS
+server answers during the gap.)
+
+If that window is ever unacceptable, the sketch is: bind → stage-A only →
+NRPT + flush → v4 wait → stage-B/state/verify, i.e. interception from ~1 s
+after service start. Costs to accept first:
+
+- The invariant above weakens from "listener *and forwarding* proven" to
+  "listener proven answering": an upstream failure now happens with
+  interception already on, so a failed enable must roll back through the
+  config-independent restore (§4.4) instead of never having touched NRPT.
+- Early queries ride the v6 upstream or pay the first-minute failover cap;
+  queries Windows issues before the SCM starts the service are unreachable
+  from user mode — a permanent floor.
+- NRPT writes at boot race the DNS Client: non-atomic registry writes are
+  re-read mid-burst and the table is rejected (event 1023, 0x57) on nearly
+  every boot for NetBird and tailscale (netbird#8403, tailscale#21874,
+  2026-10) — still functional in measurements, but our PowerShell apply path
+  would need an atomicity audit before firing this early.
+
+Ecosystem baseline: YogaDNS autostarts at user logon (no pre-logon
+protection); its Pro service mode matches our SCM pattern with no public
+boot-ordering documentation. Nothing known intercepts earlier than we do.
 
 ### 4.4 State / restore hygiene
 - **GUID is stable; InterfaceIndex is not** — relevant only to the future
@@ -284,7 +319,16 @@ WSL2 (NAT) may bypass loopback DNS. Documented techniques: `dnsTunneling` in
   included, and `fallback_timeout_seconds` (default 5) bounds each fallback
   upstream's exchange — a fallback profile with several upstreams can take that
   long per server. Both are set on the profile that names the fallback and `0`
-  means the default. A successful fallback logs one
+  means the default. For the first 60 s after the resolver is built (the
+  boot-settling window), a configured budget above 3 s is capped at 3 s so a
+  blackholed primary costs seconds instead of the full budget; a smaller budget
+  is used unchanged. Inside the same window, with a fallback configured,
+  upstream error records (keyed on the `upstream`/`addr` attribute; the message
+  is never matched) are logged at info, not error — a boot-race stall answered
+  by the fallback is expected, not a fault; at `level: error` they still appear
+  at error, and without a fallback they stay error. Both the cap and the
+  downgrade re-arm when the resolver is rebuilt (every enable/reload), because
+  the window is measured from construction. A successful fallback logs one
   rate-limited `fallback used` record at info level (profile name and duration
   only — never an id, URL, or query name).
 - **Integration pitfalls (verified against pinned dnsproxy v0.86.0):**
@@ -529,7 +573,8 @@ docs/CONFIG.md.
   does not enable at all: it reports StopPending and exits 0, so an SCM restart
   racing a shutdown cannot leave a rule pointing at a resolver that is about to
   disappear.
-- **Enable**: §4.3 strict order (bind → two-stage health check → state+dirty →
+- **Enable**: §4.3 strict order (bind → bounded IPv4-route wait, first enable
+  per start → two-stage health check → state+dirty →
   apply → flush → system-path verify); the leak probe runs concurrently with the
   health check (§4.3 step 3). If apply or the
   system-path verify fails, restore whatever was partially applied and stop the
@@ -656,6 +701,9 @@ Public DNS, OpenBLD, and uBlockDNS presets. Details in §15.4.
 
 **Deferred / future:**
 - Per-adapter DNS fallback (§4.2) — only if NRPT proves unreliable in the field.
+- Pre-logon interception: apply NRPT after stage-A instead of after the full
+  health check — design and Windows-side hazards under §4.3 "interception
+  from the logon screen".
 - ARM64; macOS/Linux clients; kernel WFP/NDIS interception.
 - Optimistic cache; concurrent multi-profile resolution (many profiles stored,
   one active).

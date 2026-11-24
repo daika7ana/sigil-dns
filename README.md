@@ -234,8 +234,9 @@ sigildns service start
 sigildns status
 ```
 
-Starting the service always enables interception (bind → two-stage health check
-with the leak probe running alongside it → state + dirty marker → NRPT → flush →
+Starting the service always enables interception (bind → bounded IPv4-route wait
+on the first enable per start → two-stage health check with the leak probe
+running alongside it → state + dirty marker → NRPT → flush →
 verify the system resolver actually reaches us); the SCM state stays Starting
 until that finishes, and a running service is never left with protection off. A
 boot start can beat the network, so an unreachable upstream is retried briefly

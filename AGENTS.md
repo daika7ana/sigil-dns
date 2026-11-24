@@ -151,7 +151,8 @@ tray host) · `logging`/`winacl`/`redact`/`version`/`health`.
   A start that fails while a stop/shutdown request is already waiting is an aborted start:
   stop, exit 0, no SCM recovery actions (a genuine failure exits 1, except
   `ErrConfigUnavailable`).
-- **Enable order:** bind listeners → two-stage health check (leak probe in parallel) →
+- **Enable order:** bind listeners → bounded IPv4-route wait (first enable per start) →
+  two-stage health check (leak probe in parallel) →
   persist state + dirty marker → apply interception (NRPT) → flush DNS. Never touch DNS
   settings before the resolver is proven listening.
 - **Never re-snapshot while dirty** — applies only if/when the per-adapter fallback

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Boot starts now wait up to 8 s for an IPv4 default route before the upstream health check, so the first upstream connection goes over IPv4 instead of pinning the IPv6 endpoint that dies while Windows settles the network; the first enable per service start pays the wait, later enables and reloads skip it.
+- Queries during the first minute after a start fail over after 3 s when `failover_after_seconds` is above 3 s, instead of stalling for the full budget while Windows settles the network.
+- Pre-shutdown now restores DNS before IPC teardown, so a wedged pipe close can no longer consume the restore budget.
+
+### Changed
+- With a fallback configured, upstream errors during the first minute after a start log at info instead of error: the boot-race stall they report is answered by the fallback and is not a fault. Without a fallback, or past the first minute, they stay error.
+
 ## [0.9.0] - 2026-11-23
 
 ### Security

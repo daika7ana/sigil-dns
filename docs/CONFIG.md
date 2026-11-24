@@ -41,7 +41,7 @@ To turn protection off, stop the service (`sigildns service stop` or the GUI
 | `upstreams` | list of strings | `["https://freedns.controld.com/p0"]` | Required, non-empty; each entry non-empty. |
 | `bootstrap` | list of strings | `["76.76.2.11:53"]` | Each entry must be a bare IP or `IP:port`. The list may be empty (NextDNS ultralow, OpenBLD); an omitted list gets the default. |
 | `fallback_profile` | string | empty | Optional name of another profile; see below. |
-| `failover_after_seconds` | int | `10` | Total seconds the active profile's servers get, dnsproxy retries included, before the fallback is used. `0` = default; max `120`. |
+| `failover_after_seconds` | int | `10` | Total seconds the active profile's servers get, dnsproxy retries included, before the fallback is used (see the first-minute 3 s cap below). `0` = default; max `120`. |
 | `fallback_timeout_seconds` | int | `5` | Seconds each fallback-profile upstream gets; a fallback profile with several upstreams can therefore take that long per server. `0` = default; max `120`. Set on the profile that names the fallback. |
 | `cache` | block | `{enabled: true, size_bytes: 67108864}` | See below. |
 | `per_domain` | list of rules | empty | See below. |
@@ -87,7 +87,10 @@ the fallback: `fallback_timeout_seconds` on the fallback profile itself is used
 only while that profile is active. `0` means the default. A shorter
 `failover_after_seconds` makes failover kick in sooner (it
 also cuts a slow-but-working primary off). dnsproxy's retry count itself is not
-configurable, so the budget bounds retries by time instead.
+configurable, so the budget bounds retries by time instead. For the first 60 s
+after the resolver is built, a budget above 3 s is capped at 3 s to absorb a
+stalled primary during boot; a budget of 3 s or less is used as configured. The
+cap re-arms on every enable/reload, because the resolver is rebuilt each time.
 
 When the fallback answers, the log gets a `fallback used` line at `info` level
 naming the fallback profile and the exchange duration, rate-limited to one per

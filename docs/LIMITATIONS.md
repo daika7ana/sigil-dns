@@ -54,7 +54,10 @@ an on-path attacker; prefer DoH/DoT/DoQ if that matters.
 A clean `stop`, `disable`, or normal shutdown removes the rule, so between boot
 and the next enable lookups use the adapters' DNS servers; the window is the
 service start plus resolver startup (filter download, health check, and up to
-about 10 s of upstream retry when the network is not up yet). A start-order
+about 10 s of upstream retry when the network is not up yet). The first enable
+after a service start also waits up to 8 s whenever no IPv4 default route is
+present yet (a v6-only network, or DHCPv4 still settling after boot, resume, or
+a reconnect); later enables and reloads skip that wait. A start-order
 change cannot remove it — a boot-start driver is out of scope. A crash leftover
 is not removed first, so those boots stay fail-closed, and it is recoverable
 without a start (`sigildns restore`; the GUI offers **Restore now** only while
