@@ -137,6 +137,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	lc.probeNRPT = func(context.Context) (intercept.NRPTState, error) {
 		return intercept.NRPTState{}, nil
 	}
+	lc.hasV4Route = func() (bool, error) { return true, nil }
 
 	// Windows cannot delete a file with an open handle, so a test that leaves a
 	// session enabled must release it before t.TempDir cleanup runs.
@@ -1008,6 +1009,112 @@ func TestEnableRetriesHealthWhileUpstreamNotReady(t *testing.T) {
 	}
 	if n := countEvents(*env.events, "health"); n != 2 {
 		t.Fatalf("health events = %d, want 2", n)
+	}
+}
+
+// TestEnableWaitsForV4Route: the default-route gate returns at once when the
+// route is already there, polls until it appears, gives up at its budget, and
+// never blocks enable on a check error.
+func TestEnableWaitsForV4Route(t *testing.T) {
+	const (
+		budget = 300 * time.Millisecond
+		poll   = 50 * time.Millisecond
+	)
+
+	tests := []struct {
+		name        string
+		check       func(calls int) (bool, error)
+		wantCalls   int
+		minCalls    int
+		minElapsed  time.Duration
+		wantWaitLog bool
+	}{
+		{"present", func(int) (bool, error) { return true, nil }, 1, 1, 0, false},
+		{"appears after two polls", func(calls int) (bool, error) { return calls > 2, nil }, -1, 3, 2 * poll, true},
+		{"never appears", func(int) (bool, error) { return false, nil }, -1, 2, budget - poll, true},
+		{"check error", func(int) (bool, error) { return false, errors.New("no route table") }, 1, 1, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			env.lc.v4RouteWaitBudget = budget
+			env.lc.v4RoutePollInterval = poll
+
+			calls := 0
+			env.lc.hasV4Route = func() (bool, error) {
+				calls++
+
+				return tt.check(calls)
+			}
+
+			var logs strings.Builder
+			env.lc.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+			start := time.Now()
+			if err := env.lc.Enable(context.Background()); err != nil {
+				t.Fatalf("Enable: %v", err)
+			}
+			elapsed := time.Since(start)
+
+			if tt.wantCalls >= 0 && calls != tt.wantCalls {
+				t.Fatalf("route checks = %d, want %d", calls, tt.wantCalls)
+			}
+			if calls < tt.minCalls {
+				t.Fatalf("route checks = %d, want at least %d", calls, tt.minCalls)
+			}
+			if elapsed < tt.minElapsed {
+				t.Fatalf("Enable took %v, want at least %v", elapsed, tt.minElapsed)
+			}
+			if got := strings.Contains(logs.String(), "waiting for IPv4 default route"); got != tt.wantWaitLog {
+				t.Fatalf("wait log = %v, want %v in:\n%s", got, tt.wantWaitLog, logs.String())
+			}
+		})
+	}
+}
+
+// TestV4RouteGateWaitsOnce: a later call checks the route but never waits
+// again, so a reload on a live network pays nothing.
+func TestV4RouteGateWaitsOnce(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.v4RouteWaitBudget = 200 * time.Millisecond
+	env.lc.v4RoutePollInterval = 20 * time.Millisecond
+	env.lc.hasV4Route = func() (bool, error) { return false, nil }
+
+	env.lc.waitForV4Route(context.Background())
+
+	start := time.Now()
+	env.lc.waitForV4Route(context.Background())
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("second wait took %v, want no wait", elapsed)
+	}
+}
+
+// TestV4RouteWaitHonoursCancel: cancelling during the wait returns promptly
+// instead of sitting out the budget.
+func TestV4RouteWaitHonoursCancel(t *testing.T) {
+	env := newTestEnv(t)
+	env.lc.v4RouteWaitBudget = 5 * time.Second
+	env.lc.v4RoutePollInterval = 20 * time.Millisecond
+
+	var logs strings.Builder
+	env.lc.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.lc.hasV4Route = func() (bool, error) {
+		if strings.Contains(logs.String(), "waiting for IPv4 default route") {
+			cancel()
+		}
+
+		return false, nil
+	}
+
+	start := time.Now()
+	_ = env.lc.Enable(ctx)
+
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Enable took %v after cancel, want a prompt return", elapsed)
 	}
 }
 

@@ -352,12 +352,7 @@ func selectFloor(windowWidth int) float32 {
 	pageInner := pageCol - (2*contentPad + scrollbarGutter)
 	cardInner := pageInner - t.PaddingLarge.Width() - 2*t.SizeBorder
 
-	floor := cardInner
-	if floor < minFloor {
-		floor = minFloor
-	}
-
-	return floor
+	return max(cardInner, minFloor)
 }
 
 // formSelect builds a Select styled for the Settings form: it fills the card

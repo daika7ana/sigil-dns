@@ -522,6 +522,75 @@ func TestFailoverAfterUsesFallbackAndLogs(t *testing.T) {
 	}
 }
 
+// TestStartupFailoverWindow: for the first startupFailoverWindow after the
+// handler is built the failover wrap is capped at startupFailoverAfter, after
+// the window the configured budget applies, and a budget below the cap is
+// never shortened.
+func TestStartupFailoverWindow(t *testing.T) {
+	slowAddr := startHangingUpstream(t)
+	fallbackAddr, _ := startUpstream(t, "192.0.2.2")
+
+	startResolver := func(budget time.Duration, aged bool) *Resolver {
+		t.Helper()
+
+		r, err := New(context.Background(), Config{
+			Logger:            slog.Default(),
+			Upstreams:         []string{slowAddr},
+			FallbackUpstreams: []string{fallbackAddr},
+			FailoverAfter:     budget,
+			Listen:            []string{"127.0.0.1:0"},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		// Age before Start: the handler is read concurrently once serving.
+		if aged {
+			r.handler.startedAt = time.Now().Add(-startupFailoverWindow - time.Second)
+		}
+
+		if err = r.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+		return r
+	}
+
+	// A fresh handler with a large budget: the window caps the wrap.
+	r := startResolver(10*time.Second, false)
+
+	start := time.Now()
+	resp := query(t, r.UDPAddrs()[0], "example.com.", dns.TypeA)
+	elapsed := time.Since(start)
+
+	if elapsed > startupFailoverAfter+1500*time.Millisecond {
+		t.Fatalf("startup query took %v, want the %v startup cap", elapsed, startupFailoverAfter)
+	}
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+
+	// A budget below the cap: the window must not shorten it, and once aged
+	// past the window the same budget applies unchanged.
+	for _, aged := range []bool{false, true} {
+		r := startResolver(2*time.Second, aged)
+
+		start = time.Now()
+		resp = query(t, r.UDPAddrs()[0], "example.com.", dns.TypeA)
+		elapsed = time.Since(start)
+
+		if elapsed < 1500*time.Millisecond || elapsed > 2*time.Second+1500*time.Millisecond {
+			t.Fatalf("query took %v (aged=%v), want the configured 2s budget", elapsed, aged)
+		}
+		if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+			t.Fatalf("rcode = %s, answers = %d (want a fallback answer)",
+				dns.RcodeToString[resp.Rcode], len(resp.Answer))
+		}
+	}
+}
+
 // TestRuleUpstreamHonoursFailoverAfter: a per-domain rule's plain upstream is
 // bounded by the same failover budget as the profile's default upstreams.
 func TestRuleUpstreamHonoursFailoverAfter(t *testing.T) {

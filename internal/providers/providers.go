@@ -264,7 +264,7 @@ func Expand(sel Selection) (ep Endpoints, err error) {
 		return Endpoints{}, fmt.Errorf("%w: %q", ErrUnknownProvider, sel.Provider)
 	}
 	if !slices.Contains(pr.Protocols, proto) {
-		return Endpoints{}, fmt.Errorf("%w: %s does not support %s", ErrUnknownProtocol, sel.Provider, proto)
+		return Endpoints{}, fmt.Errorf("%w: %q does not support %q", ErrUnknownProtocol, sel.Provider, proto)
 	}
 
 	switch sel.Provider {
@@ -331,7 +331,7 @@ func expandQuad9(variant string, proto Protocol) (ep Endpoints, err error) {
 
 	m, ok := matrix[variant]
 	if !ok {
-		return Endpoints{}, fmt.Errorf("%w: quad9/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: quad9/%q", ErrUnknownVariant, variant)
 	}
 
 	ep.Upstreams = []string{hostURL(proto, m.host)}
@@ -372,7 +372,7 @@ func expandCloudflare(variant string, proto Protocol) (ep Endpoints, err error) 
 
 	m, ok := matrix[variant]
 	if !ok {
-		return Endpoints{}, fmt.Errorf("%w: cloudflare/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: cloudflare/%q", ErrUnknownVariant, variant)
 	}
 
 	switch proto {
@@ -421,7 +421,7 @@ func expandAdGuard(variant string, proto Protocol) (ep Endpoints, err error) {
 
 	m, ok := matrix[variant]
 	if !ok {
-		return Endpoints{}, fmt.Errorf("%w: adguard/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: adguard/%q", ErrUnknownVariant, variant)
 	}
 
 	ep.Upstreams = []string{hostURL(proto, m.host)}
@@ -436,7 +436,7 @@ func expandGoogle(variant string, proto Protocol) (ep Endpoints, err error) {
 	switch variant {
 	case "", "standard":
 	default:
-		return Endpoints{}, fmt.Errorf("%w: google/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: google/%q", ErrUnknownVariant, variant)
 	}
 
 	ep.Upstreams = []string{hostURL(proto, "dns.google")}
@@ -454,7 +454,7 @@ func expandNextDNS(variant string, proto Protocol, id string) (ep Endpoints, err
 	switch variant {
 	case "", "ultralow", "anycast":
 	default:
-		return Endpoints{}, fmt.Errorf("%w: nextdns/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: nextdns/%q", ErrUnknownVariant, variant)
 	}
 	if strings.TrimSpace(id) == "" {
 		return Endpoints{}, fmt.Errorf("%w: nextdns requires a profile id", ErrIDRequired)
@@ -506,7 +506,7 @@ func expandControlD(variant string, proto Protocol, id string) (ep Endpoints, er
 		return ep, nil
 	case "x-hagezi", "free":
 		if strings.TrimSpace(id) == "" {
-			return Endpoints{}, fmt.Errorf("%w: controld/%s requires the preset name as id", ErrIDRequired, variant)
+			return Endpoints{}, fmt.Errorf("%w: controld/%q requires the preset name as id", ErrIDRequired, variant)
 		}
 
 		ep.Upstreams = []string{controlDURL(proto, "freedns.controld.com", id)}
@@ -526,7 +526,7 @@ func expandControlD(variant string, proto Protocol, id string) (ep Endpoints, er
 		}
 	}
 
-	return Endpoints{}, fmt.Errorf("%w: controld/%s", ErrUnknownVariant, variant)
+	return Endpoints{}, fmt.Errorf("%w: controld/%q", ErrUnknownVariant, variant)
 }
 
 // expandOpenBLD implements the §7.6 ADA/RIC matrix.  Only DoH and DoT are published,
@@ -538,7 +538,7 @@ func expandOpenBLD(variant string, proto Protocol) (ep Endpoints, err error) {
 		variant = "ada"
 	case "ric":
 	default:
-		return Endpoints{}, fmt.Errorf("%w: openbld/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: openbld/%q", ErrUnknownVariant, variant)
 	}
 
 	ep.Upstreams = []string{hostURL(proto, variant+".openbld.net")}
@@ -559,7 +559,7 @@ func expandUBlockDNS(variant string, proto Protocol, id string) (ep Endpoints, e
 	switch variant {
 	case "", "profile":
 	default:
-		return Endpoints{}, fmt.Errorf("%w: ublockdns/%s", ErrUnknownVariant, variant)
+		return Endpoints{}, fmt.Errorf("%w: ublockdns/%q", ErrUnknownVariant, variant)
 	}
 	if strings.TrimSpace(id) == "" {
 		return Endpoints{}, fmt.Errorf("%w: ublockdns requires a profile id", ErrIDRequired)
@@ -819,7 +819,7 @@ func doHPathIDs(u string) (ids []string) {
 		return nil
 	}
 
-	for _, seg := range strings.Split(strings.Trim(p.EscapedPath(), "/"), "/") {
+	for seg := range strings.SplitSeq(strings.Trim(p.EscapedPath(), "/"), "/") {
 		if seg == "" {
 			continue
 		}

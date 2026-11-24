@@ -217,10 +217,8 @@ func TestQuietUpstreamErrorsSharesLimiterAcrossClones(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range 100 {
-		wg.Add(1)
 
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			if i%2 == 0 {
 				l.Error("exchange failed", "upstream", "https://a.example/dns-query")
@@ -228,7 +226,7 @@ func TestQuietUpstreamErrorsSharesLimiterAcrossClones(t *testing.T) {
 				return
 			}
 			derived.Error("exchange failed", "upstream", "https://a.example/dns-query")
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -278,5 +276,87 @@ func TestNewQuietsUpstreamErrors(t *testing.T) {
 
 	if got := strings.Count(buf.String(), "exchange failed"); got != 1 {
 		t.Fatalf("emitted %d identical records, want 1:\n%s", got, buf.String())
+	}
+}
+
+// TestQuietUpstreamErrorsStartupDowngrade proves the boot-window re-leveling:
+// an upstream ERROR inside the downgrade window reaches the next handler as
+// INFO, and the same record past the window stays ERROR.
+func TestQuietUpstreamErrorsStartupDowngrade(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(0, 0)}
+	sink := &recordSink{}
+	h := &quietHandler{next: sink, lim: newUpstreamLimiter(clk.now), downgradeUntil: clk.now().Add(startupFailoverWindow)}
+	l := slog.New(h)
+
+	l.Error("exchange failed", "upstream", "https://dns.example/dns-query")
+	clk.advance(startupFailoverWindow)
+	l.Error("exchange failed", "upstream", "https://dns.example/dns-query")
+
+	recs := sink.all()
+	if len(recs) != 2 {
+		t.Fatalf("emitted %d records, want 2", len(recs))
+	}
+	if recs[0].Level != slog.LevelInfo {
+		t.Fatalf("first record level = %v, want INFO", recs[0].Level)
+	}
+	if recs[1].Level != slog.LevelError {
+		t.Fatalf("record past the window level = %v, want ERROR", recs[1].Level)
+	}
+}
+
+// TestQuietHandlerClonesKeepDowngrade: a logger derived with .With()/WithGroup
+// keeps the startup downgrade window.
+func TestQuietHandlerClonesKeepDowngrade(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(0, 0)}
+	h := &quietHandler{next: &recordSink{}, lim: newUpstreamLimiter(clk.now), downgradeUntil: clk.now().Add(startupFailoverWindow)}
+
+	for _, clone := range []slog.Handler{h.WithAttrs(nil), h.WithGroup("g")} {
+		if got := clone.(*quietHandler).downgradeUntil; !got.Equal(h.downgradeUntil) {
+			t.Fatalf("clone downgradeUntil = %v, want %v", got, h.downgradeUntil)
+		}
+	}
+}
+
+// TestQuietUpstreamErrorsDowngradeKeepsErrorBelowInfo: a logger at level error
+// keeps the record, at error, instead of losing it to the re-level.
+func TestQuietUpstreamErrorsDowngradeKeepsErrorBelowInfo(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	clk := &fakeClock{t: time.Unix(0, 0)}
+	h := &quietHandler{next: base.Handler(), lim: newUpstreamLimiter(clk.now), downgradeUntil: clk.now().Add(startupFailoverWindow)}
+
+	slog.New(h).Error("exchange failed", "upstream", "https://dns.example/dns-query")
+
+	if got := strings.Count(buf.String(), "exchange failed"); got != 1 {
+		t.Fatalf("emitted %d records, want 1 (error passthrough):\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Fatalf("record was not left at error:\n%s", buf.String())
+	}
+}
+
+// TestNewDowngradesStartupErrorsWhenFallback mirrors the cap's guard through
+// New: with a fallback configured the window is active, without one it is not.
+func TestNewDowngradesStartupErrorsWhenFallback(t *testing.T) {
+	newWith := func(fallback bool) (r *Resolver) {
+		t.Helper()
+		cfg := Config{Logger: slog.Default(), Upstreams: []string{"1.1.1.1:53"}}
+		if fallback {
+			cfg.FallbackUpstreams = []string{"9.9.9.11:53"}
+			cfg.FailoverAfter = 10 * time.Second
+		}
+		r, err := New(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		return r
+	}
+
+	if h := newWith(true).logger.Handler().(*quietHandler); h.downgradeUntil.IsZero() {
+		t.Fatal("fallback-configured resolver has no downgrade window")
+	}
+	if h := newWith(false).logger.Handler().(*quietHandler); !h.downgradeUntil.IsZero() {
+		t.Fatal("resolver without fallback downgrades upstream errors")
 	}
 }

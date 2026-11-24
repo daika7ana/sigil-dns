@@ -10,7 +10,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +57,7 @@ func probePlainDNS(ctx context.Context, addrs []string) (answering []string) {
 		}(addr)
 	}
 	wg.Wait()
-	sort.Strings(answering)
+	slices.Sort(answering)
 
 	return answering
 }

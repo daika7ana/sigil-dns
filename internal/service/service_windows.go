@@ -80,20 +80,11 @@ func (h *handler) Execute(
 				// against a machine that is going down.  Agent.Start restored
 				// on its own failure path already.  Interrogates are answered
 				// and skipped: only a real stop request aborts the start.
-				for {
-					c, ok := pendingRequest(r)
-					if !ok {
-						break
-					}
+				if c, ok := drainPending(r, changes); ok {
+					changes <- svc.Status{State: svc.StopPending}
+					h.stop(c.Cmd)
 
-					if c.Cmd != svc.Interrogate {
-						changes <- svc.Status{State: svc.StopPending}
-						h.stop(c.Cmd)
-
-						return false, 0
-					}
-
-					changes <- c.CurrentStatus
+					return false, 0
 				}
 
 				h.agent.logger.Error("service start failed", "err", err)
@@ -122,19 +113,8 @@ func (h *handler) Execute(
 			cancel()
 
 			stopCmd := svc.Stop
-			for {
-				c, ok := pendingRequest(r)
-				if !ok {
-					break
-				}
-
-				if c.Cmd != svc.Interrogate {
-					stopCmd = c.Cmd
-
-					break
-				}
-
-				changes <- c.CurrentStatus
+			if c, ok := drainPending(r, changes); ok {
+				stopCmd = c.Cmd
 			}
 
 			h.stop(stopCmd)
@@ -208,6 +188,22 @@ func pendingRequest(r <-chan svc.ChangeRequest) (c svc.ChangeRequest, ok bool) {
 	}
 
 	return c, ok
+}
+
+// drainPending answers queued interrogates and returns the first real control
+// request, if any.
+func drainPending(r <-chan svc.ChangeRequest, changes chan<- svc.Status) (c svc.ChangeRequest, ok bool) {
+	for {
+		c, ok = pendingRequest(r)
+		if !ok {
+			return svc.ChangeRequest{}, false
+		}
+		if c.Cmd != svc.Interrogate {
+			return c, true
+		}
+
+		changes <- c.CurrentStatus
+	}
 }
 
 // stop restores interception and logs a cleanup failure.  A stop the user (or

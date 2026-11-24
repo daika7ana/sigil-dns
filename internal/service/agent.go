@@ -347,7 +347,11 @@ func (a *Agent) cleanup(ctx context.Context) (err error) {
 		a.watcher.Stop()
 	}
 
-	a.stopIPC()
+	// Stop accepting so a reload cannot race the restore, but defer the
+	// blocking closes: the SCM killing us mid-teardown is harmless (the pipes
+	// die with the process), a killed restore is what the budget prevents.
+	a.stopAccepting()
+	defer a.closeListeners()
 
 	// This session enabled interception, so restore even when state.json has
 	// vanished; a missing state file means "unknown", not "never enabled".
@@ -469,18 +473,22 @@ const (
 	closeListenerTimeout = 2 * time.Second
 )
 
-// stopIPC stops both IPC listeners.
-func (a *Agent) stopIPC() {
+// stopAccepting cancels the serve contexts and wakes each blocked Accept so no
+// new control request is served; the listeners stay open.
+func (a *Agent) stopAccepting() {
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
 	}
 
 	// Wake each blocked Accept so its listener can close without the go-winio
-	// CancelIoEx hang, then close behind a bound as a safety net.
+	// CancelIoEx hang.
 	wakeListener(a.endpoint)
 	wakeListener(a.statusEndpoint)
+}
 
+// closeListeners closes both IPC listeners behind a bound as a safety net.
+func (a *Agent) closeListeners() {
 	if a.ln != nil {
 		ipc.CloseListener(a.ln, closeListenerTimeout)
 		a.ln = nil

@@ -360,7 +360,7 @@ func TestReconcileBypassOnlyDriftNeverDisables(t *testing.T) {
 	r := NewReconciler(Options{Prober: p, Applier: ap, Disabler: dis, MaxAttempts: 1})
 
 	attempts := 0
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if stop := r.reconcile(context.Background(), &attempts); stop {
 			t.Fatal("reconcile stopped for a bypass-only drift")
 		}
@@ -482,7 +482,7 @@ func TestReconcileHealthSuccessResetsFailures(t *testing.T) {
 	})
 
 	attempts := 0
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if stop := r.reconcile(context.Background(), &attempts); stop {
 			t.Fatal("reconcile stopped although a success reset the streak")
 		}
@@ -549,7 +549,7 @@ func TestReconcilerProbeFailuresStopSupervision(t *testing.T) {
 	})
 
 	attempts := 0
-	for i := 0; i < maxProbeFails-1; i++ {
+	for i := range maxProbeFails - 1 {
 		if stop := r.reconcile(context.Background(), &attempts); stop {
 			t.Fatalf("reconcile stopped after %d probe failures", i+1)
 		}
@@ -585,7 +585,7 @@ func TestReconcilerProbeSuccessResetsFailures(t *testing.T) {
 	})
 
 	attempts := 0
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if stop := r.reconcile(context.Background(), &attempts); stop {
 			t.Fatalf("reconcile stopped at call %d although a success reset the streak", i+1)
 		}

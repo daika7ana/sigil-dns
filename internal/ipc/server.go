@@ -566,7 +566,7 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn, caller Caller) {
 	dec := json.NewDecoder(io.LimitReader(conn, maxRequestBytes))
 	enc := json.NewEncoder(conn)
 
-	for i := 0; i < maxRequestsPerConn; i++ {
+	for range maxRequestsPerConn {
 		_ = conn.SetReadDeadline(time.Now().Add(s.requestTimeout))
 
 		var req Request

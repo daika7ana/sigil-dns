@@ -121,9 +121,7 @@ func TestRuntimeStatsFollowsReloadSwap(t *testing.T) {
 	// both concurrently: -race catches a read of the unsynchronized embed.
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -132,9 +130,9 @@ func TestRuntimeStatsFollowsReloadSwap(t *testing.T) {
 				lc.setInner(&fakeDaemon{queries: 3, blocked: 4})
 			}
 		}
-	}()
+	})
 
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		if q, _, _ := lc.RuntimeStats(); q != 1 && q != 3 {
 			t.Errorf("RuntimeStats served an unpublished lifecycle: %d", q)
 		}

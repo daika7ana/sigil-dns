@@ -28,6 +28,8 @@ type fakeAgentLC struct {
 	// disableBudget is the time Disable had left on its context, so a test can
 	// tell which restore budget the caller used.  Zero when the ctx had none.
 	disableBudget time.Duration
+	// onDisable observes the agent's IPC state from inside the restore.
+	onDisable func()
 }
 
 func (f *fakeAgentLC) Status() (st *state.State, err error) { return f.st, f.stErr }
@@ -46,6 +48,9 @@ func (f *fakeAgentLC) Disable(ctx context.Context) (err error) {
 	f.disableCalls++
 	if d, ok := ctx.Deadline(); ok {
 		f.disableBudget = time.Until(d)
+	}
+	if f.onDisable != nil {
+		f.onDisable()
 	}
 
 	return f.disableErr
@@ -443,6 +448,34 @@ func TestAgentShutdownLeavesNoGoroutines(t *testing.T) {
 	}
 
 	requireNoNewLeaks(t, baseline)
+}
+
+// TestAgentShutdownRestoresBeforeIPCClose: the blocking listener close must not
+// run before the restore, or a wedged pipe eats the restore budget.
+func TestAgentShutdownRestoresBeforeIPCClose(t *testing.T) {
+	lc := &fakeAgentLC{st: &state.State{Mode: state.ModeOn}}
+	a := newTestAgent(t, lc)
+
+	ctx := context.Background()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	lc.onDisable = func() {
+		if a.cancel != nil {
+			t.Error("IPC accept was not stopped before the restore")
+		}
+		if a.ln == nil || a.sln == nil {
+			t.Error("listeners were closed before the restore ran")
+		}
+	}
+
+	if err := a.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if lc.disableCalls != 1 {
+		t.Fatalf("disableCalls = %d, want 1", lc.disableCalls)
+	}
 }
 
 // goroutineLeakCount reports goroutines the runtime has proven are blocked

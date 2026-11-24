@@ -289,77 +289,10 @@ func run() (err error) {
 		MinHeight: minHeight,
 		State:     app,
 		OnEvent: func(e *gogui.Event, win *gogui.Window) {
-			switch e.Type {
-			case gogui.EventResized:
-				// Keep the last normal size in memory so a later quit to the
-				// tray still saves the size the user chose, even if the
-				// window is minimized at that point.
-				app.saveSize(win)
-			case gogui.EventFocused:
-				win.SetWindowOpacity(1) // reveal a position-restoring (transparent) window
-				focused.Store(true)
-				requestRefresh(app.refresh) // refetch at once; the data may be stale
-			case gogui.EventUnfocused:
-				// Capture the position while the window is still a normal,
-				// visible window: a later minimize-to-tray or close cannot
-				// read it.
-				app.savePosition()
-				focused.Store(false) // pause the poller while backgrounded
-			}
+			app.onEvent(e, win, &focused)
 		},
 		OnInit: func(w *gogui.Window) {
-			applyTheme(w, app.themePref)
-			w.SetView(view)
-			// Replace the toolkit's one 256px HICON with the exe's
-			// multi-size icon, so the title bar, menu, and taskbar each
-			// get a native-size frame instead of a scaled-down one.
-			installWindowIcons()
-			if app.settings.Tray {
-				app.tray.want.Store(true)
-				gen := app.tray.gen.Add(1)
-				go func() {
-					err := hostStart()
-					if !app.tray.want.Load() {
-						hostStop()
-
-						return
-					}
-					if err == nil {
-						return
-					}
-
-					// Do not block first paint for a host that may be dead;
-					// the switch reverts when the queued command runs.
-					w.QueueCommand(func(w *gogui.Window) {
-						a := gogui.State[App](w)
-						if a.tray.gen.Load() != gen || !a.tray.want.Load() {
-							return
-						}
-						a.settings.Tray = false
-						a.tray.want.Store(false)
-						a.tray.minimize.Store(false)
-
-						body := "The tray host could not be started."
-						if a.dropTrayStartup() {
-							body += " Sign-in may still start it in the background."
-						}
-
-						a.showToast(w, noticeMessage{
-							kind:  noticeWarning,
-							title: "System tray unavailable",
-							body:  body,
-						})
-						a.persist()
-						w.InvalidateLayout()
-					})
-				}()
-			}
-			startPoller(w, src, app.refresh, &app.logView, &focused, &app.tray)
-			if restoring {
-				restoreWindowPosition(windowTitle, s.X, s.Y)
-			}
-			ensureFocus(w)
-			w.SetWindowOpacity(1) // reveal after the position is applied
+			app.onInit(w, src, &focused)
 		},
 		OnCloseRequest: func(win *gogui.Window) {
 			// One close path for the title-bar button: save geometry while
@@ -386,6 +319,87 @@ func run() (err error) {
 	_ = saveSettings(path, app.settings)
 
 	return nil
+}
+
+// onEvent keeps the saved geometry and the poller pause in sync with the
+// window state.
+func (a *App) onEvent(e *gogui.Event, win *gogui.Window, focused *atomic.Bool) {
+	switch e.Type {
+	case gogui.EventResized:
+		// Keep the last normal size in memory so a later quit to the
+		// tray still saves the size the user chose, even if the
+		// window is minimized at that point.
+		a.saveSize(win)
+	case gogui.EventFocused:
+		win.SetWindowOpacity(1) // reveal a position-restoring (transparent) window
+		focused.Store(true)
+		requestRefresh(a.refresh) // refetch at once; the data may be stale
+	case gogui.EventUnfocused:
+		// Capture the position while the window is still a normal,
+		// visible window: a later minimize-to-tray or close cannot
+		// read it.
+		a.savePosition()
+		focused.Store(false) // pause the poller while backgrounded
+	}
+}
+
+// onInit applies the theme, view, and icons, starts the tray host when wanted,
+// and starts the poller.
+func (a *App) onInit(w *gogui.Window, src statusSource, focused *atomic.Bool) {
+	restoring := a.settings.X != 0 || a.settings.Y != 0
+
+	applyTheme(w, a.themePref)
+	w.SetView(view)
+	// Replace the toolkit's one 256px HICON with the exe's
+	// multi-size icon, so the title bar, menu, and taskbar each
+	// get a native-size frame instead of a scaled-down one.
+	installWindowIcons()
+	if a.settings.Tray {
+		a.tray.want.Store(true)
+		gen := a.tray.gen.Add(1)
+		go func() {
+			err := hostStart()
+			if !a.tray.want.Load() {
+				hostStop()
+
+				return
+			}
+			if err == nil {
+				return
+			}
+
+			// Do not block first paint for a host that may be dead;
+			// the switch reverts when the queued command runs.
+			w.QueueCommand(func(w *gogui.Window) {
+				own := gogui.State[App](w)
+				if own.tray.gen.Load() != gen || !own.tray.want.Load() {
+					return
+				}
+				own.settings.Tray = false
+				own.tray.want.Store(false)
+				own.tray.minimize.Store(false)
+
+				body := "The tray host could not be started."
+				if own.dropTrayStartup() {
+					body += " Sign-in may still start it in the background."
+				}
+
+				own.showToast(w, noticeMessage{
+					kind:  noticeWarning,
+					title: "System tray unavailable",
+					body:  body,
+				})
+				own.persist()
+				w.InvalidateLayout()
+			})
+		}()
+	}
+	startPoller(w, src, a.refresh, &a.logView, focused, &a.tray)
+	if restoring {
+		restoreWindowPosition(windowTitle, a.settings.X, a.settings.Y)
+	}
+	ensureFocus(w)
+	w.SetWindowOpacity(1) // reveal after the position is applied
 }
 
 // startPoller reads the status immediately, then cheaply (SCM + status DTO)

@@ -24,7 +24,7 @@ var errProbeIncomplete = errors.New("nrpt probe did not confirm enumeration")
 func parseNRPTProbe(out string) (st NRPTState, err error) {
 	st.Servers = map[string][]string{}
 	sentinel := false
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "rule="):
@@ -35,7 +35,7 @@ func parseNRPTProbe(out string) (st NRPTState, err error) {
 
 			var servers []string
 			if len(parts) == 2 && parts[1] != "" {
-				for _, s := range strings.Split(parts[1], ",") {
+				for s := range strings.SplitSeq(parts[1], ",") {
 					if s = strings.TrimSpace(s); s != "" {
 						servers = append(servers, s)
 					}
@@ -49,7 +49,7 @@ func parseNRPTProbe(out string) (st NRPTState, err error) {
 			// foreign=<display>|<namespace list>; a catch-all there can outrank
 			// our root rule.
 			if _, nsList, ok := strings.Cut(foreign, "|"); ok {
-				for _, ns := range strings.Split(nsList, ",") {
+				for ns := range strings.SplitSeq(nsList, ",") {
 					if isCatchAllNamespace(ns) {
 						st.CatchAllConflict = true
 					}

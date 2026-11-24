@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daika7ana/sigil-dns/internal/health"
@@ -30,6 +31,13 @@ var ErrNotRunning = errors.New("resolver is not running")
 // FilteringPauseDuration is the fixed pause interval offered in the GUI.  A
 // fixed interval keeps the control-pipe method parameterless.
 const FilteringPauseDuration = 15 * time.Minute
+
+// A cold boot beats DHCPv4, so Enable waits briefly for the default route
+// before the health check.
+const (
+	defaultV4RouteWaitBudget   = 8 * time.Second
+	defaultV4RoutePollInterval = 500 * time.Millisecond
+)
 
 // ErrRestore marks a failure to remove interception.  The resolver is still
 // running in that case, so callers must not stop it and point DNS at a dead
@@ -101,6 +109,15 @@ type Lifecycle struct {
 	healthRetryWindow time.Duration
 	healthRetryDelay  time.Duration
 
+	// v4RouteWaitBudget bounds the IPv4 default-route wait before the health
+	// check; v4RoutePollInterval is the pause between checks.  Fields so tests
+	// can shorten them.  hasV4Route is the platform check, and v4GateDone keeps
+	// the wait to one per Lifecycle (the boot start).
+	v4RouteWaitBudget   time.Duration
+	v4RoutePollInterval time.Duration
+	hasV4Route          func() (bool, error)
+	v4GateDone          atomic.Bool
+
 	// pauseMu guards pauseTimer and pauseSeq.  pauseSeq invalidates a timer
 	// callback that had already started when a pause was replaced or canceled.
 	pauseMu    sync.Mutex
@@ -141,6 +158,10 @@ func New(cfg Config) (l *Lifecycle) {
 
 		healthRetryWindow: 10 * time.Second,
 		healthRetryDelay:  2 * time.Second,
+
+		v4RouteWaitBudget:   defaultV4RouteWaitBudget,
+		v4RoutePollInterval: defaultV4RoutePollInterval,
+		hasV4Route:          hasIPv4DefaultRoute,
 	}
 	l.flushDNS = l.flush
 	l.leakProbe = l.detectLeak
@@ -224,6 +245,11 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 		return err
 	}
 
+	// A v4 route makes dnsproxy's first dial pin a v4 POP; the v6 one dies in
+	// the boot window.  After bind so a foreign :53 fails fast, even though a
+	// crash-leftover NRPT rule stays pointed here during the wait.
+	l.waitForV4Route(ctx)
+
 	// 3. Two-stage health check.  It is retried only while the failure is an
 	// upstream still not ready (a boot race before the network is up); a foreign
 	// listener on :53 never becomes ours, so it fails at once.  The leak probe
@@ -237,9 +263,10 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	// The window opens on the first failure, so a slow first attempt (an upstream
 	// that times out rather than refusing) still gets its retry.
 	var deadline time.Time
+	inWindow := func() bool { return deadline.IsZero() || time.Now().Before(deadline) }
 
 	hr := l.healthCheck(ctx, res)
-	for !hr.OK && hr.Ours && l.healthRetryWindow > 0 && (deadline.IsZero() || time.Now().Before(deadline)) {
+	for !hr.OK && hr.Ours && l.healthRetryWindow > 0 && inWindow() {
 		if deadline.IsZero() {
 			deadline = time.Now().Add(l.healthRetryWindow)
 		}
@@ -340,12 +367,63 @@ func (l *Lifecycle) Enable(ctx context.Context) (err error) {
 	return nil
 }
 
+// waitForV4Route waits up to v4RouteWaitBudget for an IPv4 default route on the
+// first call only, then returns regardless: a missing route (v6-only network)
+// must not fail enable, and a reload never needs the boot wait.
+func (l *Lifecycle) waitForV4Route(ctx context.Context) {
+	if l.hasV4Route == nil || l.v4RouteWaitBudget <= 0 || l.v4RoutePollInterval <= 0 {
+		return
+	}
+
+	ok, err := l.hasV4Route()
+	if err != nil {
+		l.logger.DebugContext(ctx, "IPv4 default route check failed", "err", err)
+	}
+	if ok || err != nil {
+		l.v4GateDone.Store(true)
+
+		return
+	}
+	if l.v4GateDone.Load() {
+		return
+	}
+	l.v4GateDone.Store(true)
+
+	l.logger.InfoContext(ctx, "waiting for IPv4 default route", "budget", l.v4RouteWaitBudget)
+
+	deadline := time.NewTimer(l.v4RouteWaitBudget)
+	defer deadline.Stop()
+	tick := time.NewTicker(l.v4RoutePollInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-tick.C:
+			ok, err = l.hasV4Route()
+			if err != nil {
+				l.logger.DebugContext(ctx, "IPv4 default route check failed", "err", err)
+			}
+			if ok || err != nil {
+				if ok {
+					l.logger.InfoContext(ctx, "IPv4 default route present")
+				}
+
+				return
+			}
+		}
+	}
+}
+
 // verifySystemPath resolves name through the OS resolver until it returns one of
 // our synthetic answers, flushing the cache between attempts.  It proves the
 // whole system path — not just a direct loopback query — reaches Sigil DNS.
 func (l *Lifecycle) verifySystemPath(ctx context.Context, name string) (err error) {
 	const attempts = 3
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		addrs, lErr := l.lookupHost(ctx, name)
 		if lErr == nil {
 			for _, a := range addrs {

@@ -410,90 +410,98 @@ func (r *Reconciler) reconcile(ctx context.Context, attempts *int) (stop bool) {
 		}
 
 	case DecisionApply:
-		// Only a bypass exemption is missing and it failed recently: it is
-		// best-effort, so never retry into the auto-disable path before the
-		// backoff expires.
-		if !catchAllMissing(obs.Expected, obs.Actual) &&
-			!r.bypassRetryAt.IsZero() && time.Now().Before(r.bypassRetryAt) {
-			r.logger.WarnContext(ctx,
-				"bypass exemption missing; not retrying until rules are clean",
-				"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
-			)
+		return r.repair(ctx, obs, attempts)
+	}
 
-			return false
-		}
+	return false
+}
 
-		r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts+1,
+// repair re-applies interception, re-probes, and escalates persistent drift.
+// It returns true when the loop should stop.
+func (r *Reconciler) repair(ctx context.Context, obs Observation, attempts *int) (stop bool) {
+	// Only a bypass exemption is missing and it failed recently: it is
+	// best-effort, so never retry into the auto-disable path before the
+	// backoff expires.
+	if !catchAllMissing(obs.Expected, obs.Actual) &&
+		!r.bypassRetryAt.IsZero() && time.Now().Before(r.bypassRetryAt) {
+		r.logger.WarnContext(ctx,
+			"bypass exemption missing; not retrying until rules are clean",
 			"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
-			"expected_servers", obs.Expected.Servers, "actual_servers", obs.Actual.Servers)
+		)
 
-		if r.applier != nil {
-			if aErr := r.applier.Apply(ctx); aErr != nil {
-				r.logger.ErrorContext(ctx, "re-apply failed", "err", aErr)
-			}
+		return false
+	}
+
+	r.logger.WarnContext(ctx, "interception drift detected; re-applying", "attempt", *attempts+1,
+		"expected", obs.Expected.Namespaces, "actual", obs.Actual.Namespaces,
+		"expected_servers", obs.Expected.Servers, "actual_servers", obs.Actual.Servers)
+
+	if r.applier != nil {
+		if aErr := r.applier.Apply(ctx); aErr != nil {
+			r.logger.ErrorContext(ctx, "re-apply failed", "err", aErr)
 		}
+	}
 
-		// A strike is a re-apply that did not stick, so probe again instead of
-		// counting the detection: only the third failed re-apply disables.
-		after, pErr := r.prober.Probe(ctx)
-		if pErr != nil {
-			r.logger.WarnContext(ctx, "drift re-probe failed", "err", pErr)
+	// A strike is a re-apply that did not stick, so probe again instead of
+	// counting the detection: only the third failed re-apply disables.
+	after, pErr := r.prober.Probe(ctx)
+	if pErr != nil {
+		r.logger.WarnContext(ctx, "drift re-probe failed", "err", pErr)
+
+		return false
+	}
+
+	switch Decide(after.Expected, after.Actual) {
+	case DecisionOK:
+		*attempts = 0
+		r.bypassRetryAt = time.Time{}
+
+	case DecisionApply:
+		if !catchAllMissing(after.Expected, after.Actual) {
+			r.logger.WarnContext(ctx,
+				"bypass exemption could not be applied; catch-all protection is active",
+				"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+			)
+			r.bypassRetryAt = time.Now().Add(r.bypassRetryDelay)
+			*attempts = 0
 
 			return false
 		}
 
-		switch Decide(after.Expected, after.Actual) {
-		case DecisionOK:
-			*attempts = 0
-			r.bypassRetryAt = time.Time{}
+		*attempts++
 
-		case DecisionApply:
-			if !catchAllMissing(after.Expected, after.Actual) {
-				r.logger.WarnContext(ctx,
-					"bypass exemption could not be applied; catch-all protection is active",
-					"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
-				)
-				r.bypassRetryAt = time.Now().Add(r.bypassRetryDelay)
+		if *attempts < r.maxAttempts {
+			r.logger.WarnContext(ctx, "drift persists after re-apply", "attempts", *attempts,
+				"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+				"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers)
+
+			return false
+		}
+
+		r.logger.ErrorContext(ctx,
+			"persistent drift; auto-disabling interception",
+			"attempts", *attempts,
+			"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
+			"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers,
+		)
+
+		if r.disabler != nil {
+			if dErr := r.disabler.Disable(ctx); dErr != nil {
+				// Do not stop with interception still active: that would
+				// leave DNS pointed at a dead resolver.  Keep the service
+				// up and retry from a clean attempt count.
+				r.logger.ErrorContext(ctx, "auto-disable failed; keeping service up", "err", dErr)
 				*attempts = 0
 
 				return false
 			}
-
-			*attempts++
-
-			if *attempts < r.maxAttempts {
-				r.logger.WarnContext(ctx, "drift persists after re-apply", "attempts", *attempts,
-					"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
-					"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers)
-
-				return false
-			}
-
-			r.logger.ErrorContext(ctx,
-				"persistent drift; auto-disabling interception",
-				"attempts", *attempts,
-				"expected", after.Expected.Namespaces, "actual", after.Actual.Namespaces,
-				"expected_servers", after.Expected.Servers, "actual_servers", after.Actual.Servers,
-			)
-
-			if r.disabler != nil {
-				if dErr := r.disabler.Disable(ctx); dErr != nil {
-					// Do not stop with interception still active: that would
-					// leave DNS pointed at a dead resolver.  Keep the service
-					// up and retry from a clean attempt count.
-					r.logger.ErrorContext(ctx, "auto-disable failed; keeping service up", "err", dErr)
-					*attempts = 0
-
-					return false
-				}
-			}
-
-			if r.onDisable != nil {
-				r.onDisable()
-			}
-
-			return true
 		}
+
+		if r.onDisable != nil {
+			r.onDisable()
+		}
+
+		return true
 	}
 
 	return false

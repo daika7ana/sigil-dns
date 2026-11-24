@@ -1169,7 +1169,7 @@ func TestApplyProfileFallbackPatch(t *testing.T) {
 // rejects a patch on a noPatch() action only when Patch.empty() notices it, so
 // every field must make empty() false.
 func TestPatchEmptyCoversAllFields(t *testing.T) {
-	typ := reflect.TypeOf(Patch{})
+	typ := reflect.TypeFor[Patch]()
 
 	for i := range typ.NumField() {
 		f := typ.Field(i)
@@ -1177,7 +1177,7 @@ func TestPatchEmptyCoversAllFields(t *testing.T) {
 		var p Patch
 		v := reflect.ValueOf(&p).Elem().Field(i)
 		switch v.Kind() {
-		case reflect.Ptr:
+		case reflect.Pointer:
 			v.Set(reflect.New(v.Type().Elem()))
 		case reflect.Map:
 			v.Set(reflect.MakeMap(v.Type()))

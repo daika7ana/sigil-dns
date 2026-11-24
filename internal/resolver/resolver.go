@@ -42,6 +42,11 @@ const (
 	// upstreamTimeout bounds one upstream exchange.  Kept short so a dead or
 	// blackholed primary reaches the fallback promptly.
 	upstreamTimeout = 5 * time.Second
+
+	// Boot settling blackholes the primary for seconds; right after start a
+	// stalled primary must cost seconds, not the full failover budget.
+	startupFailoverAfter  = 3 * time.Second
+	startupFailoverWindow = 60 * time.Second
 )
 
 // defaultListen is the dual-stack loopback listener set.
@@ -140,8 +145,14 @@ type Resolver struct {
 // until Start is called.  ctx bounds the initial filter-list download, so a
 // canceled start or reload does not wait for the fetch timeout.
 func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
+	// Same guard as the startup failover cap: only a fallback-configured
+	// resolver treats boot-window upstream errors as info.
+	var startupLog time.Duration
+	if len(cfg.FallbackUpstreams) > 0 && cfg.FailoverAfter > 0 {
+		startupLog = startupFailoverWindow
+	}
 	r = &Resolver{
-		logger:        quietUpstreamErrors(loggerOrDefault(cfg.Logger)),
+		logger:        quietUpstreamErrors(loggerOrDefault(cfg.Logger), startupLog),
 		filterCfg:     cfg.Filter,
 		listen:        cfg.Listen,
 		stats:         &stats{},
@@ -297,6 +308,7 @@ func New(ctx context.Context, cfg Config) (r *Resolver, err error) {
 		stats:         r.stats,
 		failoverAfter: cfg.FailoverAfter,
 		hasFallback:   len(cfg.FallbackUpstreams) > 0,
+		startedAt:     time.Now(),
 	}
 	if cfg.Filter.Enabled && len(cfg.Filter.Lists) > 0 {
 		if err = r.reloadFilter(ctx, cfg.Filter); err != nil {
@@ -713,6 +725,7 @@ type probeHandler struct {
 	stats         *stats
 	failoverAfter time.Duration
 	hasFallback   bool
+	startedAt     time.Time
 }
 
 // ServeDNS implements proxy.Handler.
@@ -749,8 +762,13 @@ func (h *probeHandler) ServeDNS(ctx context.Context, p *proxy.Proxy, dctx *proxy
 	// dnsproxy starts the fallback with context.WithoutCancel, so expiring this
 	// deadline cuts the primary's retries without cutting the fallback.
 	if h.hasFallback && h.failoverAfter > 0 {
+		budget := h.failoverAfter
+		if time.Since(h.startedAt) < startupFailoverWindow {
+			budget = min(budget, startupFailoverAfter)
+		}
+
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, h.failoverAfter)
+		ctx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
 	}
 

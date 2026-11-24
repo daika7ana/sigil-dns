@@ -84,11 +84,11 @@ func sentence(s string) string {
 // startsWithURL reports a scheme at the very start, so sentence does not turn
 // "https://…" into "Https://…".
 func startsWithURL(s string) bool {
-	end := strings.Index(s, "://")
-	if end <= 0 {
+	scheme, _, ok := strings.Cut(s, "://")
+	if !ok || scheme == "" {
 		return false
 	}
-	for _, r := range s[:end] {
+	for _, r := range scheme {
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '+' && r != '-' && r != '.' {
 			return false
 		}

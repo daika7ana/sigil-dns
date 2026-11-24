@@ -66,7 +66,7 @@ func WriteFileAtomic(path string, data []byte) (err error) {
 // replace a file another process holds open without FILE_SHARE_DELETE (AV,
 // indexer), even though the holder usually lets go within milliseconds.
 func renameWithRetry(oldPath, newPath string) (err error) {
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		if err = os.Rename(oldPath, newPath); err == nil {
 			return nil
 		}

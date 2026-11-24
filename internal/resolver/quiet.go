@@ -14,19 +14,27 @@ import (
 const upstreamErrorWindow = 30 * time.Second
 
 // quietUpstreamErrors returns logger with a rate limiter for repeated upstream
-// ERROR records.  It wraps the logger's handler, so it sits outside the
-// redacting handler; keys may hold the raw upstream URL in memory (they are
-// never logged).
-func quietUpstreamErrors(logger *slog.Logger) (quiet *slog.Logger) {
-	return slog.New(&quietHandler{next: logger.Handler(), lim: newUpstreamLimiter(time.Now)})
+// ERROR records.  When startupDowngrade is positive, upstream ERROR records
+// inside that window after construction are re-leveled to INFO: with a fallback
+// configured, a boot-race stall is answered, not a fault.  It wraps the
+// logger's handler, so it sits outside the redacting handler; keys may hold the
+// raw upstream URL in memory (they are never logged).
+func quietUpstreamErrors(logger *slog.Logger, startupDowngrade time.Duration) (quiet *slog.Logger) {
+	h := &quietHandler{next: logger.Handler(), lim: newUpstreamLimiter(time.Now)}
+	if startupDowngrade > 0 {
+		h.downgradeUntil = time.Now().Add(startupDowngrade)
+	}
+
+	return slog.New(h)
 }
 
 // quietHandler is the limiting slog.Handler.  WithAttrs/WithGroup delegate to
 // next so accumulated attrs and groups stay correct; clones share one limiter,
 // so a logger derived with .With() is limited against the same windows.
 type quietHandler struct {
-	next slog.Handler
-	lim  *upstreamLimiter
+	next           slog.Handler
+	lim            *upstreamLimiter
+	downgradeUntil time.Time
 }
 
 // Enabled implements slog.Handler.
@@ -35,7 +43,8 @@ func (h *quietHandler) Enabled(ctx context.Context, level slog.Level) (ok bool) 
 }
 
 // Handle implements slog.Handler.  Only ERROR records with an upstream/addr
-// attribute are limited; everything else passes through untouched.
+// attribute are limited; everything else passes through untouched.  Inside the
+// downgrade window those records are re-leveled to INFO.
 func (h *quietHandler) Handle(ctx context.Context, r slog.Record) (err error) {
 	if r.Level < slog.LevelError {
 		return h.next.Handle(ctx, r)
@@ -50,6 +59,15 @@ func (h *quietHandler) Handle(ctx context.Context, r slog.Record) (err error) {
 	if !emit {
 		return nil
 	}
+	downgraded := h.lim.now().Before(h.downgradeUntil)
+	if suppressed == 0 && !downgraded {
+		return h.next.Handle(ctx, r)
+	}
+
+	if downgraded && h.next.Enabled(ctx, slog.LevelInfo) {
+		r = r.Clone()
+		r.Level = slog.LevelInfo
+	}
 	if suppressed > 0 {
 		// The first record of a window stays exactly as dnsproxy built it;
 		// later windows carry the count of what the previous one hid.
@@ -62,12 +80,12 @@ func (h *quietHandler) Handle(ctx context.Context, r slog.Record) (err error) {
 
 // WithAttrs implements slog.Handler.
 func (h *quietHandler) WithAttrs(attrs []slog.Attr) (out slog.Handler) {
-	return &quietHandler{next: h.next.WithAttrs(attrs), lim: h.lim}
+	return &quietHandler{next: h.next.WithAttrs(attrs), lim: h.lim, downgradeUntil: h.downgradeUntil}
 }
 
 // WithGroup implements slog.Handler.
 func (h *quietHandler) WithGroup(name string) (out slog.Handler) {
-	return &quietHandler{next: h.next.WithGroup(name), lim: h.lim}
+	return &quietHandler{next: h.next.WithGroup(name), lim: h.lim, downgradeUntil: h.downgradeUntil}
 }
 
 // upstreamErrorKey identifies a record by its message and upstream address.

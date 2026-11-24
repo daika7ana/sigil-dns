@@ -182,7 +182,7 @@ func loadOne(ctx context.Context, source string) (data []byte, err error) {
 	if isURL(source) {
 		data, err = fetch(ctx, source)
 	} else {
-		data, err = readFile(source)
+		data, err = readFile(ctx, source)
 	}
 	if err != nil {
 		return nil, err
@@ -228,7 +228,30 @@ func fetch(ctx context.Context, url string) (data []byte, err error) {
 }
 
 // readFile reads a local list, enforcing the size cap before reading it all.
-func readFile(path string) (data []byte, err error) {
+// The read runs on its own goroutine so a stalled path (a dead UNC share)
+// cannot hold the caller past ctx; the abandoned read closes its own file.
+func readFile(ctx context.Context, path string) (data []byte, err error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	// Buffered so an abandoned read never blocks on the send.
+	done := make(chan result, 1)
+	go func() {
+		data, err := readFileSync(path)
+		done <- result{data: data, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-done:
+		return r.data, r.err
+	}
+}
+
+// readFileSync is the blocking read behind readFile.
+func readFileSync(path string) (data []byte, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

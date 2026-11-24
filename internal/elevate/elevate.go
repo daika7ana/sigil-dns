@@ -14,6 +14,7 @@
 package elevate
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,7 +22,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/daika7ana/sigil-dns/internal/config"
@@ -238,7 +238,7 @@ func (p Patch) empty() (ok bool) {
 type Request struct {
 	Action Action `json:"action"`
 
-	Patch Patch `json:"patch,omitempty"`
+	Patch Patch `json:"patch"`
 
 	// ExpectedRevision is the config revision (mtime+size) the UI last read.
 	// When set, the helper refuses to write if the file changed underneath it.
@@ -314,7 +314,7 @@ func (p Patch) validateShape() (err error) {
 	for name := range p.Profiles {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	for _, name := range names {
 		if err = p.Profiles[name].validateShape(); err != nil {
@@ -574,7 +574,7 @@ func applyRequest(cfg *config.Config, req Request, actualRevision string) (err e
 	for name := range req.Patch.Profiles {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	for _, name := range names {
 		p, ok := cfg.Profiles[name]
@@ -904,7 +904,7 @@ func applyListPatch(lists *[]config.FilterList, lp ListPatch) (err error) {
 	// later index.
 	if len(lp.Remove) > 0 {
 		idx := append([]int(nil), lp.Remove...)
-		sort.Sort(sort.Reverse(sort.IntSlice(idx)))
+		slices.SortFunc(idx, func(a, b int) int { return cmp.Compare(b, a) })
 
 		for _, i := range idx {
 			cur = append(cur[:i], cur[i+1:]...)

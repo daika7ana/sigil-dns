@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -430,7 +431,8 @@ func Init(path string) (err error) {
 
 	if _, err = os.Stat(path); err == nil {
 		return ErrExists
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("checking config: %w", err)
 	}
 
@@ -923,13 +925,7 @@ func Resolve(cfg *Config, ov Overrides) (r Resolved, err error) {
 		cfg = Default()
 	}
 
-	name := ov.Profile
-	if name == "" {
-		name = cfg.Profile
-	}
-	if name == "" {
-		name = DefaultProfileName
-	}
+	name := cmp.Or(ov.Profile, cfg.Profile, DefaultProfileName)
 
 	p, ok := cfg.Profiles[name]
 	if !ok {
